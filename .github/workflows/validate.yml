@@ -1,0 +1,55 @@
+name: validate
+on:
+  workflow_dispatch:
+    inputs:
+      candidates:
+        description: "candidates file under data/"
+        default: "candidates2.json"
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        env:
+          F: data/${{ inputs.candidates }}
+        run: python3 -c "import json,os;n=len(json.load(open(os.environ['F'])));print('matrix='+json.dumps({'i':list(range(n))}))" >> "$GITHUB_OUTPUT"
+  check:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    name: cand-${{ matrix.i }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/validate_one.py "data/${{ inputs.candidates }}" "${{ matrix.i }}" "out/${{ matrix.i }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: val-${{ matrix.i }}
+          path: |
+            out/${{ matrix.i }}/record.json
+            out/${{ matrix.i }}/Dockerfile
+          retention-days: 30
+  collect:
+    needs: check
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: v
+      - run: |
+          cat v/*/record.json > validation.jsonl
+          python3 -c "import json;r=[json.loads(l) for l in open('validation.jsonl')];print(len(r),'checked',sum(x['valid'] for x in r),'valid')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VALIDATION
+          path: validation.jsonl
