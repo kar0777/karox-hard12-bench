@@ -1,0 +1,63 @@
+diff --git a/graphistry/compute/gfql/cypher/lowering.py b/graphistry/compute/gfql/cypher/lowering.py
+index 513dc28..b0713b9 100644
+--- a/graphistry/compute/gfql/cypher/lowering.py
++++ b/graphistry/compute/gfql/cypher/lowering.py
+@@ -4060,6 +4060,19 @@ def _reject_order_by_aggregate(
+         )
+ 
+ 
++def _render_order_key_column(order_key: str, available_columns: AbstractSet[str]) -> str:
++    """Render a direct projected column as Cypher source text.
++
++    Order keys are expression text, so an output column that requires backticks
++    (spaces, reserved words, punctuation, escaped backticks) must keep its
++    quoting when used as a direct column reference. Otherwise order_by
++    validation parses the raw column name as an invalid expression.
++    """
++    if order_key in available_columns:
++        return render_cypher_identifier(order_key)
++    return order_key
++
++
+ def _lower_order_by_clause(
+     clause: OrderByClause,
+     *,
+@@ -4190,6 +4203,7 @@ def _lower_order_by_clause(
+                     column=item.span.column,
+                 )
+             )
++        order_key = _render_order_key_column(order_key, plan.available_columns)
+         if not plan.whole_row_output_names and order_key not in plan.available_columns:
+             node = _parse_row_expr(
+                 order_key,
+@@ -4234,6 +4248,7 @@ def _lower_order_by_outputs(
+                 column=item.span.column,
+             )
+             _reject_order_by_aggregate(item, expr_text=order_key, params=params)
++        order_key = _render_order_key_column(order_key, available_columns)
+         if order_key not in available_columns:
+             node = _parse_row_expr(
+                 order_key,
+diff --git a/graphistry/tests/compute/gfql/cypher/test_backtick_identifiers.py b/graphistry/tests/compute/gfql/cypher/test_backtick_identifiers.py
+index 12d3620..452a394 100644
+--- a/graphistry/tests/compute/gfql/cypher/test_backtick_identifiers.py
++++ b/graphistry/tests/compute/gfql/cypher/test_backtick_identifiers.py
+@@ -90,6 +90,18 @@ def test_backtick_alias_survives_where_order_and_projection(odd_columns_graph):
+     assert out._nodes["out"].tolist() == [20]
+ 
+ 
++@pytest.mark.parametrize("engine", ["pandas", "polars"])
++def test_backtick_alias_with_space_orders_by_quoted_alias(odd_columns_graph, engine):
++    if engine == "polars":
++        pytest.importorskip("polars")
++    out = odd_columns_graph.gfql(
++        "MATCH (n) RETURN n.id AS `the id` ORDER BY `the id` DESC",
++        engine=engine,
++    )
++
++    assert out._nodes["the id"].to_list() == ["b", "a"]
++
++
+ def test_unquoted_identifiers_are_not_quoted():
+     parsed = parse_expr("n.analysis")
+     assert parsed.value.name == "n"

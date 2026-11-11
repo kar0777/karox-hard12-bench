@@ -1,0 +1,273 @@
+diff --git a/api/models.py b/api/models.py
+index fe9bf2a..bab473a 100644
+--- a/api/models.py
++++ b/api/models.py
+@@ -6385,6 +6385,30 @@ def _persisted_share_fields(path):
+     )
+ 
+ 
++def session_share_token(session_id: str) -> str | None:
++    """The share token ``session_id``'s live sidecar still carries, or None.
++
++    A public share is only served while its conversation still exists and still
++    holds that token: the sidecar is removed with the conversation, and a revoke
++    clears the token, so a snapshot whose session is gone (or has moved on to a
++    newer link) is dead even when no revoke ever reached the snapshot store.
++    The bounded metadata prefix answers the common case; a prefix miss parses
++    the whole sidecar. A missing, unreadable or tokenless sidecar reports no
++    live share, so callers fail closed instead of serving an orphaned link.
++    """
++    sid = str(session_id or "").strip()
++    if not sid or not is_safe_session_id(sid):
++        return None
++    try:
++        fields = _persisted_share_fields(SESSION_DIR / f"{sid}.json")
++    except Exception:
++        logger.debug("Failed to read the share fields of session %s", sid, exc_info=True)
++        return None
++    if fields is _SHARE_FIELDS_ABSENT:
++        return None
++    return fields[0]
++
++
+ # #7881: per-session reentrant persistence locks. Every Session.save() of one
+ # session id -- skip_index=True included -- holds the same lock across its
+ # persisted-effort read, payload construction and atomic replacement; the
+diff --git a/api/routes.py b/api/routes.py
+index 33dddbc..a879774 100644
+--- a/api/routes.py
++++ b/api/routes.py
+@@ -76,6 +76,7 @@ from api.shares import (
+     build_share_snapshot,
+     load_share,
+     revoke_share,
++    revoke_share_token,
+     write_share_snapshot,
+ )
+ 
+@@ -595,6 +596,7 @@ def _project_default_workspace(proj) -> str | None:
+ # same object. Reentrant so a mutation may call helpers that take it again.
+ from api.models import PROJECTS_CATALOG_LOCK as _PROJECTS_CATALOG_LOCK
+ from api.models import update_session_share_fields as _update_session_share_fields
++from api.models import session_share_token as _session_share_token
+ from api.models import repair_session_share_field_order as _repair_session_share_field_order
+ 
+ 
+@@ -7217,28 +7219,55 @@ def _resident_share_token(sid: str) -> str:
+     return str(getattr(cached, "share_token", "") or "").strip()
+ 
+ 
+-def _persist_share_fields(sid: str, session, *, share_token, share_created_at, mirrored=None) -> None:
++def _persist_share_fields(
++    sid: str,
++    session,
++    *,
++    share_token,
++    share_created_at,
++    mirrored=None,
++    create_sidecar: bool = False,
++) -> bool:
+     """Persist only the two share fields of ``sid``.
+ 
+     Saving the copy the handler resolved writes its conversation fields back over
+     any writer that finished since it was read, so the sidecar is patched in
+-    place instead. ``session`` is saved only when no sidecar exists yet (a pure
+-    external session), where there is no persisted conversation to revert
+-    (#8255 review, third round).
++    place instead. ``session`` is saved only for a genuinely external session
++    that never had a WebUI sidecar (``create_sidecar``, where there is no
++    persisted conversation to revert, #8255 review, third round) -- never merely
++    because the sidecar is missing: /api/session/delete removes it, and saving
++    the resolved copy there put the deleted conversation, its index row and the
++    new share token back.
+ 
+     The whole check-and-write runs under the session's persistence lock, so the
+     "no sidecar yet" decision cannot go stale: a save that lands between the
+     check and the fallback would otherwise be reverted by the whole-object save
+-    that follows it (#8399 review). The lock is reentrant, so the patch helper
+-    and ``save()`` re-entering it is expected.
++    that follows it (#8399 review). /api/session/delete records the deleted id
++    under that same lock, so a delete cannot slip between this check and the
++    fallback save. The lock is reentrant, so the patch helper and ``save()``
++    re-entering it is expected.
++
++    Returns False, writing nothing, when there is no sidecar to patch and no
++    external session to materialize: the session was deleted while the request
++    was in flight.
+     """
+     with _session_persist_lock(sid):
+         try:
+-            if not _update_session_share_fields(
++            patched = _update_session_share_fields(
+                 sid,
+                 share_token=share_token,
+                 share_created_at=share_created_at,
+-            ):
++            )
++            if not patched:
++                if not create_sidecar or sid in _DELETED_SESSION_IDS:
++                    # Nothing to patch and no external session to materialize.
++                    # The conversation is gone, so the share pair must not be
++                    # written back onto a sidecar the delete already removed.
++                    _return_mirrored_share_pair_to_resident(
++                        sid, mirrored, session,
++                        share_token=share_token, share_created_at=share_created_at,
++                    )
++                    return False
+                 session.share_token = share_token
+                 session.share_created_at = share_created_at
+                 session.save(touch_updated_at=False)
+@@ -7252,6 +7281,7 @@ def _persist_share_fields(sid: str, session, *, share_token, share_created_at, m
+         _commit_share_fields_to_cached_session(
+             sid, share_token=share_token, share_created_at=share_created_at,
+         )
++    return True
+ 
+ 
+ def _return_mirrored_share_pair_to_resident(sid: str, mirrored, session, *, share_token, share_created_at) -> None:
+@@ -7310,6 +7340,23 @@ def _commit_share_fields_to_cached_session(sid: str, *, share_token, share_creat
+         logger.debug("Failed to commit share fields to cached session %s", sid, exc_info=True)
+ 
+ 
++def _revoke_share_of_deleted_session(sid: str, token: str) -> None:
++    """Tombstone the public snapshot of a conversation that was just deleted.
++
++    The token is read off the sidecar before the delete unlinks it; the snapshot
++    store is the other half of the share state and would otherwise keep serving
++    a conversation that no longer exists. Best effort: ``load_share`` also
++    refuses a snapshot whose session is gone, so a failed tombstone cannot leave
++    a readable link.
++    """
++    if not token:
++        return
++    try:
++        revoke_share_token(token)
++    except Exception:
++        logger.debug("Failed to revoke the share of deleted session %s", sid, exc_info=True)
++
++
+ def _reconcile_stale_stream_state_for_session_rows(session_rows) -> bool:
+     """Clear stale persisted stream fields before /api/sessions serializes rows."""
+     changed = False
+@@ -19259,13 +19306,22 @@ def handle_post(handler, parsed) -> bool:
+             # restore the title and transcript it was built from, reverting a
+             # writer that finished while the snapshot was built (#8255 review,
+             # third round).
+-            _persist_share_fields(
++            persisted = _persist_share_fields(
+                 sid,
+                 persisted_session,
+                 share_token=share_meta["share_token"],
+                 share_created_at=share_meta["share_created_at"],
+                 mirrored=mirrored,
++                create_sidecar=stored_session is None,
+             )
++            if not persisted:
++                # The conversation was deleted while this request held the share
++                # lock. Publishing its transcript now would hand out a link to a
++                # conversation that no longer exists, and saving the resolved
++                # copy would put the deleted sidecar and its index row back, so
++                # drop the snapshot instead of serving it.
++                revoke_share_token(share_meta["share_token"])
++                return bad(handler, "Session not found", 404)
+         finally:
+             share_lock.release()
+         _publish_session_list_changed(
+@@ -19363,6 +19419,7 @@ def handle_post(handler, parsed) -> bool:
+                 share_token=None,
+                 share_created_at=None,
+                 mirrored=mirrored,
++                create_sidecar=stored_session is None,
+             )
+         finally:
+             share_lock.release()
+@@ -20605,7 +20662,15 @@ def handle_post(handler, parsed) -> bool:
+             except Exception:
+                 logger.debug("Failed to close workspace terminal for deleted session %s", sid)
+             sidecar_deleted = False
+-            with LOCK:
++            # A published share must die with its conversation: the token is read
++            # off the sidecar before the unlink removes it and the snapshot is
++            # tombstoned after. load_share also refuses a snapshot whose session
++            # is gone, so links orphaned by earlier deletes stay dead too.
++            share_token_for_delete = _session_share_token(sid)
++            # Persist -> LOCK: the persistence lock serializes this removal with a
++            # share create/revoke patching the same sidecar, and the deleted id
++            # then stops the other one from saving the conversation back.
++            with _session_persist_lock(sid), LOCK:
+                 SESSIONS.pop(sid, None)
+                 # #7738: recorded with the eviction, so a writer waiting on the
+                 # session lock cannot save the empty-shell fallback back to disk.
+@@ -20615,6 +20680,7 @@ def handle_post(handler, parsed) -> bool:
+                 except Exception:
+                     logger.debug("Failed to unlink session file %s", p)
+             sidecar_deleted = not p.exists()
++            _revoke_share_of_deleted_session(sid, share_token_for_delete)
+             try:
+                 draft_deleted = bool(_delete_session_draft(sid))
+             except Exception:
+diff --git a/api/shares.py b/api/shares.py
+index 8e9727f..a3ccd7d 100644
+--- a/api/shares.py
++++ b/api/shares.py
+@@ -1169,11 +1169,47 @@ def load_share(token: str) -> dict | None:
+         return None
+     if payload.get("revoked_at"):
+         return None
++    if not _share_session_is_live(payload, str(token or "").strip()):
++        return None
+     return _public_share_payload(payload)
+ 
+ 
+-def revoke_share(session) -> bool:
+-    token = str(getattr(session, "share_token", "") or "").strip()
++def _share_session_is_live(payload: dict, token: str) -> bool:
++    """True while the snapshot's conversation still exists and holds its token.
++
++    A public link used to outlive its conversation: deleting a session removed
++    the sidecar and never touched the snapshot, so ``/share/<token>`` kept
++    serving the transcript. The sidecar is the authority -- it is removed with
++    the conversation, and a revoke clears its ``share_token`` -- so a snapshot
++    whose session is gone, or has moved on to a newer link, is dead even when no
++    revoke ever reached this store. That also closes the links earlier deletes
++    orphaned. The token comes from the snapshot, or from the request for a
++    snapshot written before it recorded one.
++    """
++    sid = str(payload.get("source_session_id") or "").strip()
++    if not sid:
++        return False
++    snapshot_token = str(payload.get("token") or "").strip() or str(token or "").strip()
++    if not snapshot_token:
++        return False
++    try:
++        from api.models import session_share_token
++
++        return session_share_token(sid) == snapshot_token
++    except Exception:
++        logger.warning("Failed to check the session of a share snapshot", exc_info=True)
++        return False
++
++
++def revoke_share_token(token: str) -> bool:
++    """Tombstone the snapshot published under ``token``.
++
++    Split out of :func:`revoke_share` so a caller deleting the conversation can
++    revoke from the token it read off the sidecar, once the sidecar (and the
++    session object holding the token) are gone. Returns True when a token was
++    given, whether or not a snapshot for it still exists.
++    """
++    token = str(token or "").strip()
+     if not token:
+         return False
+     with _SHARE_LOCK:
+@@ -1191,3 +1227,10 @@ def revoke_share(session) -> bool:
+             payload["revoked_at"] = time.time()
+             _write_json_atomic(path, payload)
+     return True
++
++
++def revoke_share(session) -> bool:
++    token = str(getattr(session, "share_token", "") or "").strip()
++    if not token:
++        return False
++    return revoke_share_token(token)

@@ -1,0 +1,47 @@
+diff --git a/markdown/inlinepatterns.py b/markdown/inlinepatterns.py
+index 785585d..c8a4917 100644
+--- a/markdown/inlinepatterns.py
++++ b/markdown/inlinepatterns.py
+@@ -428,9 +428,6 @@ class BacktickInlineProcessor(InlineProcessor):
+             # This is not ever expected to happen.
+             return None
+ 
+-        longest_span = 0
+-        end = 0
+-
+         # Find an ending span of backticks that matches our opening
+         i = start
+         while i < last:
+@@ -446,16 +443,6 @@ class BacktickInlineProcessor(InlineProcessor):
+             if max_ticks == span_length:
+                 return start, i - span_length
+ 
+-            # Track the longest span of backticks we find as a fallback.
+-            if span_length > longest_span:
+-                longest_span = span_length
+-                end = i
+-
+-        # Since we didn't find an exact matching start and end,
+-        # adjust start to match the largest end we could calculate.
+-        if longest_span:
+-            return start - (max_ticks - longest_span), end - longest_span
+-
+         # We could not find a suitable pairing
+         return None
+ 
+@@ -478,7 +465,14 @@ class BacktickInlineProcessor(InlineProcessor):
+             el = etree.Element(self.tag)
+             el.text = util.AtomicString(util.code_escape(data[start:end].strip()))
+             return el, begin, result[1] + (start - begin)
+-        return None, None, None
++
++        # No matching closing span was found. Return the entire opening span as
++        # literal text so that its individual backticks are not reconsidered as
++        # shorter opening spans.
++        end = begin
++        while end < len(data) and data[end] == '`':
++            end += 1
++        return data[begin:end], begin, end
+ 
+ 
+ class DoubleTagPattern(SimpleTagPattern):  # pragma: no cover

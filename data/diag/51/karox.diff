@@ -1,0 +1,127 @@
+diff --git a/scrapy/utils/curl.py b/scrapy/utils/curl.py
+index bc98fbe..91541f4 100644
+--- a/scrapy/utils/curl.py
++++ b/scrapy/utils/curl.py
+@@ -1,9 +1,10 @@
+ from __future__ import annotations
+ 
+ import argparse
++import string
+ import warnings
+ from http.cookies import SimpleCookie
+-from shlex import split
++from shlex import quote, split
+ from typing import TYPE_CHECKING, Any, NoReturn
+ from urllib.parse import urlparse
+ 
+@@ -94,8 +95,92 @@ def _parse_headers_and_cookies(
+     return headers, cookies
+ 
+ 
++_ANSI_C_ESCAPES = {
++    "a": "\a",
++    "b": "\b",
++    "e": "\x1b",
++    "E": "\x1b",
++    "f": "\f",
++    "n": "\n",
++    "r": "\r",
++    "t": "\t",
++    "v": "\v",
++    "\\": "\\",
++    "'": "'",
++    '"': '"',
++    "?": "?",
++}
++
++_ANSI_C_HEX_DIGITS = {"x": 2, "u": 4, "U": 8}
++
++_OCTAL_DIGITS = "01234567"
++
++
++def _decode_ansi_c_quoted(value: str) -> str:
++    """Decode the escape sequences of the body of a Bash ``$'...'`` string."""
++    result: list[str] = []
++    i = 0
++    while i < len(value):
++        char = value[i]
++        if char != "\\" or i + 1 == len(value):
++            result.append(char)
++            i += 1
++            continue
++        escaped = value[i + 1]
++        if escaped in _ANSI_C_ESCAPES:
++            result.append(_ANSI_C_ESCAPES[escaped])
++            i += 2
++        elif escaped in _OCTAL_DIGITS:
++            end = i + 2
++            while end < min(i + 4, len(value)) and value[end] in _OCTAL_DIGITS:
++                end += 1
++            result.append(chr(int(value[i + 1 : end], 8)))
++            i = end
++        elif escaped in _ANSI_C_HEX_DIGITS:
++            end = i + 2
++            limit = min(i + 2 + _ANSI_C_HEX_DIGITS[escaped], len(value))
++            while end < limit and value[end] in string.hexdigits:
++                end += 1
++            if end == i + 2:
++                result.append(value[i:end])
++            else:
++                code_point = int(value[i + 2 : end], 16)
++                if code_point > 0x10FFFF:
++                    result.append(value[i:end])
++                else:
++                    result.append(chr(code_point))
++            i = end
++        elif escaped == "c" and i + 2 < len(value):
++            control = value[i + 2]
++            result.append(
++                "\x7f" if control == "?" else chr(ord(control.upper()) & 0x1F)
++            )
++            i += 3
++        else:
++            # Not an ANSI-C escape: Bash keeps the backslash and the character.
++            result.append(value[i : i + 2])
++            i += 2
++    return "".join(result)
++
++
++def _find_ansi_c_quote_end(curl_command: str, start: int) -> int:
++    """Return the index of the quote closing the ``$'...'`` body at *start*.
++
++    The length of the command is returned when the body is not closed.
++    """
++    i = start
++    while i < len(curl_command):
++        if curl_command[i] == "\\":
++            i += 2
++        elif curl_command[i] == "'":
++            return i
++        else:
++            i += 1
++    return len(curl_command)
++
++
+ def _normalize_curl_command(curl_command: str) -> str:
+-    """Normalize Bash ANSI-C quote prefixes for shlex."""
++    """Decode Bash ANSI-C quoting and re-quote it for shlex."""
+     result: list[str] = []
+     in_single_quote = False
+     in_double_quote = False
+@@ -124,9 +209,13 @@ def _normalize_curl_command(curl_command: str) -> str:
+             and not in_single_quote
+             and not in_double_quote
+         ):
+-            result.append("'")
+-            in_single_quote = True
+-            i += 1
++            end = _find_ansi_c_quote_end(curl_command, i + 2)
++            if end == len(curl_command):
++                # Unterminated, keep it so that shlex reports the missing quote.
++                result.append(char)
++            else:
++                result.append(quote(_decode_ansi_c_quoted(curl_command[i + 2 : end])))
++                i = end
+         else:
+             result.append(char)
+ 

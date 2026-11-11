@@ -1,0 +1,48 @@
+diff --git a/src/pdm/models/repositories/base.py b/src/pdm/models/repositories/base.py
+index d942482..165633d 100644
+--- a/src/pdm/models/repositories/base.py
++++ b/src/pdm/models/repositories/base.py
+@@ -340,4 +340,7 @@ class BaseRepository:
+             candidate.hashes = self.get_hashes(candidate)
+ 
+         with ThreadPoolExecutor() as executor:
+-            executor.map(do_fetch, candidates)
++            # Consume the iterator so exceptions raised by the workers are not
++            # silently discarded.
++            for _ in executor.map(do_fetch, candidates):
++                pass
+diff --git a/src/pdm/models/session.py b/src/pdm/models/session.py
+index 8d0157c..19e2200 100644
+--- a/src/pdm/models/session.py
++++ b/src/pdm/models/session.py
+@@ -113,16 +113,20 @@ class PDMPyPIClient(PyPIClient):
+             def cache_transport(transport: httpx2.BaseTransport) -> httpx2.BaseTransport:
+                 return transport
+         else:
+-            # clean up old (pre-hishel 1.0 and 2.0) caches
+-            for cache in ["http-cache.db", ".cache/hishel"]:
+-                cache_db = cache_dir / cache
+-                if not cache_db.exists():
+-                    for f in cache_dir.iterdir():
+-                        if not f.name.startswith(cache):
+-                            if f.is_dir():
+-                                shutil.rmtree(f, ignore_errors=True)
+-                            else:
+-                                f.unlink()
++            # Clean up old (pre-hishel 1.0 and 2.0) caches without touching the
++            # current cache or unrelated files in the cache directory.
++            if cache_dir.exists():
++                for legacy_db in cache_dir.glob("http-cache.db*"):
++                    if legacy_db.is_dir():
++                        shutil.rmtree(legacy_db, ignore_errors=True)
++                    else:
++                        legacy_db.unlink(missing_ok=True)
++                legacy_file_cache = cache_dir / ".cache" / "hishel"
++                # The hishel 1.x cache was a directory at this path, while the
++                # current cache is a SQLite database file at the same location.
++                if legacy_file_cache.is_dir():
++                    shutil.rmtree(legacy_file_cache, ignore_errors=True)
++            cache_db = cache_dir / ".cache" / "hishel"
+             storage = ThreadedSyncSqliteStorage(database_path=cache_db, default_ttl=CACHES_TTL)
+ 
+             def cache_transport(transport: httpx2.BaseTransport) -> httpx2.BaseTransport:

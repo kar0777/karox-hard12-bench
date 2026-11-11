@@ -1,0 +1,299 @@
+diff --git a/sqllineage/core/parser/sqlfluff/extractors/create_insert.py b/sqllineage/core/parser/sqlfluff/extractors/create_insert.py
+index bfd5cc7..bf9177a 100644
+--- a/sqllineage/core/parser/sqlfluff/extractors/create_insert.py
++++ b/sqllineage/core/parser/sqlfluff/extractors/create_insert.py
+@@ -1,7 +1,9 @@
++from typing import Any
++
+ from sqlfluff.core.parser import BaseSegment
+ 
+ from sqllineage.core.holders import SubQueryLineageHolder
+-from sqllineage.core.models import Path, Table
++from sqllineage.core.models import Column, Path, SubQuery, Table
+ from sqllineage.core.parser.sqlfluff.extractors.base import BaseExtractor
+ from sqllineage.core.parser.sqlfluff.extractors.select import SelectExtractor
+ from sqllineage.core.parser.sqlfluff.models import SqlFluffColumn, SqlFluffTable
+@@ -30,6 +32,8 @@ class CreateInsertExtractor(BaseExtractor):
+         statement: BaseSegment,
+         context: AnalyzerContext,
+     ) -> SubQueryLineageHolder:
++        if self._is_multi_table_insert(statement):
++            return self._extract_multi_table_insert(statement, context)
+         holder = self._init_holder(context)
+         src_flag = tgt_flag = part_flag = False
+         partition_columns = []
+@@ -163,6 +167,210 @@ class CreateInsertExtractor(BaseExtractor):
+                 src_flag = False
+         return holder
+ 
++    @staticmethod
++    def _is_multi_table_insert(statement: BaseSegment) -> bool:
++        if statement.type != "insert_statement":
++            return False
++        segments = list_child_segments(statement)
++        into_count = sum(
++            1
++            for segment in segments
++            if segment.type == "keyword" and segment.raw_upper == "INTO"
++        )
++        has_all_or_first = any(
++            segment.type == "keyword" and segment.raw_upper in ("ALL", "FIRST")
++            for segment in segments
++        )
++        return into_count > 1 or (has_all_or_first and into_count > 0)
++
++    def _extract_multi_table_insert(
++        self,
++        statement: BaseSegment,
++        context: AnalyzerContext,
++    ) -> SubQueryLineageHolder:
++        holder = self._init_holder(context)
++        segments = list_child_segments(statement)
++        targets: list[dict[str, Any]] = []
++        target: dict[str, Any] | None = None
++        source_segment: BaseSegment | None = None
++        for segment in segments:
++            if segment.type == "keyword":
++                if segment.raw_upper == "INTO":
++                    target = {"table": None, "columns": None, "values": None}
++                    targets.append(target)
++                elif segment.raw_upper in ("WHEN", "ELSE"):
++                    target = None
++                continue
++            if segment.type in ("select_statement", "set_expression"):
++                source_segment = segment
++                target = None
++                continue
++            if target is None:
++                continue
++            if target["table"] is None:
++                if segment.type in ("table_reference", "object_reference"):
++                    target["table"] = SqlFluffTable.of(segment, dialect=self.dialect)
++            elif target["columns"] is None and segment.type == "bracketed":
++                target["columns"] = self._extract_bracketed_columns(segment)
++            elif target["values"] is None and segment.type == "values_clause":
++                target["values"] = self._extract_values_expressions(segment)
++                for subquery_segment in segment.recursive_crawl(
++                    "select_statement", "set_expression", recurse_into=False
++                ):
++                    holder |= self.delegate_to(
++                        SelectExtractor,
++                        subquery_segment,
++                        AnalyzerContext(cte=holder.cte),
++                    )
++
++        targets = [t for t in targets if t["table"] is not None]
++        alias_mapping: dict[str, Path | Table | SubQuery] = {}
++        output_groups: list[list[Column]] = []
++        output_columns: dict[str, list[Column]] = {}
++        if source_segment is not None:
++            source_extractor = SelectExtractor(self.dialect, self.metadata_provider)
++            holder |= source_extractor.extract(
++                source_segment, AnalyzerContext(cte=holder.cte)
++            )
++            alias_mapping = holder.get_alias_mapping_from_table_group(
++                source_extractor.tables
++            )
++            output_groups = self._get_output_column_groups(source_extractor)
++            for group in output_groups:
++                for column in group:
++                    if column.raw_name not in output_columns:
++                        output_columns[column.raw_name] = list(
++                            column.to_source_columns(alias_mapping)
++                        )
++
++        for target in targets:
++            table = target["table"]
++            target_columns = self._get_multi_insert_target_columns(
++                target, output_groups
++            )
++            target_holder = SubQueryLineageHolder()
++            target_holder.add_write(table)
++            if target_columns:
++                target_holder.add_write_column(*target_columns)
++            if target["values"] is not None:
++                for idx, value in enumerate(target["values"]):
++                    if idx >= len(target_columns):
++                        break
++                    for src_column in self._resolve_multi_insert_value(
++                        value, output_columns, alias_mapping
++                    ):
++                        target_holder.add_column_lineage(
++                            src_column, target_columns[idx]
++                        )
++            else:
++                for group in output_groups:
++                    for idx, output_column in enumerate(group):
++                        if idx >= len(target_columns):
++                            break
++                        for src_column in output_column.to_source_columns(
++                            alias_mapping
++                        ):
++                            target_holder.add_column_lineage(
++                                src_column, target_columns[idx]
++                            )
++            holder |= target_holder
++        return holder
++
++    @staticmethod
++    def _extract_bracketed_columns(segment: BaseSegment) -> list[Column]:
++        sub_segments = list_child_segments(segment)
++        if all(
++            sub_segment.type in ["column_reference", "column_definition"]
++            for sub_segment in sub_segments
++        ):
++            columns = []
++            for sub_segment in sub_segments:
++                if sub_segment.type == "column_definition":
++                    # sqlfluff's column_definition parse tree varies by dialect:
++                    #  for most dialect:
++                    #     column_definition -> identifier
++                    #  for sparksql, databricks since sqlfluff 3.2.5):
++                    #     column_definition -> column_reference -> identifier
++                    # We try identifier first, then fall back to column_reference.
++                    if identifier := sub_segment.get_child("identifier"):
++                        sub_segment = identifier
++                    elif column_ref := sub_segment.get_child("column_reference"):
++                        sub_segment = column_ref
++                columns.append(SqlFluffColumn.of(sub_segment))
++            return columns
++        return []
++
++    @staticmethod
++    def _extract_values_expressions(segment: BaseSegment) -> list[BaseSegment]:
++        expressions = []
++        if bracketed := segment.get_child("bracketed"):
++            expressions = list(bracketed.get_children("expression"))
++            if not expressions:
++                expressions = [
++                    sub_segment
++                    for sub_segment in list_child_segments(bracketed)
++                    if sub_segment.type not in ("start_bracket", "end_bracket")
++                ]
++        return expressions
++
++    @staticmethod
++    def _get_output_column_groups(extractor: SelectExtractor) -> list[list[Column]]:
++        groups = []
++        prev_col_barrier = 0
++        for col_barrier, _, _ in extractor.union_barriers:
++            groups.append(extractor.columns[prev_col_barrier:col_barrier])
++            prev_col_barrier = col_barrier
++        return groups or [extractor.columns]
++
++    def _get_multi_insert_target_columns(
++        self,
++        target: dict[str, Any],
++        output_groups: list[list[Column]],
++    ) -> list[Column]:
++        if target["columns"] is not None:
++            return target["columns"]
++        table = target["table"]
++        if self.metadata_provider and isinstance(table, Table):
++            metadata_columns = self.metadata_provider.get_table_columns(table=table)
++            if metadata_columns:
++                return [Column(column.raw_name) for column in metadata_columns]
++        first_group = output_groups[0] if output_groups else []
++        values = target["values"]
++        if values is None:
++            return [Column(column.raw_name) for column in first_group]
++        # target column names are unknown: name them after the select columns by
++        # position, falling back to the value expression itself
++        columns = [
++            Column(first_group[idx].raw_name)
++            for idx in range(min(len(values), len(first_group)))
++        ]
++        while len(columns) < len(values):
++            columns.append(Column(SqlFluffColumn.of(values[len(columns)]).raw_name))
++        return columns
++
++    @staticmethod
++    def _resolve_multi_insert_value(
++        value: BaseSegment,
++        output_columns: dict[str, list[Column]],
++        alias_mapping: dict[str, Path | Table | SubQuery],
++    ) -> set[Column]:
++        value_column = SqlFluffColumn.of(value)
++        source_columns: set[Column] = set()
++        for name, qualifier in value_column.source_columns:
++            if qualifier is None and name in output_columns:
++                source_columns.update(output_columns[name])
++            else:
++                source_column = Column(name, escaped=True)
++                if qualifier is not None:
++                    source_column.parent = alias_mapping.get(
++                        qualifier, Table(qualifier)
++                    )
++                else:
++                    for table in set(alias_mapping.values()):
++                        source_column.parent = table
++                source_columns.add(source_column)
++        return source_columns
++
+     def delegate_to_cte(
+         self, segment: BaseSegment, holder: SubQueryLineageHolder
+     ) -> SubQueryLineageHolder:
+diff --git a/sqllineagejs/package-lock.json b/sqllineagejs/package-lock.json
+index ba3beff..012a7cd 100644
+--- a/sqllineagejs/package-lock.json
++++ b/sqllineagejs/package-lock.json
+@@ -1283,9 +1283,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1303,9 +1300,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1323,9 +1317,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1343,9 +1334,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1363,9 +1351,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1383,9 +1368,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [

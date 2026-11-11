@@ -1,0 +1,230 @@
+diff --git a/mempalace/cli/_common.py b/mempalace/cli/_common.py
+index f6ac80c..bb58d5c 100644
+--- a/mempalace/cli/_common.py
++++ b/mempalace/cli/_common.py
+@@ -8,6 +8,28 @@ def _backend_arg(args):
+     return getattr(args, "backend", None) or getattr(args, "global_backend", None)
+ 
+ 
++def _cleanup_hook_mine_pid_file() -> None:
++    """Release this process's hook-spawned mine slot, if it owns one.
++
++    Every ``mempalace mine`` mode must clear the per-target PID slot the hook
++    claimed before spawning it. Project and format mines already do this in
++    their own ``finally`` blocks; routing the cleanup through the CLI covers
++    convos and source-adapter mines as well, including paths that return early
++    or fail. ``_cleanup_mine_pid_file`` only removes a slot that names this
++    process, so calling it more than once is safe.
++    """
++    if not os.environ.get("MEMPALACE_MINE_PID_FILE"):
++        return
++    try:
++        from ..miner import _cleanup_mine_pid_file
++    except Exception:  # noqa: BLE001 - bookkeeping must not mask the mine outcome
++        return
++    try:
++        _cleanup_mine_pid_file()
++    except Exception:  # noqa: BLE001 - bookkeeping must not mask the mine outcome
++        pass
++
++
+ def _apply_backend_arg(args) -> None:
+     backend = _backend_arg(args)
+     if not backend:
+diff --git a/mempalace/cli/cmd_mine.py b/mempalace/cli/cmd_mine.py
+index 0fc2267..5f303bf 100644
+--- a/mempalace/cli/cmd_mine.py
++++ b/mempalace/cli/cmd_mine.py
+@@ -6,6 +6,14 @@ from typing import Optional
+ 
+ 
+ def cmd_mine(args):
++    """Run a mine, always releasing the hook's per-target PID slot."""
++    try:
++        return _cmd_mine(args)
++    finally:
++        _cleanup_hook_mine_pid_file()
++
++
++def _cmd_mine(args):
+     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+     mode = getattr(args, "mode", None) or "projects"
+     source_adapter = getattr(args, "source", None)
+diff --git a/mempalace/cli/parser.py b/mempalace/cli/parser.py
+index 56af628..0437c6c 100644
+--- a/mempalace/cli/parser.py
++++ b/mempalace/cli/parser.py
+@@ -2,6 +2,8 @@
+ if __name__ != "mempalace.cli":
+     raise ImportError(f"{__name__} is an implementation fragment; import mempalace.cli")
+ 
++import threading
++
+ 
+ def _reconfigure_stdio_utf8_on_windows():
+     """Decode stdio as UTF-8 on Windows for the primary `mempalace` CLI.
+@@ -19,6 +21,55 @@ def _reconfigure_stdio_utf8_on_windows():
+     reconfigure_stdio_utf8_on_windows(stdout_errors="replace", stderr_errors="replace")
+ 
+ 
++# Grace period a hook-spawned mine gets to shut down after its work is done.
++# Normal exits are never delayed: this timer only fires if interpreter
++# shutdown (thread joining / atexit handlers) is still running when it expires.
++_HOOK_MINE_EXIT_GRACE_SECONDS = 60
++
++
++def _arm_hook_mine_exit_watchdog(exit_code=0):
++    """Force-exit a hook-spawned mine whose interpreter shutdown hangs.
++
++    Hook-spawned mines inherit ``MEMPALACE_MINE_PID_FILE``; a manual
++    ``mempalace mine`` does not, so it is never force-exited. The timer is a
++    daemon thread, which keeps running while ``threading._shutdown()`` waits
++    on a non-daemon thread and while ``atexit`` handlers run -- the two places
++    the reported post-completion hang can live.
++    """
++    if not os.environ.get("MEMPALACE_MINE_PID_FILE"):
++        return None
++
++    if not isinstance(exit_code, int):
++        exit_code = 0 if exit_code is None else 1
++
++    # Resolve the cleanup before shutdown starts: importing the miner during
++    # interpreter teardown can fail ("can't register atexit after shutdown"),
++    # which would leave the PID slot behind.
++    try:
++        from ..miner import _cleanup_mine_pid_file
++    except Exception:  # noqa: BLE001 - the forced exit is still useful
++        _cleanup_mine_pid_file = None
++
++    def _force_exit():
++        try:
++            if _cleanup_mine_pid_file is not None:
++                _cleanup_mine_pid_file()
++        except Exception:  # noqa: BLE001 - exiting is the point
++            pass
++        finally:
++            try:
++                sys.stdout.flush()
++                sys.stderr.flush()
++            except Exception:  # noqa: BLE001 - exiting is the point
++                pass
++            os._exit(exit_code)
++
++    timer = threading.Timer(_HOOK_MINE_EXIT_GRACE_SECONDS, _force_exit)
++    timer.daemon = True
++    timer.start()
++    return timer
++
++
+ def main():
+     """CLI entry point for the ``mempalace`` console script.
+ 
+@@ -1209,4 +1260,27 @@ def main():
+         "status": cmd_status,
+         "update": cmd_update,
+     }
+-    dispatch[args.command](args)
++    exit_code = 0
++    try:
++        dispatch[args.command](args)
++    except SystemExit as exc:
++        if isinstance(exc.code, int):
++            exit_code = exc.code
++        elif exc.code is not None:
++            exit_code = 1
++        raise
++    except KeyboardInterrupt:
++        exit_code = 130
++        raise
++    except BaseException:
++        exit_code = 1
++        raise
++    finally:
++        if args.command == "mine":
++            # Arm first so the timer also covers the cleanup below, then
++            # release the slot as soon as the work is done instead of waiting
++            # for the watchdog's grace period.
++            try:
++                _arm_hook_mine_exit_watchdog(exit_code)
++            finally:
++                _cleanup_hook_mine_pid_file()
+diff --git a/mempalace/convo_miner.py b/mempalace/convo_miner.py
+index b13e9a3..81a20fc 100644
+--- a/mempalace/convo_miner.py
++++ b/mempalace/convo_miner.py
+@@ -830,29 +830,53 @@ def mine_convos(
+     MempalaceConfig inside :func:`_mine_convos_impl` so `config.json`
+     governs both this path and the project-file miner in `miner.py`.
+     """
+-    if dry_run:
+-        return _mine_convos_impl(
+-            convo_dir,
+-            palace_path,
+-            wing=wing,
+-            agent=agent,
+-            limit=limit,
+-            dry_run=dry_run,
+-            extract_mode=extract_mode,
+-            include_subagents=include_subagents,
+-        )
++    try:
++        if dry_run:
++            return _mine_convos_impl(
++                convo_dir,
++                palace_path,
++                wing=wing,
++                agent=agent,
++                limit=limit,
++                dry_run=dry_run,
++                extract_mode=extract_mode,
++                include_subagents=include_subagents,
++            )
+ 
+-    with mine_palace_lock(palace_path):
+-        return _mine_convos_impl(
+-            convo_dir,
+-            palace_path,
+-            wing=wing,
+-            agent=agent,
+-            limit=limit,
+-            dry_run=dry_run,
+-            extract_mode=extract_mode,
+-            include_subagents=include_subagents,
+-        )
++        with mine_palace_lock(palace_path):
++            return _mine_convos_impl(
++                convo_dir,
++                palace_path,
++                wing=wing,
++                agent=agent,
++                limit=limit,
++                dry_run=dry_run,
++                extract_mode=extract_mode,
++                include_subagents=include_subagents,
++            )
++    finally:
++        _cleanup_hook_mine_pid_file()
++
++
++def _cleanup_hook_mine_pid_file() -> None:
++    """Remove this process's hook-spawned mine slot after a convo mine.
++
++    Project mines clean their slot in ``miner.mine``'s ``finally`` and format
++    mines do the same in ``format_miner``. Conversation mines are a separate
++    path, so without this a clean ``mine --mode convos`` leaves the hook's
++    ``mine_pids`` entry behind for the stale-slot check to reclaim.
++    """
++    if not os.environ.get("MEMPALACE_MINE_PID_FILE"):
++        return
++    try:
++        from .miner import _cleanup_mine_pid_file
++    except Exception:  # noqa: BLE001 - bookkeeping must not fail the mine
++        logger.debug("mine_convos: PID-slot cleanup import failed", exc_info=True)
++        return
++    try:
++        _cleanup_mine_pid_file()
++    except Exception:  # noqa: BLE001 - bookkeeping must not fail the mine
++        logger.debug("mine_convos: PID-slot cleanup failed", exc_info=True)
+ 
+ 
+ def _compute_hallways_for_wing_safe(wing, collection, drawers_filed, config=None):

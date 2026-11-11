@@ -1,0 +1,67 @@
+diff --git a/graphistry/compute/gfql/cypher/lowering.py b/graphistry/compute/gfql/cypher/lowering.py
+index 513dc28..c54e5b1 100644
+--- a/graphistry/compute/gfql/cypher/lowering.py
++++ b/graphistry/compute/gfql/cypher/lowering.py
+@@ -1263,9 +1263,14 @@ def _rewrite_expr_to_output_names(
+         rendered = _render_expr_node(node_in)
+         replacement = replacements.get(rendered)
+         if replacement is not None:
+-            return Identifier(replacement)
++            # An output column name is an identifier, not source text: render it quoted when
++            # its spelling requires it (``the id``), so the rewritten expression still parses.
++            return Identifier(replacement, quoted=True)
+         if isinstance(node_in, Identifier):
+-            return Identifier(replacements.get(node_in.name, node_in.name))
++            replaced = replacements.get(node_in.name)
++            if replaced is not None:
++                return Identifier(replaced, quoted=True)
++            return Identifier(node_in.name, quoted=node_in.quoted)
+         return _rebuild_expr_node(node_in, rewrite=_rewrite, error_context="output rewrite")
+ 
+     return _render_expr_node(_rewrite(node))
+@@ -4094,13 +4099,13 @@ def _lower_order_by_clause(
+                     order_key = (
+                         plan.output_to_source_property[alias_name]
+                         if plan.whole_row_output_names or alias_name not in projection_output_names
+-                        else alias_name
++                        else render_cypher_identifier(alias_name)
+                     )
+                 elif alias_name in plan.output_to_expr_source:
+                     order_key = (
+                         plan.output_to_expr_source[alias_name]
+                         if plan.whole_row_output_names or alias_name not in projection_output_names
+-                        else alias_name
++                        else render_cypher_identifier(alias_name)
+                     )
+                 elif alias_name in plan.whole_row_output_names or alias_name == plan.source_alias:
+                     raise GFQLValidationError(
+@@ -4114,7 +4119,7 @@ def _lower_order_by_clause(
+                         language="cypher",
+                     )
+                 else:
+-                    order_key = alias_name
++                    order_key = render_cypher_identifier(alias_name)
+             else:
+                 source_alias = (
+                     plan.whole_row_sources.get(alias_name, plan.source_alias)
+@@ -4133,9 +4138,9 @@ def _lower_order_by_clause(
+                         language="cypher",
+                     )
+                 order_key = (
+-                    f"{source_alias}.{prop}"
++                    f"{render_cypher_identifier(source_alias)}.{render_cypher_identifier(prop)}"
+                     if plan.whole_row_output_names
+-                    else plan.projected_property_outputs.get(prop, prop)
++                    else render_cypher_identifier(plan.projected_property_outputs.get(prop, prop))
+                 )
+         else:
+             if alias_targets is None:
+@@ -4234,6 +4239,8 @@ def _lower_order_by_outputs(
+                 column=item.span.column,
+             )
+             _reject_order_by_aggregate(item, expr_text=order_key, params=params)
++        else:
++            order_key = render_cypher_identifier(order_key)
+         if order_key not in available_columns:
+             node = _parse_row_expr(
+                 order_key,

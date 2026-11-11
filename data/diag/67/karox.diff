@@ -1,0 +1,208 @@
+diff --git a/IMPLEMENTATION_COVERAGE.md b/IMPLEMENTATION_COVERAGE.md
+index 6d03284..0cfebac 100644
+--- a/IMPLEMENTATION_COVERAGE.md
++++ b/IMPLEMENTATION_COVERAGE.md
+@@ -3980,7 +3980,7 @@
+ - [ ] delete_ipam_scope
+ - [X] delete_key_pair
+ - [X] delete_launch_template
+-- [ ] delete_launch_template_versions
++- [X] delete_launch_template_versions
+ - [ ] delete_local_gateway_route
+ - [ ] delete_local_gateway_route_table
+ - [ ] delete_local_gateway_route_table_virtual_interface_group_association
+diff --git a/docs/docs/services/ec2.rst b/docs/docs/services/ec2.rst
+index a37d37f..4a3274b 100644
+--- a/docs/docs/services/ec2.rst
++++ b/docs/docs/services/ec2.rst
+@@ -225,7 +225,7 @@ The CopyTagsFromSource-parameter is not yet implemented.
+ - [ ] delete_ipam_scope
+ - [X] delete_key_pair
+ - [X] delete_launch_template
+-- [ ] delete_launch_template_versions
++- [X] delete_launch_template_versions
+ - [ ] delete_local_gateway_route
+ - [ ] delete_local_gateway_route_table
+ - [ ] delete_local_gateway_route_table_virtual_interface_group_association
+diff --git a/moto/ec2/models/launch_templates.py b/moto/ec2/models/launch_templates.py
+index 1018321..70d1556 100644
+--- a/moto/ec2/models/launch_templates.py
++++ b/moto/ec2/models/launch_templates.py
+@@ -6,6 +6,7 @@ from moto.core.types import Base64EncodedString
+ from moto.core.utils import utcnow
+ 
+ from ..exceptions import (
++    EC2ClientError,
+     InvalidLaunchTemplateIdNotFound,
+     InvalidLaunchTemplateNameAlreadyExistsError,
+     InvalidLaunchTemplateNameNotFoundError,
+@@ -81,14 +82,17 @@ class LaunchTemplate(TaggedEC2Resource, CloudFormationModel):
+         self.tags = self.get_tags()
+ 
+         self.versions: list[LaunchTemplateVersion] = []
++        self.next_version_number = 1
+         self.create_version(template_data, version_description)
+         self.default_version_number = 1
+ 
+     def create_version(
+         self, data: dict[str, Any], description: str
+     ) -> LaunchTemplateVersion:
+-        num = len(self.versions) + 1
+-        version = LaunchTemplateVersion(self, num, data, description)
++        version = LaunchTemplateVersion(
++            self, self.next_version_number, data, description
++        )
++        self.next_version_number += 1
+         self.versions.append(version)
+         return version
+ 
+@@ -97,20 +101,34 @@ class LaunchTemplate(TaggedEC2Resource, CloudFormationModel):
+ 
+     def get_version(self, num: Any) -> LaunchTemplateVersion:
+         if str(num).lower() == "$latest":
+-            return self.versions[-1]
++            return self.latest_version()
+         if str(num).lower() == "$default":
+             return self.default_version()
+         try:
+-            return self.versions[int(num) - 1]
+-        except IndexError:
++            version_number = int(num)
++        except (TypeError, ValueError):
+             raise InvalidLaunchTemplateVersionNotFound(template_id=self.id, version=num)
++        for version in self.versions:
++            if version.number == version_number:
++                return version
++        raise InvalidLaunchTemplateVersionNotFound(template_id=self.id, version=num)
+ 
+     def default_version(self) -> LaunchTemplateVersion:
+-        return self.versions[self.default_version_number - 1]
++        return self.get_version(self.default_version_number)
+ 
+     def latest_version(self) -> LaunchTemplateVersion:
+         return self.versions[-1]
+ 
++    def delete_version(self, num: Any) -> LaunchTemplateVersion:
++        version = self.get_version(num)
++        if self.is_default(version):
++            raise InvalidParameterValue(
++                "You cannot delete the default version of a launch template. "
++                "Instead create a new default version and try again."
++            )
++        self.versions.remove(version)
++        return version
++
+     @property
+     def latest_version_number(self) -> int:
+         return self.latest_version().number
+@@ -282,6 +300,35 @@ class LaunchTemplateBackend:
+         self.launch_template_name_to_ids.pop(template.name, None)
+         return template
+ 
++    def delete_launch_template_versions(
++        self,
++        template_name: str | None,
++        template_id: str | None,
++        versions: list[str],
++    ) -> tuple[
++        LaunchTemplate, list[LaunchTemplateVersion], list[tuple[str, EC2ClientError]]
++    ]:
++        """
++        Deletes the given versions of the specified launch template.
++        Returns the template, the versions that were deleted, and the versions that
++        could not be deleted (with the reason why).
++        """
++        if template_name:
++            template = self.get_launch_template_by_name(template_name)
++        elif template_id:
++            template = self.get_launch_template(template_id)
++        else:
++            raise MissingParameterError("launch template ID or launch template name")
++
++        deleted: list[LaunchTemplateVersion] = []
++        failed: list[tuple[str, EC2ClientError]] = []
++        for version in versions:
++            try:
++                deleted.append(template.delete_version(version))
++            except EC2ClientError as exc:
++                failed.append((version, exc))
++        return template, deleted, failed
++
+     def describe_launch_templates(
+         self,
+         template_names: list[str] | None = None,
+@@ -342,16 +389,18 @@ class LaunchTemplateBackend:
+                 if "$Default" in versions:
+                     ret_versions.append((template, template.get_version("$Default")))
+         elif min_version:
+-            if max_version:
+-                vMax = max_version
+-            else:
+-                vMax = min_version + max_results
+-
+-            vMin = min_version - 1
+-            ret_versions = [(template, ver) for ver in template.versions[vMin:vMax]]
++            vMax = max_version or min_version + max_results
++            ret_versions = [
++                (template, ver)
++                for ver in template.versions
++                if min_version <= ver.number <= vMax
++            ]
+         elif max_version:
+-            vMax = max_version
+-            ret_versions = [(template, ver) for ver in template.versions[:vMax]]
++            ret_versions = [
++                (template, ver)
++                for ver in template.versions
++                if ver.number <= max_version
++            ]
+         elif template is not None:
+             ret_versions = [(template, ver) for ver in template.versions]
+ 
+diff --git a/moto/ec2/responses/launch_templates.py b/moto/ec2/responses/launch_templates.py
+index 44fbd05..beb127b 100644
+--- a/moto/ec2/responses/launch_templates.py
++++ b/moto/ec2/responses/launch_templates.py
+@@ -100,6 +100,42 @@ class LaunchTemplates(EC2BaseResponse):
+ 
+         return ActionResult(result)
+ 
++    def delete_launch_template_versions(self) -> ActionResult:
++        name = self._get_param("LaunchTemplateName")
++        tid = self._get_param("LaunchTemplateId")
++        versions = self._get_param("Versions", [])
++
++        self.error_on_dryrun()
++
++        template, deleted, failed = self.ec2_backend.delete_launch_template_versions(
++            template_name=name, template_id=tid, versions=versions
++        )
++
++        result = {
++            "SuccessfullyDeletedLaunchTemplateVersions": [
++                {
++                    "LaunchTemplateId": template.id,
++                    "LaunchTemplateName": template.name,
++                    "VersionNumber": version.number,
++                }
++                for version in deleted
++            ],
++            "UnsuccessfullyDeletedLaunchTemplateVersions": [
++                {
++                    "LaunchTemplateId": template.id,
++                    "LaunchTemplateName": template.name,
++                    "VersionNumber": int(version) if version.isdigit() else version,
++                    "ResponseError": {
++                        "Code": error.code,
++                        "Message": error.message,
++                    },
++                }
++                for version, error in failed
++            ],
++        }
++
++        return ActionResult(result)
++
+     def describe_launch_template_versions(self) -> ActionResult:
+         name = self._get_param("LaunchTemplateName")
+         template_id = self._get_param("LaunchTemplateId")

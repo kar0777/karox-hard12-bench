@@ -1,0 +1,19 @@
+diff --git a/graphistry/compute/gfql/call/validation.py b/graphistry/compute/gfql/call/validation.py
+index 094133e..39f747e 100644
+--- a/graphistry/compute/gfql/call/validation.py
++++ b/graphistry/compute/gfql/call/validation.py
+@@ -177,7 +177,13 @@ def is_order_keys(v: object) -> bool:
+             return False
+         parsed = _where_rows_expr_parse(txt)
+         if parsed is None:
+-            return False
++            # ORDER BY keys may be literal output-column names. Cypher backtick
++            # aliases are lowered to their decoded names, so an alias such as
++            # `the id` reaches validation as "the id", which is not expression
++            # syntax until quoted. Any non-empty string is a valid column name
++            # under a backtick spelling; the row pipeline resolves actual
++            # columns before parsing expression keys.
++            return True
+         node, capability_checker, _collect_identifiers = parsed
+         if is_order_aggregate_alias_ast(node):
+             return True

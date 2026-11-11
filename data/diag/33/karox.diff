@@ -1,0 +1,438 @@
+diff --git a/cyclopts/bind.py b/cyclopts/bind.py
+index ebbd42f..72daec0 100644
+--- a/cyclopts/bind.py
++++ b/cyclopts/bind.py
+@@ -6,6 +6,7 @@ import sys
+ from collections.abc import Callable, Iterable, Iterator, Sequence
+ from contextlib import suppress
+ from functools import partial
++from pathlib import Path
+ from typing import TYPE_CHECKING, Any, NamedTuple, get_args
+ 
+ from cyclopts._convert import _bool, _none, create_empty_instance
+@@ -63,6 +64,66 @@ def normalize_tokens(tokens: None | str | Iterable[str]) -> list[str]:
+     return tokens
+ 
+ 
++def _default_convert_arg_line_to_args(arg_line: str) -> list[str]:
++    """Default :attr:`App.convert_arg_line_to_args`; every line is a single argument."""
++    return [arg_line]
++
++
++def expand_args_from_files(
++    tokens: Iterable[str],
++    prefix_chars: str,
++    convert_arg_line_to_args: Callable[[str], Iterable[str]] = _default_convert_arg_line_to_args,
++) -> list[str]:
++    """Replace ``@file`` tokens with the arguments contained in ``file``.
++
++    Parameters
++    ----------
++    tokens: Iterable[str]
++        CLI tokens to expand.
++    prefix_chars: str
++        Characters that, when they start a token, mark the remainder of the token as a filename.
++        An empty string disables expansion.
++    convert_arg_line_to_args: Callable[[str], Iterable[str]]
++        Converts a single (non-blank) line of an argument file into tokens.
++        Defaults to one argument per line.
++
++    Returns
++    -------
++    list[str]
++        ``tokens`` with every argument-file reference expanded in-place.
++
++    Raises
++    ------
++    CycloptsError
++        If a referenced file cannot be read, or references itself.
++    """
++    if not prefix_chars:
++        return list(tokens)
++
++    def _expand(tokens: Iterable[str], chain: tuple[Path, ...]) -> list[str]:
++        expanded: list[str] = []
++        for token in tokens:
++            if not token or token[0] not in prefix_chars:
++                expanded.append(token)
++                continue
++
++            path = Path(token[1:])
++            if path in chain:
++                raise CycloptsError(msg=f'Recursive argument file reference "{path}".')
++            try:
++                contents = path.read_text(encoding="utf-8")
++            except (OSError, UnicodeDecodeError) as e:
++                raise CycloptsError(msg=f'Unable to read argument file "{path}": {e}.') from e
++
++            file_tokens = [
++                arg for line in contents.splitlines() if line.strip() for arg in convert_arg_line_to_args(line)
++            ]
++            expanded.extend(_expand(file_tokens, (*chain, path)))
++        return expanded
++
++    return _expand(tokens, ())
++
++
+ class _ProbeResult(NamedTuple):
+     """Result of :func:`_probe_unclaimed`."""
+ 
+diff --git a/cyclopts/core.py b/cyclopts/core.py
+index 5d12ec4..c9a6a3e 100644
+--- a/cyclopts/core.py
++++ b/cyclopts/core.py
+@@ -31,9 +31,11 @@ from cyclopts.app_stack import AppStack
+ from cyclopts.argument import ArgumentCollection
+ from cyclopts.argument.utils import is_short_flag
+ from cyclopts.bind import (
++    _default_convert_arg_line_to_args,
+     _parse_kw_and_flags,
+     _scope_tokens_for_meta,
+     create_bound_arguments,
++    expand_args_from_files,
+     is_option_like,
+     normalize_tokens,
+ )
+@@ -506,6 +508,28 @@ class App:
+ 
+     end_of_options_delimiter: str | None = field(default=None, kw_only=True)
+ 
++    fromfile_prefix_chars: str | None = field(default=None, kw_only=True)
++    """Characters that, when they start a CLI token, mark the remainder of the token as an argument file.
++
++    The file's contents are expanded in-place into CLI tokens and then parsed exactly like
++    tokens typed on the command line. With ``fromfile_prefix_chars="@"``, the invocation
++    ``my-app @run.args`` is equivalent to passing the arguments contained in ``run.args``.
++
++    Each line of the file is one argument (see :attr:`convert_arg_line_to_args` to customize);
++    blank lines are skipped. Argument files may reference other argument files.
++
++    Defaults to :obj:`None`, which disables the feature.
++    Mirrors ``fromfile_prefix_chars`` of :class:`argparse.ArgumentParser`.
++    """
++
++    convert_arg_line_to_args: Callable[[str], Iterable[str]] | None = field(default=None, kw_only=True)
++    """Convert a single line of an argument file into CLI tokens.
++
++    Only used in combination with :attr:`fromfile_prefix_chars`.
++    Defaults to one argument per line.
++    Mirrors :meth:`argparse.ArgumentParser.convert_arg_line_to_args`.
++    """
++
+     parse_mode: Literal["fallthrough", "strict"] | None = field(
+         default=None,
+         kw_only=True,
+@@ -1740,6 +1764,10 @@ class App:
+             bound = inspect.signature(command).bind(tokens[1:])
+             return command, bound, [], {}, ArgumentCollection()
+ 
++        # Expand ``@file`` argument files into ordinary CLI tokens; done before command
++        # resolution so a file may supply the command name itself.
++        tokens = self._expand_arg_files(tokens)
++
+         meta_parent = self
+ 
+         # We need both versions of the apps list:
+@@ -2107,6 +2135,19 @@ class App:
+         except CycloptsError as e:
+             self._handle_parse_error(e, [])
+ 
++    def _expand_arg_files(self, tokens: list[str]) -> list[str]:
++        """Expand :attr:`fromfile_prefix_chars` argument files in-place within ``tokens``.
++
++        Must be called inside an :attr:`app_stack` context so settings resolve.
++        """
++        prefix_chars = self.app_stack.resolve("fromfile_prefix_chars")
++        if not prefix_chars:
++            return tokens
++        convert_arg_line_to_args = self.app_stack.resolve(
++            "convert_arg_line_to_args", fallback=_default_convert_arg_line_to_args
++        )
++        return expand_args_from_files(tokens, prefix_chars, convert_arg_line_to_args)
++
+     def _handle_parse_error(self, e: CycloptsError, tokens: list[str]) -> NoReturn:
+         """Print ``e`` according to the resolved error settings, then exit or re-raise it."""
+         print_error = self.app_stack.resolve("print_error")
+diff --git a/docs/source/api.rst b/docs/source/api.rst
+index 1c4a6c1..e48e33c 100644
+--- a/docs/source/api.rst
++++ b/docs/source/api.rst
+@@ -581,6 +581,25 @@ API
+       If not set, attempts to inherit from parenting :class:`.App`, eventually defaulting to POSIX-standard ``"--"``.
+       Set to an empty string to disable.
+ 
++   .. attribute:: fromfile_prefix_chars
++      :type: Optional[str]
++      :value: None
++
++      Characters that, when they start a CLI token, mark the remainder of the token as an argument file.
++      The file's contents are expanded in-place into CLI tokens (and then parsed normally),
++      e.g. ``my-app @run.args``.
++      If not set, attempts to inherit from parenting :class:`.App`, eventually defaulting to :obj:`None` (disabled).
++      See :ref:`Argument Files`.
++
++   .. attribute:: convert_arg_line_to_args
++      :type: Optional[Callable[[str], Iterable[str]]]
++      :value: None
++
++      A function that converts a single (non-blank) line of an argument file into CLI tokens.
++      Only used in combination with :attr:`fromfile_prefix_chars`.
++      If not set, each line is a single argument.
++      See :ref:`Argument Files`.
++
+    .. attribute:: parse_mode
+       :type: Optional[Literal["fallthrough", "strict"]]
+       :value: None
+diff --git a/docs/source/argument_files.rst b/docs/source/argument_files.rst
+new file mode 100644
+index 0000000..5b83208
+--- /dev/null
++++ b/docs/source/argument_files.rst
+@@ -0,0 +1,89 @@
++.. _Argument Files:
++
++==============
++Argument Files
++==============
++Deeply nested :doc:`user classes <user_classes>` can require long, repetitive command lines.
++Instead of typing them out, they can be stored in an **argument file** and referenced with a single token.
++
++Set :attr:`.App.fromfile_prefix_chars` to enable the feature.
++Any CLI token starting with one of these characters is treated as a file path whose contents are expanded **in-place**:
++
++.. code-block:: python
++
++   from cyclopts import App
++
++   app = App(fromfile_prefix_chars="@")
++
++   @app.command
++   def run(host: str, port: int, description: str = ""):
++       print(host, port, description)
++
++.. code-block:: text
++
++   # run.args
++   run
++   --host
++   db.example.internal
++   --port
++   5432
++   --description
++   nightly integration run
++
++.. code-block:: console
++
++   $ my-app @run.args
++   db.example.internal 5432 nightly integration run
++
++The expanded arguments are ordinary CLI tokens; they go through the same parsing, conversion, validation, and command dispatch as tokens typed directly on the command line.
++This mirrors :class:`argparse.ArgumentParser`'s ``fromfile_prefix_chars``.
++
++----------------
++File Format
++----------------
++Each line of the file is a single argument; a line is **not** split on whitespace.
++Blank (and whitespace-only) lines are skipped.
++Argument files may reference other argument files:
++
++.. code-block:: text
++
++   # run.args
++   run
++   @connection.args
++
++.. code-block:: text
++
++   # connection.args
++   --host
++   db.example.internal
++   --port
++   5432
++
++A file that (directly or indirectly) references itself raises an error, as does a reference to a file that cannot be read.
++
++--------------------------
++Customizing the Conversion
++--------------------------
++Some argument files are nicer to write with multiple arguments per line, or with comments.
++Provide :attr:`.App.convert_arg_line_to_args` to convert each non-blank line into any number of tokens:
++
++.. code-block:: python
++
++   import shlex
++
++   from cyclopts import App
++
++   def convert_arg_line_to_args(line: str) -> list[str]:
++       if line.startswith("#"):
++           return []
++       return shlex.split(line)
++
++   app = App(fromfile_prefix_chars="@", convert_arg_line_to_args=convert_arg_line_to_args)
++
++.. code-block:: text
++
++   # run.args
++   # Connection settings.
++   run --host db.example.internal --port 5432
++
++Like other :class:`.App` attributes, ``fromfile_prefix_chars`` and ``convert_arg_line_to_args`` are inherited by subcommands.
+diff --git a/docs/source/index.rst b/docs/source/index.rst
+index 423976a..332520b 100644
+--- a/docs/source/index.rst
++++ b/docs/source/index.rst
+@@ -39,6 +39,7 @@ For extensive documentation on all the features Cyclopts has to offer, checkout
+    user_classes.rst
+    args_and_kwargs.rst
+    config_file.rst
++   argument_files.rst
+    sphinx_integration.rst
+    mkdocs_integration.rst
+    packaging.rst
+diff --git a/tests/test_arg_files.py b/tests/test_arg_files.py
+new file mode 100644
+index 0000000..b75074d
+--- /dev/null
++++ b/tests/test_arg_files.py
+@@ -0,0 +1,140 @@
++import shlex
++
++import pytest
++
++from cyclopts import App, CycloptsError
++
++
++@pytest.fixture
++def arg_app():
++    app = App(fromfile_prefix_chars="@", exit_on_error=False, print_error=False, result_action="return_value")
++
++    @app.command
++    def run(host: str, port: int, description: str = ""):
++        return host, port, description
++
++    return app
++
++
++def test_arg_file_expanded_in_place(tmp_path, arg_app):
++    (tmp_path / "run.args").write_text("--host\ndb.example.internal\n--port\n5432\n")
++
++    assert arg_app(["run", "@run.args"]) == ("db.example.internal", 5432, "")
++
++
++def test_arg_file_can_supply_command(tmp_path, arg_app):
++    (tmp_path / "run.args").write_text("run\n--host\ndb.example.internal\n--port\n5432\n")
++
++    assert arg_app(["@run.args"]) == ("db.example.internal", 5432, "")
++
++
++def test_arg_file_multi_word_line_is_a_single_argument(tmp_path, arg_app):
++    (tmp_path / "run.args").write_text("run\n--host\nlocalhost\n--port\n5432\n--description\nnightly integration run\n")
++
++    assert arg_app(["@run.args"]) == ("localhost", 5432, "nightly integration run")
++
++
++def test_blank_lines_are_skipped(tmp_path, arg_app):
++    (tmp_path / "run.args").write_text("run\n\n--host\nlocalhost\n   \n--port\n5432\n")
++
++    assert arg_app(["@run.args"]) == ("localhost", 5432, "")
++
++
++def test_nested_arg_files(tmp_path, arg_app):
++    (tmp_path / "nested.args").write_text("--port\n5432\n")
++    (tmp_path / "run.args").write_text(f"run\n--host\nlocalhost\n@{tmp_path / 'nested.args'}\n")
++
++    assert arg_app(["@run.args"]) == ("localhost", 5432, "")
++
++
++def test_disabled_by_default(tmp_path):
++    (tmp_path / "run.args").write_text("run\n")
++    app = App(exit_on_error=False, print_error=False)
++
++    @app.command
++    def run():
++        pass
++
++    with pytest.raises(CycloptsError):
++        app.parse_args(["@run.args"])
++
++
++def test_missing_arg_file(arg_app):
++    with pytest.raises(CycloptsError, match="Unable to read argument file"):
++        arg_app.parse_args(["@does-not-exist.args"])
++
++
++def test_missing_arg_file_prints_and_exits(console):
++    app = App(fromfile_prefix_chars="@", error_console=console)
++
++    @app.command
++    def run():
++        pass
++
++    with console.capture() as capture, pytest.raises(SystemExit) as e:
++        app(["@does-not-exist.args"])
++
++    assert e.value.code == 2
++    assert "Unable to read argument file" in capture.get()
++
++
++def test_recursive_arg_file_reference(arg_app, tmp_path):
++    (tmp_path / "a.args").write_text(f"@{tmp_path / 'b.args'}\n")
++    (tmp_path / "b.args").write_text(f"@{tmp_path / 'a.args'}\n")
++
++    with pytest.raises(CycloptsError, match="Recursive argument file reference"):
++        arg_app.parse_args([f"@{tmp_path / 'a.args'}"])
++
++
++def test_convert_arg_line_to_args(tmp_path):
++    def convert_arg_line_to_args(line: str) -> list[str]:
++        if not line.strip() or line.startswith("#"):
++            return []
++        return shlex.split(line)
++
++    (tmp_path / "run.args").write_text("# a comment\nrun --host localhost --port 5432\n")
++    app = App(
++        fromfile_prefix_chars="@",
++        convert_arg_line_to_args=convert_arg_line_to_args,
++        exit_on_error=False,
++        print_error=False,
++        result_action="return_value",
++    )
++
++    @app.command
++    def run(host: str, port: int):
++        return host, port
++
++    assert app(["@run.args"]) == ("localhost", 5432)
++
++
++def test_multiple_prefix_chars(tmp_path, arg_app):
++    (tmp_path / "run.args").write_text("run\n--host\nlocalhost\n--port\n5432\n")
++
++    arg_app.fromfile_prefix_chars = "@+"
++
++    assert arg_app([f"+{tmp_path / 'run.args'}"]) == ("localhost", 5432, "")
++
++
++def test_arg_file_inherited_by_subcommand(tmp_path):
++    app = App(fromfile_prefix_chars="@", exit_on_error=False, print_error=False, result_action="return_value")
++    sub_app = App(name="sub")
++
++    @sub_app.default
++    def sub(value: int):
++        return value
++
++    app.command(sub_app)
++    (tmp_path / "sub.args").write_text("sub\n7\n")
++
++    assert app(["@sub.args"]) == 7
++
++
++def test_arg_file_used_by_parse_known_args(tmp_path, arg_app):
++    (tmp_path / "run.args").write_text("run\n--host\nlocalhost\n--port\n5432\n")
++
++    command, bound, unused_tokens, _ = arg_app.parse_known_args(["@run.args"])
++
++    assert command is arg_app["run"].default_command
++    assert bound.args == ("localhost", 5432)
++    assert unused_tokens == []

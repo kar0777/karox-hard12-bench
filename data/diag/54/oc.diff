@@ -1,0 +1,149 @@
+diff --git a/gammapy/astro/darkmatter/utils.py b/gammapy/astro/darkmatter/utils.py
+index ca4ee32..f79c42d 100644
+--- a/gammapy/astro/darkmatter/utils.py
++++ b/gammapy/astro/darkmatter/utils.py
+@@ -78,23 +78,87 @@ class JFactory:
+ 
+         return np.trapezoid(values, t)
+ 
+-    def _integrate_los(self, impact, separation, ndecade):
+-        """Integrate the physical forward line of sight."""
+-        distance = self.distance
+-        rmax = self.rmax
++    def _integrate_los(self, impact=None, separation=None, ndecade=None):
++        """Integrate the physical forward line of sight.
+ 
+-        if distance < rmax:
+-            integral = self._integrate_los_branch(impact, distance, rmax, ndecade)
+-            if separation < np.pi / 2:
+-                integral += 2 * self._integrate_los_branch(
+-                    impact, impact, distance, ndecade
+-                )
+-            return integral
++        The line of sight is parameterized by its physical distance ``l`` from
++        the observer. The integration interval is the intersection of the
++        forward line of sight, ``l >= 0``, with the sphere of radius ``rmax``
++        around the halo center. This gives a single interval irrespective of
++        whether the observer lies inside or outside the halo.
+ 
+-        if separation < np.pi / 2 and impact < rmax:
+-            return 2 * self._integrate_los_branch(impact, impact, rmax, ndecade)
++        The impact parameter is derived from ``separation`` when it is not
++        given explicitly.
++        """
++        if ndecade is None:
++            ndecade = separation
++            separation = impact
++            impact = None
++        elif separation is None:
++            separation = impact
++            impact = None
++
++        if impact is None:
++            impact = self.distance * np.sin(separation)
++
++        exponent = 2 if self.annihilation else 1
++        unit = self.rmax.unit
++        integral_unit = u.Unit("GeV2 cm-5" if self.annihilation else "GeV cm-2")
+ 
+-        return 0 * u.Unit("GeV2 cm-5" if self.annihilation else "GeV cm-2")
++        impact = impact.to(unit)
++        distance = self.distance.to(unit)
++        rmax = self.rmax.to(unit)
++
++        # Closest approach of the infinite line to the halo center, and the
++        # intersection with the sphere r = rmax.
++        los_center = distance * np.cos(separation)
++        discriminant = rmax**2 - impact**2
++
++        if discriminant <= 0 * unit**2:
++            return 0 * integral_unit
++
++        root = np.sqrt(discriminant)
++        los_min = max(0 * unit, los_center - root)
++        los_max = los_center + root
++
++        if los_max <= 0 * unit:
++            return 0 * integral_unit
++
++        if np.isclose(impact.to_value(unit), 0, atol=1e-12 * rmax.value):
++            # The line of sight goes through the halo center. Integrate
++            # directly in l, using enough samples to resolve the density.
++            n = max(2, int(2 * ndecade))
++            los = np.linspace(los_min.value, los_max.value, n)
++            radius = np.abs(los * unit - los_center)
++            values = self.profile(radius) ** exponent
++            return np.trapezoid(values, los) * unit
++
++        # Substitute l = los_center + impact * sinh(t), so that
++        # r = impact * cosh(t) and dl = r dt. The closest approach is then
++        # at t = 0, which avoids evaluating the singularity at r = impact.
++        t_min = np.arcsinh(((los_min - los_center) / impact).to_value(""))
++        t_max = np.arcsinh(((los_max - los_center) / impact).to_value(""))
++
++        radius_at_min = impact * np.cosh(t_min)
++        radius_at_max = impact * np.cosh(t_max)
++
++        if los_min < los_center < los_max:
++            # The interval crosses the closest approach. Count the radial
++            # decades on both sides of it.
++            log_span = np.log10((radius_at_min / impact).to_value(""))
++            log_span += np.log10((radius_at_max / impact).to_value(""))
++        else:
++            radius_min = min(radius_at_min, radius_at_max)
++            radius_max = max(radius_at_min, radius_at_max)
++            log_span = np.log10((radius_max / radius_min).to_value(""))
++
++        n = max(2, int(log_span * ndecade))
++        t = np.linspace(t_min, t_max, n)
++
++        radius = impact * np.cosh(t)
++        values = self.profile(radius) ** exponent * radius
++
++        return np.trapezoid(values, t)
+ 
+     def _integrate_central_pixel(self, ndecade, rtol, max_subdivision):
+         """Adaptively average the line-of-sight integral over the central pixel."""
+@@ -191,27 +255,23 @@ class JFactory:
+         .. math::
+             r_\perp = D \sin\theta.
+ 
+-        The integration is split into two regions:
+-
+-        1. :math:`D < r_{\max}`: the observer is inside the integration radius.
+-        Directions with :math:`\theta < \pi / 2` cross the inner radial interval
+-        twice, while directions with :math:`\theta \geq \pi / 2` contain only
+-        the outward branch.
+-
+-        2. :math:`D \geq r_{\max}`: the observer is outside the integration radius.
+-        The line of sight contributes only when it points toward the halo and
+-        intersects the integration sphere, i.e. when :math:`\theta < \pi / 2`
+-        and :math:`r_\perp < r_{\max}`.
+-
+-        Each radial branch is evaluated using
++        The intersection of the line of sight with the sphere
++        :math:`r = r_{\max}` is found from
+ 
+         .. math::
+-            \mathrm dl =
+-            \frac{r}{\sqrt{r^2-r_\perp^2}}\,\mathrm dr.
+-
+-        The apparent singularity at :math:`r = r_\perp` is integrable. To avoid
+-        evaluating it directly, each radial branch is integrated with the
+-        substitution :math:`r = r_\perp\cosh t`.
++            l_\pm = D\cos\theta \pm
++            \sqrt{r_{\max}^2 - r_\perp^2}.
++
++        The physical forward line of sight is then described by the single
++        interval :math:`[\max(0, l_-), l_+]`, independently of whether the
++        observer is inside or outside the halo. The interval is empty when the
++        discriminant is negative or when :math:`l_+ \leq 0`.
++
++        The integral is evaluated with the substitution
++        :math:`l = D\cos\theta + r_\perp\sinh t`, so that
++        :math:`r = r_\perp\cosh t` and :math:`\mathrm dl = r\,\mathrm dt`.
++        This avoids evaluating the integrable singularity at the closest
++        approach, :math:`r = r_\perp`, directly.
+         """
+         if not np.isfinite(central_pixel_rtol) or central_pixel_rtol <= 0:
+             raise ValueError("central_pixel_rtol must be a finite positive number.")

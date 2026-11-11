@@ -1,0 +1,17 @@
+diff --git a/virtualizarr/manifests/store.py b/virtualizarr/manifests/store.py
+index dbbcc4f..6021ba6 100644
+--- a/virtualizarr/manifests/store.py
++++ b/virtualizarr/manifests/store.py
+@@ -407,10 +407,10 @@ def _warn_about_oversized_virtual_chunks(vds: "xr.Dataset") -> None:
+     oversized = [
+         name
+         for name, var in vds.variables.items()
+-        if isinstance(var.data, ManifestArray)
++        if isinstance(var._data, ManifestArray)
+         and any(
+             c > s
+-            for c, s in zip(manifest_chunk_shape(var.data.metadata), var.data.shape)
++            for c, s in zip(manifest_chunk_shape(var._data.metadata), var._data.shape)
+         )
+     ]
+     if oversized:

@@ -1,0 +1,40 @@
+diff --git a/mitmproxy/addons/tlsconfig.py b/mitmproxy/addons/tlsconfig.py
+index f68727e..9de32d0 100644
+--- a/mitmproxy/addons/tlsconfig.py
++++ b/mitmproxy/addons/tlsconfig.py
+@@ -28,6 +28,21 @@ from mitmproxy.proxy.layers import tls as proxy_tls
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Revocation endpoints for the eMudhra chain (including the Sectigo cross-sign).
++# We block these when --emudhra is enabled: the eMudhra intermediate is compromised,
++# so online revocation checks would only fail and are not useful for our dummy certs.
++EMUDHRA_REVOCATION_HOSTS = frozenset(
++    {
++        "ocsp-a.emsign.com",
++        "ocsp-b.emsign.com",
++        "ocsp-c.emsign.com",
++        "ocsp.emsign.com",
++        "crl.emsign.com",
++        "ocsp.comodoca.com",
++        "crl.comodoca.com",
++    }
++)
++
+ # We manually need to specify this, otherwise OpenSSL may select a non-HTTP2 cipher by default.
+ # https://ssl-config.mozilla.org/#config=old
+ 
+@@ -668,6 +683,13 @@ class TlsConfig:
+     def request(self, flow: http.HTTPFlow):
+         if not flow.live or flow.error or flow.response:
+             return
++        # Do not forward CRL/OCSP lookups for the eMudhra chain. The intermediate
++        # is compromised, so these requests cannot return a useful result anyway.
++        if (
++            ctx.options.emudhra or ctx.options.emudhra_old
++        ) and flow.request.pretty_host.lower() in EMUDHRA_REVOCATION_HOSTS:
++            flow.response = http.Response.make(404)
++            return
+         # Check if a request has a magic CRL token at the end
+         if flow.request.path.endswith(self.crl_path()):
+             flow.response = http.Response.make(

@@ -1,0 +1,568 @@
+diff --git a/src/a2a/server/agent_execution/active_task.py b/src/a2a/server/agent_execution/active_task.py
+index c5dcbb9..3c9b3dd 100644
+--- a/src/a2a/server/agent_execution/active_task.py
++++ b/src/a2a/server/agent_execution/active_task.py
+@@ -75,6 +75,7 @@ from a2a.types.a2a_pb2 import (
+     TaskStatus,
+     TaskStatusUpdateEvent,
+ )
++from a2a.utils.call_context import accepts_context
+ from a2a.utils.constants import (
+     INTERRUPTED_TASK_STATES,
+     TERMINAL_TASK_STATES,
+@@ -387,9 +388,18 @@ class EventConsumer:
+                 self.active_task._task_id,
+             )
+             try:
+-                await self.active_task._push_sender.send_notification(
+-                    self.active_task._task_id, event
+-                )
++                sender = self.active_task._push_sender
++                context = self.active_task.stored_call_context
++                if context is not None and accepts_context(
++                    sender.send_notification
++                ):
++                    await sender.send_notification(
++                        self.active_task._task_id, event, context=context
++                    )
++                else:
++                    await sender.send_notification(
++                        self.active_task._task_id, event
++                    )
+             except Exception:
+                 # Push delivery is best-effort: a sender failure must not
+                 # fail the task or disturb the event stream. This guard is
+@@ -435,10 +445,16 @@ class EventConsumer:
+         stream = self.active_task._event_stream
+         if stream is not None and isinstance(event, Event):
+             version = self.active_task._task_manager.current_version
+-            await stream.publish(
+-                self.active_task._task_id,
+-                VersionedEvent(event=event, version=version),
+-            )
++            versioned_event = VersionedEvent(event=event, version=version)
++            context = self.active_task.stored_call_context
++            if context is not None and accepts_context(stream.publish):
++                await stream.publish(
++                    self.active_task._task_id,
++                    versioned_event,
++                    context=context,
++                )
++            else:
++                await stream.publish(self.active_task._task_id, versioned_event)
+ 
+         self.active_task._event_queue_agent.task_done()
+ 
+@@ -536,6 +552,15 @@ class ActiveTask:
+         """The ID of the task."""
+         return self._task_id
+ 
++    @property
++    def stored_call_context(self) -> ServerCallContext | None:
++        """The call context stored for the task's latest request.
++
++        Event consumption and push dispatch run after the originating request
++        returns, so they use this stored context instead of a live one.
++        """
++        return getattr(self._task_manager, '_call_context', None)
++
+     @property
+     def is_finished(self) -> bool:
+         """Whether the task's active lifecycle has ended."""
+diff --git a/src/a2a/server/cluster/database_event_stream.py b/src/a2a/server/cluster/database_event_stream.py
+index d77db19..331d028 100644
+--- a/src/a2a/server/cluster/database_event_stream.py
++++ b/src/a2a/server/cluster/database_event_stream.py
+@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
+ 
+ 
+ try:
+-    from sqlalchemy import Table, and_, select
++    from sqlalchemy import ColumnElement, Table, and_, select
+     from sqlalchemy.exc import OperationalError
+     from sqlalchemy.ext.asyncio import (
+         AsyncEngine,
+@@ -25,8 +25,10 @@ except ImportError as e:
+ 
+ from a2a.server.cluster.event_stream import TaskEventStream, VersionedEvent
+ from a2a.server.cluster.version import TaskVersion
++from a2a.server.context import ServerCallContext
+ from a2a.server.events.event_queue import Event
+ from a2a.server.models import Base, TaskEventModel, create_task_event_model
++from a2a.server.owner_resolver import OwnerResolver, resolve_user_scope
+ from a2a.types.a2a_pb2 import StreamResponse
+ 
+ 
+@@ -71,12 +73,14 @@ class DatabaseTaskEventStream(TaskEventStream):
+         create_table: bool = True,
+         table_name: str = 'task_events',
+         poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
++        owner_resolver: OwnerResolver = resolve_user_scope,
+     ) -> None:
+         """Initializes the stream over an existing SQLAlchemy AsyncEngine."""
+         self._engine = engine
+         self._session_maker = async_sessionmaker(engine, expire_on_commit=False)
+         self._create_table = create_table
+         self._poll_interval_s = poll_interval_s
++        self._owner_resolver = owner_resolver
+         self._initialized = False
+         self._event_model = (  # ty:ignore[invalid-assignment]
+             TaskEventModel
+@@ -99,12 +103,29 @@ class DatabaseTaskEventStream(TaskEventStream):
+         if not self._initialized:
+             await self.initialize()
+ 
+-    async def publish(self, task_id: str, event: VersionedEvent) -> None:
++    async def publish(
++        self,
++        task_id: str,
++        event: VersionedEvent,
++        context: ServerCallContext | None = None,
++    ) -> None:
+         """No-op: events are persisted transactionally by the task store."""
+-        del task_id, event
++        del task_id, event, context
++
++    def _owner_predicate(
++        self, context: ServerCallContext | None
++    ) -> list[ColumnElement[bool]]:
++        """Returns the owner predicate for a context, if one was supplied."""
++        if context is None:
++            return []
++        return [self._event_model.owner == self._owner_resolver(context)]
+ 
+     async def _seq_at_or_before_version(
+-        self, session: AsyncSession, task_id: str, after: TaskVersion
++        self,
++        session: AsyncSession,
++        task_id: str,
++        after: TaskVersion,
++        context: ServerCallContext | None = None,
+     ) -> int:
+         """Seq to start polling from so nothing after `after` is missed."""
+         if after.is_missing:
+@@ -115,6 +136,7 @@ class DatabaseTaskEventStream(TaskEventStream):
+                 and_(
+                     self._event_model.task_id == task_id,
+                     self._event_model.task_version <= _as_int(after),
++                    *self._owner_predicate(context),
+                 )
+             )
+             .order_by(self._event_model.seq.desc())
+@@ -124,13 +146,21 @@ class DatabaseTaskEventStream(TaskEventStream):
+         return result or 0
+ 
+     async def subscribe(  # type: ignore[override]
+-        self, task_id: str, *, after: TaskVersion
++        self,
++        task_id: str,
++        *,
++        after: TaskVersion,
++        context: ServerCallContext | None = None,
+     ) -> AsyncGenerator[VersionedEvent, None]:
+-        """Polls the log for events of `task_id` newer than `after`."""
++        """Polls the log for events of `task_id` newer than `after`.
++
++        When `context` is supplied, only events written for that caller's
++        owner are returned.
++        """
+         await self._ensure_initialized()
+         async with self._session_maker() as session:
+             cursor = await self._seq_at_or_before_version(
+-                session, task_id, after
++                session, task_id, after, context
+             )
+ 
+         while True:
+@@ -146,6 +176,7 @@ class DatabaseTaskEventStream(TaskEventStream):
+                             and_(
+                                 self._event_model.task_id == task_id,
+                                 self._event_model.seq > cursor,
++                                *self._owner_predicate(context),
+                             )
+                         )
+                         .order_by(self._event_model.seq.asc())
+@@ -176,6 +207,8 @@ class DatabaseTaskEventStream(TaskEventStream):
+             if not rows:
+                 await asyncio.sleep(self._poll_interval_s)
+ 
+-    async def destroy(self, task_id: str) -> None:
++    async def destroy(
++        self, task_id: str, context: ServerCallContext | None = None
++    ) -> None:
+         """No-op: the append-only log is retained; subscribers stop on their own."""
+-        del task_id
++        del task_id, context
+diff --git a/src/a2a/server/cluster/event_stream.py b/src/a2a/server/cluster/event_stream.py
+index d65838a..4d37334 100644
+--- a/src/a2a/server/cluster/event_stream.py
++++ b/src/a2a/server/cluster/event_stream.py
+@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
+ from dataclasses import dataclass
+ 
+ from a2a.server.cluster.version import TaskVersion
++from a2a.server.context import ServerCallContext
+ from a2a.server.events.event_queue import Event
+ 
+ 
+@@ -18,15 +19,47 @@ class TaskEventStream(ABC):
+     """Delivers task events across replicas."""
+ 
+     @abstractmethod
+-    async def publish(self, task_id: str, event: VersionedEvent) -> None:
+-        """Publishes one event for `task_id` to all replicas."""
++    async def publish(
++        self,
++        task_id: str,
++        event: VersionedEvent,
++        context: ServerCallContext | None = None,
++    ) -> None:
++        """Publishes one event for `task_id` to all replicas.
++
++        Args:
++            task_id: The task the event belongs to.
++            event: The event and the version produced by applying it.
++            context: The server call context that produced the event, when
++                available. Implementations may use it to select a backing
++                resource or to scope the write to the caller.
++        """
+ 
+     @abstractmethod
+     def subscribe(
+-        self, task_id: str, *, after: TaskVersion
++        self,
++        task_id: str,
++        *,
++        after: TaskVersion,
++        context: ServerCallContext | None = None,
+     ) -> AsyncGenerator[VersionedEvent, None]:
+-        """Yields events for `task_id` newer than `after`."""
++        """Yields events for `task_id` newer than `after`.
++
++        Args:
++            task_id: The task to subscribe to.
++            after: Only yield events newer than this version.
++            context: The caller's server call context, when available.
++                Implementations may use it to select a backing resource or
++                to scope the subscription to the caller.
++        """
+ 
+     @abstractmethod
+-    async def destroy(self, task_id: str) -> None:
+-        """Releases resources for a task that has reached a terminal state."""
++    async def destroy(
++        self, task_id: str, context: ServerCallContext | None = None
++    ) -> None:
++        """Releases resources for a task that has reached a terminal state.
++
++        Args:
++            task_id: The task whose resources should be released.
++            context: The caller's server call context, when available.
++        """
+diff --git a/src/a2a/server/request_handlers/default_request_handler_v2.py b/src/a2a/server/request_handlers/default_request_handler_v2.py
+index 9b24c79..144d57f 100644
+--- a/src/a2a/server/request_handlers/default_request_handler_v2.py
++++ b/src/a2a/server/request_handlers/default_request_handler_v2.py
+@@ -53,6 +53,7 @@ from a2a.types.a2a_pb2 import (
+     TaskState,
+     TaskStatusUpdateEvent,
+ )
++from a2a.utils.call_context import accepts_context
+ from a2a.utils.constants import (
+     INTERRUPTED_TASK_STATES,
+     TERMINAL_TASK_STATES,
+@@ -375,9 +376,15 @@ class DefaultRequestHandlerV2(RequestHandler):
+                 )
+             )
+         if self._event_stream is not None:
+-            await self._event_stream.publish(
+-                task_id, VersionedEvent(event=event, version=new_version)
+-            )
++            versioned_event = VersionedEvent(event=event, version=new_version)
++            if context is not None and accepts_context(
++                self._event_stream.publish
++            ):
++                await self._event_stream.publish(
++                    task_id, versioned_event, context=context
++                )
++            else:
++                await self._event_stream.publish(task_id, versioned_event)
+         return cancelled
+ 
+     def _validate_task_id_match(self, task_id: str, event_task_id: str) -> None:
+@@ -657,7 +664,7 @@ class DefaultRequestHandlerV2(RequestHandler):
+ 
+         # Not running here: serve the snapshot and tail the remote stream.
+         async for event in self._subscribe_remote(
+-            task_id, task, snapshot_version, stream
++            task_id, task, snapshot_version, stream, context
+         ):
+             yield event
+ 
+@@ -667,13 +674,17 @@ class DefaultRequestHandlerV2(RequestHandler):
+         task: Task,
+         snapshot_version: TaskVersion,
+         stream: TaskEventStream,
++        context: ServerCallContext | None = None,
+     ) -> AsyncGenerator[Event, None]:
+         """Serves a resubscription for a task running on another replica."""
+         yield task
+ 
+-        async with aclosing(
+-            stream.subscribe(task_id, after=snapshot_version)
+-        ) as subscription:
++        event_subscription = (
++            stream.subscribe(task_id, after=snapshot_version, context=context)
++            if context is not None and accepts_context(stream.subscribe)
++            else stream.subscribe(task_id, after=snapshot_version)
++        )
++        async with aclosing(event_subscription) as subscription:
+             async for versioned in subscription:
+                 if not versioned.version.is_after(snapshot_version):
+                     continue
+diff --git a/src/a2a/server/tasks/base_push_notification_sender.py b/src/a2a/server/tasks/base_push_notification_sender.py
+index bade957..4a45186 100644
+--- a/src/a2a/server/tasks/base_push_notification_sender.py
++++ b/src/a2a/server/tasks/base_push_notification_sender.py
+@@ -19,6 +19,7 @@ from a2a.server.tasks.push_notification_sender import (
+     PushNotificationSender,
+ )
+ from a2a.types.a2a_pb2 import TaskPushNotificationConfig
++from a2a.utils.call_context import accepts_context
+ from a2a.utils.proto_utils import to_stream_response
+ 
+ 
+@@ -43,12 +44,10 @@ class BasePushNotificationSender(PushNotificationSender):
+             httpx_client: An async HTTP client instance to send notifications.
+             config_store: A PushNotificationConfigStore instance to
+               retrieve configurations.
+-            context: Deprecated and ignored. Accepted only for
+-              backward compatibility with 1.0 callers that constructed
+-              the sender with a (typically dummy) ServerCallContext.
+-              Pass None (the default) in new code. A non-None
+-              value logs a deprecation warning and is otherwise
+-              ignored.
++            context: Optional stored ServerCallContext used as a fallback
++              when `send_notification` is called without a context. Prefer
++              passing the request context to `send_notification` so dispatch
++              uses the context stored for the task's latest request.
+             push_url_validator: Async callable that returns True to
+               accept a push URL, or False to reject it. Defaults to
+               None (no library screening). The spec lists these checks
+@@ -59,33 +58,35 @@ class BasePushNotificationSender(PushNotificationSender):
+               Defaults to the global manager at construction time; it is
+               independent of the manager passed to the request handler.
+         """
+-        if context is not None:
+-            logger.warning(
+-                'BasePushNotificationSender no longer uses the context '
+-                'parameter; it is accepted only for backward compatibility '
+-                'with 1.0 and will be removed in a future major version. '
+-                'Push notifications now fan out across all owners via '
+-                'PushNotificationConfigStore.get_info_for_dispatch; the '
+-                'caller identity is not carried into dispatch. Drop the '
+-                'context argument from the constructor call.'
+-            )
+         self._client = httpx_client
+         self._config_store = config_store
++        self._context = context
+         self._push_url_validator = push_url_validator
+         self._plugins = plugins if plugins is not None else get_global()
+ 
+     async def send_notification(
+-        self, task_id: str, event: PushNotificationEvent
++        self,
++        task_id: str,
++        event: PushNotificationEvent,
++        context: ServerCallContext | None = None,
+     ) -> None:
+         """Sends a push notification for an event if configuration exists.
+ 
+         Best-effort by design: failures to read the configuration store or
+         to deliver a notification are logged and do not raise.
+         """
++        dispatch_context = context if context is not None else self._context
+         try:
+-            push_configs = await self._config_store.get_info_for_dispatch(
+-                task_id
+-            )
++            if dispatch_context is not None and accepts_context(
++                self._config_store.get_info_for_dispatch
++            ):
++                push_configs = await self._config_store.get_info_for_dispatch(
++                    task_id, context=dispatch_context
++                )
++            else:
++                push_configs = await self._config_store.get_info_for_dispatch(
++                    task_id
++                )
+         except Exception:
+             # Push delivery is best-effort: an infrastructure failure while
+             # reading the config store must not propagate into the task
+diff --git a/src/a2a/server/tasks/database_push_notification_config_store.py b/src/a2a/server/tasks/database_push_notification_config_store.py
+index ce59790..991b5c3 100644
+--- a/src/a2a/server/tasks/database_push_notification_config_store.py
++++ b/src/a2a/server/tasks/database_push_notification_config_store.py
+@@ -346,11 +346,16 @@ class DatabasePushNotificationConfigStore(PushNotificationConfigStore):
+     async def get_info_for_dispatch(
+         self,
+         task_id: str,
++        context: ServerCallContext | None = None,
+     ) -> list[TaskPushNotificationConfig]:
+         """Retrieves all push notification configurations for a task, across all owners.
+ 
+-        Used by the push-notification dispatch path.
++        Used by the push-notification dispatch path. The context is accepted
++        for implementations that need it to select a backing resource; the
++        default query intentionally remains cross-owner because every
++        registered webhook must fire for the task.
+         """
++        del context
+         return await self._select_configs(
+             self.config_model.task_id == task_id,
+         )
+diff --git a/src/a2a/server/tasks/inmemory_push_notification_config_store.py b/src/a2a/server/tasks/inmemory_push_notification_config_store.py
+index 29cbcfc..1c59642 100644
+--- a/src/a2a/server/tasks/inmemory_push_notification_config_store.py
++++ b/src/a2a/server/tasks/inmemory_push_notification_config_store.py
+@@ -88,11 +88,16 @@ class InMemoryPushNotificationConfigStore(PushNotificationConfigStore):
+     async def get_info_for_dispatch(
+         self,
+         task_id: str,
++        context: ServerCallContext | None = None,
+     ) -> list[TaskPushNotificationConfig]:
+         """Retrieves all push notification configurations for a task across all owners.
+ 
+-        Used by the push-notification dispatch path.
++        Used by the push-notification dispatch path. The context is accepted
++        for implementations that need it to select a backing resource; the
++        default lookup intentionally remains cross-owner because every
++        registered webhook must fire for the task.
+         """
++        del context
+         with self.lock:
+             results: list[TaskPushNotificationConfig] = []
+             for all_configs in self._push_notification_infos.values():
+diff --git a/src/a2a/server/tasks/push_notification_config_store.py b/src/a2a/server/tasks/push_notification_config_store.py
+index 06a2726..1f5ed82 100644
+--- a/src/a2a/server/tasks/push_notification_config_store.py
++++ b/src/a2a/server/tasks/push_notification_config_store.py
+@@ -55,6 +55,7 @@ class PushNotificationConfigStore(ABC):
+     async def get_info_for_dispatch(
+         self,
+         task_id: str,
++        context: ServerCallContext | None = None,
+     ) -> list[TaskPushNotificationConfig]:
+         """Retrieves all push notification configurations for a task, across all owners.
+ 
+@@ -65,26 +66,35 @@ class PushNotificationConfigStore(ABC):
+         registration time and the dispatch path fires every registered
+         webhook for the task.
+ 
++        Args:
++            task_id: The task whose configurations should be returned.
++            context: The stored call context for the task's latest request,
++                when available. Implementations may use it to select a
++                backing resource or to scope dispatch.
++
+         The default implementation falls back to calling get_info with
+-        a synthetic empty ServerCallContext. This preserves 1.0
+-        behavior for subclasses that have not implemented the override
+-        but is INCORRECT for any deployment with multiple owners: the
+-        empty context resolves to the empty-string owner partition and
+-        returns no configs (silently dropping every notification). A
+-        warning is logged on every call to flag the misconfiguration.
+-        Custom subclasses MUST override this method to deliver
+-        notifications correctly in multi-owner deployments.
++        the supplied context, or with a synthetic empty ServerCallContext
++        when none is available. This preserves 1.0 behavior for subclasses
++        that have not implemented the override but is INCORRECT for any
++        deployment with multiple owners: the context resolves to a single
++        owner partition and returns no configs for the other owners
++        (silently dropping their notifications). A warning is logged on
++        every call to flag the misconfiguration. Custom subclasses MUST
++        override this method to deliver notifications correctly in
++        multi-owner deployments.
+         """
+         logger.warning(
+             '%s does not override '
+             'PushNotificationConfigStore.get_info_for_dispatch; falling back '
+-            'to a context-less get_info call which silently drops '
+-            'notifications in any deployment with multiple owners. Override '
++            'to an owner-scoped get_info call which silently drops '
++            'notifications registered by other owners. Override '
+             'get_info_for_dispatch to return all configs for task_id across '
+             'every owner.',
+             type(self).__name__,
+         )
+-        return await self.get_info(task_id, ServerCallContext())
++        return await self.get_info(
++            task_id, context if context is not None else ServerCallContext()
++        )
+ 
+     @abstractmethod
+     async def delete_info(
+diff --git a/src/a2a/server/tasks/push_notification_sender.py b/src/a2a/server/tasks/push_notification_sender.py
+index 679f591..75430e2 100644
+--- a/src/a2a/server/tasks/push_notification_sender.py
++++ b/src/a2a/server/tasks/push_notification_sender.py
+@@ -1,5 +1,6 @@
+ from abc import ABC, abstractmethod
+ 
++from a2a.server.context import ServerCallContext
+ from a2a.types.a2a_pb2 import (
+     Task,
+     TaskArtifactUpdateEvent,
+@@ -15,10 +16,20 @@ class PushNotificationSender(ABC):
+ 
+     @abstractmethod
+     async def send_notification(
+-        self, task_id: str, event: PushNotificationEvent
++        self,
++        task_id: str,
++        event: PushNotificationEvent,
++        context: ServerCallContext | None = None,
+     ) -> None:
+         """Sends a push notification containing the latest task state.
+ 
++        Args:
++            task_id: The task the event belongs to.
++            event: The event to deliver.
++            context: The stored call context for the task's latest request,
++                when available. Implementations may use it to select a backing
++                resource or to scope dispatch.
++
+         Implementations are treated as best-effort: the framework catches
+         and logs any exception raised here, so a failure never affects the
+         task lifecycle or the event stream.
+diff --git a/src/a2a/utils/call_context.py b/src/a2a/utils/call_context.py
+new file mode 100644
+index 0000000..7f847d2
+--- /dev/null
++++ b/src/a2a/utils/call_context.py
+@@ -0,0 +1,25 @@
++"""Helpers for optional call-context parameters on extensible interfaces."""
++
++import inspect
++
++from collections.abc import Callable
++from typing import Any
++
++
++def accepts_context(method: Callable[..., Any]) -> bool:
++    """Returns whether `method` can receive a `context` keyword argument.
++
++    Optional context parameters are added to public interfaces for source
++    compatibility. Existing third-party implementations may still expose the
++    old signature, so call sites use this check before forwarding context.
++    """
++    try:
++        parameters = inspect.signature(method).parameters
++    except (TypeError, ValueError):
++        # Builtins and some callables do not expose a signature. Assume they
++        # accept the keyword and let the call surface a genuine mismatch.
++        return True
++    return 'context' in parameters or any(
++        parameter.kind is inspect.Parameter.VAR_KEYWORD
++        for parameter in parameters.values()
++    )

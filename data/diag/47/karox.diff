@@ -1,0 +1,261 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 800ebc7..2a1fb04 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,11 +6,12 @@ Notable changes to CrossTL for people who install and use it, newest first. Inte
+ 
+ ### Breaking Changes
+ 
+-- Metal and Slang output refuse a constant-buffer member placed by `@offset` or `@align` where their declaration would put it elsewhere, with `MemberPlacementError` (`project.translate.member-placement-unsupported`); they used to drop the placement (Metal) or write it as a semantic (Slang). HLSL and GLSL output refuse such placements in the struct of a uniform `ConstantBuffer<T>` that declares no layout, and GLSL output refuses a push-constant offset its `layout(offset)` cannot write. HLSL input refuses a `[[vk::push_constant]]` struct whose layout under DXC's default rule CrossGL cannot record (a nested struct DXC lays out differently from std430, a struct that needs offsets and is laid out elsewhere too, or 16-bit members) with `HLSLPushConstantLayoutError`.
++- Metal and Slang output refuse a constant-buffer member placed by `@offset` or `@align` where their declaration would put it elsewhere, with `MemberPlacementError` (`project.translate.member-placement-unsupported`); they used to drop the placement (Metal) or write it as a semantic (Slang). HLSL and GLSL output refuse such placements in the struct of a uniform `ConstantBuffer<T>` that declares no layout, and GLSL output refuses a push-constant offset its `layout(offset)` cannot write. HLSL and GLSL output also refuse a placement on a member of a struct a constant block holds, which neither `packoffset` nor `layout(offset)` reaches. HLSL input refuses a `[[vk::push_constant]]` struct whose layout under DXC's default rule CrossGL cannot record (a nested struct DXC lays out differently from std430, a struct that needs offsets and is laid out elsewhere too, or 16-bit members) with `HLSLPushConstantLayoutError`.
+ - A helper's `buffer T name[]` storage-buffer parameter takes the structured-buffer form of the buffer its caller passes: HLSL and Slang output pass the resource, GLSL and SPIR-V output specialize the helper for each buffer it receives, and Metal output passes a device pointer. HLSL, GLSL, SPIR-V and Slang output had printed an unsized array parameter, which DXC, glslang, spirv-val and slangc reject. Such a parameter with an std140 layout, or with elements other than 32-bit scalars, two- or four-component vectors of one, or structs of them without std430 padding, is now refused with `StorageBufferParameterUnsupportedError` for every target, since those elements have no single stride across std430, HLSL structured buffers and MSL.
+ 
+ ### Fixed
+ 
++- SPIR-V output places a member of a struct a constant buffer holds at the byte its `@offset` or `@align` names. The nested struct's layout clone carries the member decorations, so `struct Inner { float s; vec4 v @offset(32); }; cbuffer C { Inner n; };` reads `v` at byte 32 instead of the byte 16 std140 gives it. HLSL and GLSL output, whose `packoffset` and `layout(offset)` reach only the block's own members, now refuse such a placement with `MemberPlacementError` instead of reading other bytes than the host wrote.
+ - SPIR-V output stores an array value into a Function variable before it passes it to a by-value array parameter. A program-scope `const float W[4]`, a row of a `const` array of arrays, a member of a `const` struct, an array constructor and an array returned by a call had been passed as the value itself, and `spirv-val` rejected the `OpFunctionCall` because its parameter is a Function pointer.
+ - Slang output places `@location(N)` stage varyings. A fragment colour output takes `SV_Target<N>` and any other varying `TEXCOORD<N>`, where the bare `: location` had lost `N` and was no valid pixel shader output for DXC. Varyings also carry `[[vk::location(N)]]`, since slangc numbers SPIR-V locations in declaration order: GLSL inputs and outputs with gaps or out of order, and an HLSL `SV_Target2` after `SV_Target0`, reached other locations.
+ - Slang output gathers a vertex or fragment stage's `in` and `out` variables, and module-scope `out` declarations, into the entry point's input and output structures, as Metal and HLSL output do: `in vec2 uv @ TEXCOORD0;` becomes `float2 uv : TEXCOORD0;` in `FragmentInput`, read as `input.uv`, and `out vec4 color @ gl_FragColor;` becomes `float4 color : SV_Target;` in the returned `FragmentOutput`. An entry point that also declares its own interface parameters is refused with `StageInterfaceUnsupportedError`, as it is for Metal and HLSL. Slang output used to declare these variables as globals, which Slang reads as uniform shader parameters: an input read a constant buffer instead of the interpolated value (slangc warns `E39019`), and a write to an output failed with `E30011: left of '=' is not an l-value` (#3655).
+diff --git a/crosstl/translator/codegen/spirv_placed_blocks.py b/crosstl/translator/codegen/spirv_placed_blocks.py
+index 46828f5..db8853c 100644
+--- a/crosstl/translator/codegen/spirv_placed_blocks.py
++++ b/crosstl/translator/codegen/spirv_placed_blocks.py
+@@ -12,7 +12,9 @@ std140. CrossGL keeps the layout of a constant block in ``@ buffer_layout(...)``
+   ``float3 a; float b;`` puts ``b`` at byte 16, and a ``@ packed`` ``float3`` takes 12 bytes at 4-byte alignment
+   (see :mod:`glsl_block_layout`);
+ * a ``packoffset(c1.y)`` or ``layout(offset = 20)`` qualifier places a member at the byte it names (see
+-  :mod:`buffer_member_layout`), and ``layout(align = 32)`` raises its alignment.
++  :mod:`buffer_member_layout`), and ``layout(align = 32)`` raises its alignment. A member of a struct the block
++  holds keeps its placement too: the nested struct is a layout clone of its own, decorated with the offsets of its
++  members.
+ 
+ :func:`placed_uniform_block` computes those placements with the shared planners (:mod:`glsl_block_layout`,
+ :mod:`hlsl_buffer_layout`). A block whose bytes match std140 everywhere keeps the generator's std140 path;
+@@ -29,7 +31,7 @@ from __future__ import annotations
+ from dataclasses import dataclass, replace
+ from types import SimpleNamespace
+ 
+-from ..ast import ArrayNode, ArrayType, FunctionNode
++from ..ast import ArrayNode, ArrayType, FunctionNode, NamedType
+ from .array_utils import evaluate_literal_int_expression
+ from .buffer_member_layout import (
+     member_explicit_offset,
+@@ -125,12 +127,35 @@ def _member_tuple(member):
+     )
+ 
+ 
+-def _has_explicit_placement(members):
+-    return any(
+-        member_explicit_offset(member) is not None
+-        or member_explicit_alignment(member) is not None
+-        for member in members
+-    )
++def _struct_member_name(member_type):
++    """The struct a member's type names, looking through arrays, or ``None``."""
++    while isinstance(member_type, ArrayType):
++        member_type = member_type.element_type
++    if isinstance(member_type, NamedType) and not member_type.generic_args:
++        return member_type.name
++    return None
++
++
++def _has_explicit_placement(codegen, members, stack=()):
++    """Whether ``members``, or a struct nested inside one of them, carries an explicit offset or alignment.
++
++    A block whose own members declare no placement may still hold a struct whose members do: SPIR-V decorates the
++    nested struct type, so such a block takes the placed path too.
++    """
++    structs = getattr(codegen, "struct_declarations", None) or {}
++    for member in members:
++        if (
++            member_explicit_offset(member) is not None
++            or member_explicit_alignment(member) is not None
++        ):
++            return True
++        name = _struct_member_name(_member_tuple(member)[1])
++        if name is not None and name not in stack and name in structs:
++            if _has_explicit_placement(
++                codegen, _block_members(structs[name]), (*stack, name)
++            ):
++                return True
++    return False
+ 
+ 
+ def _block_layout_type(codegen, node, members):
+@@ -140,10 +165,7 @@ def _block_layout_type(codegen, node, members):
+         struct = structs.get(name)
+         if struct is None:
+             return None
+-        return [
+-            (*_member_tuple(member)[:3], None, *_member_tuple(member)[4:])
+-            for member in _block_members(struct)
+-        ]
++        return [_member_tuple(member) for member in _block_members(struct)]
+ 
+     constants = codegen.active_literal_int_constants()
+     return crossgl_struct_layout_type(
+@@ -293,10 +315,28 @@ def _check_validator_extents(
+             _check_validator_extents(nested.struct_name, nested_placements, layout)
+ 
+ 
++def _without_placements(layout_type):
++    """``layout_type`` with the explicit offsets and alignments of its members, at any depth, dropped."""
++    kind = layout_type.kind
++    if kind == "array":
++        return replace(layout_type, element=_without_placements(layout_type.element))
++    if kind != "struct":
++        return layout_type
++    return replace(
++        layout_type,
++        members=tuple(
++            (name, _without_placements(member))
++            for name, member in layout_type.members
++        ),
++        offsets=(),
++        alignments=(),
++    )
++
++
+ def _plain_signature(layout_type, layout):
+     """The placements of a block's members under ``layout`` without explicit offsets or alignments, or ``None``
+     when ``layout`` has no layout for one (a packed vector)."""
+-    plain_type = replace(layout_type, offsets=(), alignments=())
++    plain_type = _without_placements(layout_type)
+     try:
+         plain = _root_placements(plain_type, layout)
+         return _placements_signature(plain, layout)
+@@ -316,7 +356,7 @@ def placed_uniform_block(
+     """
+     layout = declared_buffer_layout(getattr(node, "attributes", None)) or plain_layout
+     members = _block_members(node)
+-    explicit = _has_explicit_placement(members)
++    explicit = _has_explicit_placement(codegen, members)
+     if layout not in ALWAYS_PLACED_LAYOUTS and not explicit:
+         return None
+     if layout not in PLACED_LAYOUTS:
+diff --git a/crosstl/translator/semantics/member_placements.py b/crosstl/translator/semantics/member_placements.py
+index 8f4d083..460c39b 100644
+--- a/crosstl/translator/semantics/member_placements.py
++++ b/crosstl/translator/semantics/member_placements.py
+@@ -15,6 +15,11 @@ plans. Two generators wrote other declarations silently:
+ For those targets :func:`refuse_unplaced_member_offsets` raises :class:`MemberPlacementError` when the declared
+ placements put any scalar somewhere other than the target's own rules would. Placements that agree with them, such
+ as the offsets an importer writes for every member, are accepted.
++
++The HLSL and GLSL generators place the members of the block itself (``packoffset``, ``layout(offset)``, and the
++register loaders a declared layout reaches), but neither reaches the members of a struct the block holds: a nested
++struct is declared in the target's own rules, so a placement on one of its members is refused as well. SPIR-V output
++decorates the nested struct type itself (:mod:`..codegen.spirv_placed_blocks`) and needs no refusal.
+ """
+ 
+ from __future__ import annotations
+@@ -35,7 +40,7 @@ from ..codegen.glsl_block_layout import (
+     declared_buffer_layout,
+     member_explicit_alignment,
+ )
+-from ..codegen.glsl_hlsl_cbuffer import layout_scalar_offsets
++from ..codegen.glsl_hlsl_cbuffer import layout_member_placements, layout_scalar_offsets
+ from ..codegen.hlsl_buffer_layout import HLSL_CBUFFER_LAYOUT, HlslLayoutError
+ from ..codegen.push_constant_blocks import is_push_constant
+ from ..diagnostics import CODE_PREFIX, TranslationDiagnostic
+@@ -116,7 +121,30 @@ class _Structs:
+             )
+         except HlslLayoutError:
+             return True
+-        return placed != plain
++        return placed != plain or self.alignments_move(name, members, layout)
++
++    def alignments_move(self, name, members, layout):
++        """Whether an ``@ align`` qualifier of ``members`` puts one where ``layout`` alone would not.
++
++        HLSL constant packing has no ``align`` qualifier, so its planner ignores one; the member sits where the
++        packing rules put it, which the qualifier's alignment must agree with.
++        """
++        if not any(member_explicit_alignment(member) for member in members or []):
++            return False
++        try:
++            placements = layout_member_placements(
++                self.layout_type(name, members, False), layout
++            )
++        except HlslLayoutError:
++            return True
++        offsets = {placement.name: placement.offset for placement in placements}
++        return any(
++            alignment and offsets.get(getattr(member, "name", None), 0) % alignment
++            for member, alignment in (
++                (member, member_explicit_alignment(member))
++                for member in members or []
++            )
++        )
+ 
+ 
+ def _struct_name(type_node):
+@@ -148,6 +176,58 @@ def _element_struct(structs, variable):
+     return structs.structs.get(name) if name is not None else None
+ 
+ 
++def _nested_placement(structs, members, layout, stack=()):
++    """The struct nested inside ``members`` whose placements ``layout`` alone would not reproduce, or ``None``."""
++    for member in members or []:
++        if not isinstance(member, A.StructMemberNode):
++            continue
++        inner = _struct_name(member.member_type)
++        if inner is None or inner in stack or inner not in structs.structs:
++            continue
++        nested = structs.structs[inner]
++        if structs.holds_placements(nested.members) and structs.placements_move(
++            inner, nested.members, layout
++        ):
++            return inner
++        found = _nested_placement(structs, nested.members, layout, (*stack, inner))
++        if found is not None:
++            return found
++    return None
++
++
++def _check_nested_blocks(structs, program, target, layout, push_constants):
++    """Refuse a constant block holding a struct whose own members carry placements the target's declaration of
++    that struct does not reach: ``packoffset`` and ``layout(offset)`` place the block's own members only, so the
++    members of a nested struct sit at the target's natural offsets instead of the declared ones."""
++    for block in iter_structs(program):
++        if not getattr(block, "is_cbuffer", False):
++            continue
++        if is_push_constant(block) and not push_constants:
++            continue
++        nested = _nested_placement(structs, block.members, layout)
++        if nested is not None:
++            _refuse(
++                target,
++                block.name,
++                f"member struct '{nested}' carries @offset or @align members, which {target} output does not place "
++                "inside a struct the block holds",
++            )
++    for variable in _variables(program):
++        if not is_push_constant(variable):
++            continue
++        struct = _element_struct(structs, variable)
++        if struct is None:
++            continue
++        nested = _nested_placement(structs, struct.members, layout)
++        if nested is not None:
++            _refuse(
++                target,
++                variable.name,
++                f"member struct '{nested}' carries @offset or @align members, which {target} output does not place "
++                "inside a struct the block holds",
++            )
++
++
+ def _check_blocks(structs, program, target, layouts, planned, push_constants):
+     """Refuse a constant block, other than a push-constant block unless ``push_constants``, that declares no layout
+     in ``planned`` and whose placements move a scalar under one of ``layouts``."""
+@@ -285,6 +365,9 @@ def refuse_unplaced_member_offsets(program, target) -> None:
+         # and reads a buffer that declares a layout from registers at the planned offsets
+         # (hlsl_glsl_block_registers).
+         hlsl = TARGET_LAYOUTS[target] == HLSL_CBUFFER_LAYOUT
++        # Neither ``packoffset`` nor ``layout(offset)`` reaches the members of a struct the block holds, and a
++        # push-constant struct writes its offsets as ``[[vk::offset]]`` on its own members alone.
++        _check_nested_blocks(structs, program, target, TARGET_LAYOUTS[target], True)
+         _check_elements(
+             structs,
+             program,

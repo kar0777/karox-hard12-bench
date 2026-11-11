@@ -1,0 +1,173 @@
+diff --git a/src/pyqasm/decomposer.py b/src/pyqasm/decomposer.py
+index d65dd17..e6b4acf 100644
+--- a/src/pyqasm/decomposer.py
++++ b/src/pyqasm/decomposer.py
+@@ -17,12 +17,13 @@ Definition of the Decomposer class
+ """
+ 
+ import math
++from copy import deepcopy
+ 
+ import openqasm3.ast as qasm3_ast
+ from openqasm3.ast import BranchingStatement, QuantumGate
+ 
+ from pyqasm.exceptions import RebaseError
+-from pyqasm.maps.decomposition_rules import DECOMPOSITION_RULES, AppliedQubit
++from pyqasm.maps.decomposition_rules import DECOMPOSITION_RULES, PARAM_FROM_STATEMENT
+ from pyqasm.maps.gates import BASIS_GATE_MAP, fresh_qubits
+ 
+ 
+@@ -46,12 +47,11 @@ class Decomposer:
+         decomposition_rules = DECOMPOSITION_RULES[target_basis_set]
+         target_basis_gate_list = BASIS_GATE_MAP[target_basis_set]
+ 
+-        processed_gates_list = []
+-
+         if gate_name in target_basis_gate_list:
+             # Keep the gate as is
+-            processed_gates_list = [statement]
+-        elif gate_name in decomposition_rules:
++            return [statement]
++
++        if gate_name in decomposition_rules:
+             # Decompose the gates
+             processed_gates_list = cls._get_decomposed_gates(
+                 decomposition_rules, statement, gate_name
+@@ -63,7 +63,15 @@ class Decomposer:
+             error = f"Gate '{gate_name}' is not supported in the '{target_basis_set} set'."
+             raise RebaseError(error)
+ 
+-        return processed_gates_list
++        # A rule may itself use gates that need further decomposition for the
++        # selected basis (for example, the Clifford+T Toffoli rule contains H
++        # gates that become rotations in the rotational-CX basis).
++        decomposed_gates = []
++        for gate in processed_gates_list:
++            decomposed_gates.extend(
++                cls.process_gate_statement(gate.name.name, gate, target_basis_set)
++            )
++        return decomposed_gates
+ 
+     @classmethod
+     def _get_clifford_t_rotation(cls, statement, gate_name):
+@@ -169,7 +177,12 @@ class Decomposer:
+ 
+         for rule in decomposition_rules[gate]:
+             qubits = cls._get_qubits_for_gate(statement.qubits, rule)
+-            arguments = [qasm3_ast.FloatLiteral(value=rule["param"])] if "param" in rule else []
++            arguments = []
++            if "param" in rule:
++                if rule["param"] == PARAM_FROM_STATEMENT:
++                    arguments = deepcopy(statement.arguments)
++                else:
++                    arguments = [qasm3_ast.FloatLiteral(value=rule["param"])]
+ 
+             new_gate = qasm3_ast.QuantumGate(
+                 modifiers=[],
+@@ -196,14 +209,15 @@ class Decomposer:
+             list: The ordered qubits to be used for the gate operation.
+         """
+         if "controll_bit" in rule:
+-            if rule["controll_bit"] == AppliedQubit.QUBIT1:
+-                qubits = [qubits[0], qubits[1]]
+-            else:
+-                qubits = [qubits[1], qubits[0]]
++            control_index = rule["controll_bit"].value
++            if "target_bit" in rule:
++                target_index = rule["target_bit"].value
++                return [qubits[control_index], qubits[target_index]]
++            if len(qubits) == 2:
++                return [qubits[control_index], qubits[1 - control_index]]
++            return [qubits[control_index]]
++
++        if "target_bit" in rule:
++            return [qubits[rule["target_bit"].value]]
+ 
+-        elif "target_bit" in rule:
+-            if rule["target_bit"] == AppliedQubit.QUBIT1:
+-                qubits = [qubits[0]]
+-            else:
+-                qubits = [qubits[1]]
+         return qubits
+diff --git a/src/pyqasm/maps/decomposition_rules.py b/src/pyqasm/maps/decomposition_rules.py
+index 3a17c96..c6f8d3a 100644
+--- a/src/pyqasm/maps/decomposition_rules.py
++++ b/src/pyqasm/maps/decomposition_rules.py
+@@ -25,8 +25,14 @@ from pyqasm.maps.expressions import CONSTANTS_MAP
+ class AppliedQubit(Enum):
+     """Enum to represent the qubits that are involved in the decomposition of a gate."""
+ 
+-    QUBIT1 = 0  # Control qubit
+-    QUBIT2 = 1  # Target qubit
++    QUBIT1 = 0  # First qubit / control qubit
++    QUBIT2 = 1  # Second qubit / target qubit
++    QUBIT3 = 2  # Third qubit, used by three-qubit gate decompositions
++
++
++# Marker used when a decomposition rule should reuse the parameters of the
++# gate being decomposed instead of applying a fixed value.
++PARAM_FROM_STATEMENT = "statement_argument"
+ 
+ 
+ # Decomposition rules for the gates in the basis sets.
+@@ -35,14 +41,38 @@ class AppliedQubit(Enum):
+ # Each dictionary in the list represents a step in the decomposition of the gate.
+ # Each step is defined by a dictionary with the following keys:
+ #     - gate: The name of the gate to be applied.
+-#     - param: The parameter of the gate.
++#     - param: The parameter of the gate. The special value PARAM_FROM_STATEMENT
++#              copies the parameters of the gate being decomposed.
+ #     - target_bit: The target qubit of the gate.
+-#                   This key is only used for decomposition of gates that operate on two qubits.
+ #     - controll_bit: The control qubit of the gate.
+-#                   This key is only used for gates that operate on two qubits.
++#     Both qubit keys can select any of the source gate's qubits, including the
++#     third qubit of a three-qubit gate.
+ #
++# Standard Toffoli decomposition into H, T, Tdg, and CX gates. It is written
++# in terms of gates that are either in the Clifford+T basis directly or are
++# decomposed further when targeting the rotational-CX basis.
++_CCX_DECOMPOSITION = [
++    {"gate": "h", "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "cx", "controll_bit": AppliedQubit.QUBIT2, "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "tdg", "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "cx", "controll_bit": AppliedQubit.QUBIT1, "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "t", "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "cx", "controll_bit": AppliedQubit.QUBIT2, "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "tdg", "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "cx", "controll_bit": AppliedQubit.QUBIT1, "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "t", "target_bit": AppliedQubit.QUBIT2},
++    {"gate": "t", "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "h", "target_bit": AppliedQubit.QUBIT3},
++    {"gate": "cx", "controll_bit": AppliedQubit.QUBIT1, "target_bit": AppliedQubit.QUBIT2},
++    {"gate": "t", "target_bit": AppliedQubit.QUBIT1},
++    {"gate": "tdg", "target_bit": AppliedQubit.QUBIT2},
++    {"gate": "cx", "controll_bit": AppliedQubit.QUBIT1, "target_bit": AppliedQubit.QUBIT2},
++]
++
+ DECOMPOSITION_RULES = {
+     BasisSet.ROTATIONAL_CX: {
++        "id": [],
++        "p": [{"gate": "rz", "param": PARAM_FROM_STATEMENT}],
+         "x": [{"gate": "rx", "param": CONSTANTS_MAP["pi"]}],
+         "y": [{"gate": "ry", "param": CONSTANTS_MAP["pi"]}],
+         "z": [{"gate": "rz", "param": CONSTANTS_MAP["pi"]}],
+@@ -67,8 +97,10 @@ DECOMPOSITION_RULES = {
+             {"gate": "cx", "controll_bit": AppliedQubit.QUBIT2, "target_bit": AppliedQubit.QUBIT1},
+             {"gate": "cx", "controll_bit": AppliedQubit.QUBIT1, "target_bit": AppliedQubit.QUBIT2},
+         ],
++        "ccx": _CCX_DECOMPOSITION,
+     },
+     BasisSet.CLIFFORD_T: {
++        "id": [],
+         "x": [{"gate": "h"}, {"gate": "s"}, {"gate": "s"}, {"gate": "h"}],
+         "y": [
+             {"gate": "s"},
+@@ -98,6 +130,7 @@ DECOMPOSITION_RULES = {
+             {"gate": "cx", "controll_bit": AppliedQubit.QUBIT2, "target_bit": AppliedQubit.QUBIT1},
+             {"gate": "cx", "controll_bit": AppliedQubit.QUBIT1, "target_bit": AppliedQubit.QUBIT2},
+         ],
++        "ccx": _CCX_DECOMPOSITION,
+     },
+ }
+ 

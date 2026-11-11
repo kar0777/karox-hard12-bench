@@ -1,0 +1,84 @@
+diff --git a/uxarray/grid/utils.py b/uxarray/grid/utils.py
+index ce50d98..ea07016 100644
+--- a/uxarray/grid/utils.py
++++ b/uxarray/grid/utils.py
+@@ -3,21 +3,15 @@ import xarray as xr
+ from numba import njit, prange
+ 
+ from uxarray.constants import EDGE_NODE_SORT_THRESHOLD, INT_DTYPE, INT_FILL_VALUE
+-from uxarray.utils.numba_math import (
+-    _numba_add3,
+-    _numba_cross3,
+-    _numba_dot3,
+-    _numba_mul3_scalar,
+-    _numba_norm3,
+-    _numba_sub3,
+-)
++from uxarray.utils.computing import _sum_of_squares_c, acc_sqrt_re, diff_of_products
++from uxarray.utils.numba_math import _numba_cross3, _numba_dot3, _numba_norm3
+ from uxarray.utils.parallel import parallel_njit
+ 
+ 
+ @njit(cache=True)
+ def _small_angle_of_2_vectors(u, v):
+     """
+-    Compute the smallest angle between two vectors using the new _angle_of_2_vectors.
++    Compute the smallest angle between two vectors using Kahan's formula.
+ 
+     Parameters
+     ----------
+@@ -30,13 +24,48 @@ def _small_angle_of_2_vectors(u, v):
+     -------
+     float
+         The smallest angle between `u` and `v` in radians.
++
++    Notes
++    -----
++    Kahan's formula
++
++    .. math:: \\theta = 2 \\operatorname{atan2}(|v|u| - u|v||, |v|u| + u|v||)
++
++    stays accurate for nearly parallel vectors because it never forms the
++    ill-conditioned ``1 - cos(theta)``. Each component of ``v|u| - u|v|`` is a
++    difference of two nearly equal products, which cancels catastrophically
++    when evaluated naively (relative error ``eps / theta``), so it is computed
++    with the compensated :func:`~uxarray.utils.computing.diff_of_products` and
++    its norm with the compensated sum of squares. The sum side involves no
++    cancellation and is evaluated directly.
++
++    References
++    ----------
++    Kahan, W. (2000). Miscalculating Area and Angles of a Needle-like Triangle.
++    https://people.eecs.berkeley.edu/~wkahan/Triangle.pdf
+     """
+-    u_times_v_norm = _numba_mul3_scalar(v, _numba_norm3(u))
+-    v_times_u_norm = _numba_mul3_scalar(u, _numba_norm3(v))
+-    vec_minus = _numba_sub3(u_times_v_norm, v_times_u_norm)
+-    vec_sum = _numba_add3(u_times_v_norm, v_times_u_norm)
+-    angle_u_v_rad = 2 * np.arctan2(_numba_norm3(vec_minus), _numba_norm3(vec_sum))
+-    return angle_u_v_rad
++    u_norm = _numba_norm3(u)
++    v_norm = _numba_norm3(v)
++
++    # v|u| - u|v|: catastrophic cancellation for nearly parallel vectors
++    minus_x_hi, minus_x_lo = diff_of_products(v[0], u_norm, u[0], v_norm)
++    minus_y_hi, minus_y_lo = diff_of_products(v[1], u_norm, u[1], v_norm)
++    minus_z_hi, minus_z_lo = diff_of_products(v[2], u_norm, u[2], v_norm)
++    # v|u| + u|v|: no cancellation, so the plain sum is accurate
++    sum_x = v[0] * u_norm + u[0] * v_norm
++    sum_y = v[1] * u_norm + u[1] * v_norm
++    sum_z = v[2] * u_norm + u[2] * v_norm
++
++    minus_sq_hi, minus_sq_lo = _sum_of_squares_c(
++        (minus_x_hi, minus_y_hi, minus_z_hi), (minus_x_lo, minus_y_lo, minus_z_lo)
++    )
++    if minus_sq_hi == 0.0:
++        # identical (or zero) vectors: the angle is exactly zero, and the 0/0
++        # correction of acc_sqrt_re would otherwise yield nan
++        return 0.0
++    minus_norm, _ = acc_sqrt_re(minus_sq_hi, minus_sq_lo)
++
++    return 2 * np.arctan2(minus_norm, (sum_x**2 + sum_y**2 + sum_z**2) ** 0.5)
+ 
+ 
+ @njit(cache=True)

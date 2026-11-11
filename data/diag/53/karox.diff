@@ -1,0 +1,316 @@
+diff --git a/MUTATION.md b/MUTATION.md
+index 0d536af..a08e20f 100644
+--- a/MUTATION.md
++++ b/MUTATION.md
+@@ -42,7 +42,7 @@ mutmut activates a mutant **in-process** via an import trampoline. Tests that sp
+ 
+ Consequence for the baseline: code exercised *only* via subprocess (much of `cli.py`) will score low **because mutations are invisible there, not because its tests are weak** — mark those `# pragma: no mutate` with that reason, don't chase them as gaps.
+ 
+-The copy holds `vera/`, `tests/`, the config files and `also_copy`, and mutmut's stats pass runs the whole selection there with `-x`, so one selected test that cannot pass in the copy stops every run. `also_copy` carries the repository files the selected tests read (`examples/`, `README.md`, `docs/`, `spec/`, `scripts/`, `AGENTS.md`), and `pytest_add_cli_args` deselects the three tests known to read the modules' source text, which in the copy is mutmut's generated file with every mutant inlined: two parse `vera/verifier.py`, and the collision gate in `test_checker_errors.py` runs `scripts/check_diagnostic_fields.py` over `vera/`, where each mutant repeats its function's error codes.
++The copy holds `vera/`, `tests/`, the config files and `also_copy`, and mutmut's stats pass runs the whole selection there with `-x`, so one selected test that cannot pass in the copy stops every run. `also_copy` carries the repository files the selected tests read (`examples/`, `README.md`, `docs/`, `spec/`, `scripts/`, `AGENTS.md`), and `pytest_add_cli_args` deselects the three tests known to read the modules' source text, which in the copy is mutmut's generated file with every mutant inlined: two parse `vera/verifier.py`, and the collision gate in `test_checker_errors.py` runs `scripts/check_diagnostic_fields.py` over `vera/`, where each mutant repeats its function's error codes.  The nightly sweep deselects the rest of them itself, per bin (`scripts/mutate_sweep.py`'s `reading_tests`), so a bin that mutates many such modules never spends a stats pass a test on learning they are no oracle there.
+ 
+ The oracle's boundary inside the copy: a test that starts a Python or `vera` process is skipped there (`tests/mutation_oracle.py`, a pytest plugin `[tool.mutmut]` loads). Each mutated module in the copy holds a copy of a mutated function for each of its mutants, so a mutated `TypeEnv._register_builtins` makes `vera/environment.py` 33.6 MB where it is 49 KB, and a process compiles every such module afresh (`vera check` of a one-line program: 2.3 s against 0.4 s) while recording nothing for the stats pass, so the test cannot be a mutant's oracle. The skipped test is out of the oracle entirely: mutmut's stats pass records the functions a test reached at the test's teardown, whatever its outcome, and runs a mutant against the tests recorded for its function, so the plugin takes a skipped test out of that record. A function that only such tests reach therefore has every mutant `no tests`, even when a test called it before starting its process, and is reported not observable in process; the lane lists every test skipped this way.
+ 
+@@ -81,7 +81,7 @@ The whole of `vera/` is measured by the nightly sweep: `.github/workflows/mutati
+ 
+ - The inventory: every function mutmut mutates, with a hash of its code (its `ast`, docstrings set aside). A function whose code changed since its mutants were decided starts afresh, one gone from the tree is dropped, and a new mutmut version starts every function afresh, since mutmut numbers a function's mutants by its own rules.
+ - The plan: the undecided work in the tree's order, in one bin a job, each bin one job's budget (4.5 h) less the passes before its first mutant (48 minutes), at an estimated cost a mutant: 25 s in the soundness core and 2.5 s elsewhere, times a factor each night measures. A function whose mutant count is known splits across bins by its mutants' numbers; one whose count is not yet known, because mutmut has not yet generated it, goes whole into one bin, its cost estimated from its size. A bin's first piece is taken whatever it costs, so a job with work open decides something.
+-- The run: a scratch tree of the head, narrowed to the bin's functions as the diff lane narrows a diff's (§ CI: the diff lane). mutmut's copy holds the whole tree, and the oracle is every `tests/test_*.py` file the lane's rule admits (235 of 266 today), the subprocess, Node and tooling families left out. A test that starts a Python or `vera` process is no oracle in the copy (§ Oracle), and one that fails there with no mutant active is dropped from the run and reported; an exception the engine's own code raises stops the slice instead, dropping no further test, and its record and the night's report name the exception and the engine's frame (§ CI: the diff lane, The oracle). A function's count is taken only from a listing `mutmut results` printed, and a count of zero only from a run that finished: mutmut lists nothing for a function it had not yet generated when the budget stopped it. On the measuring machine, beside another mutmut run, the stats pass over that oracle took 491 s and 588 s, and a sample bin of five functions spent 1,142 s before its first mutant, 546 s of it in the clean run of its covering tests; a runner is about 2.5 times slower.
++- The run: a scratch tree of the head, narrowed to the bin's functions as the diff lane narrows a diff's (§ CI: the diff lane). mutmut's copy holds the whole tree, and the oracle is every `tests/test_*.py` file the lane's rule admits (235 of 266 today), the subprocess, Node and tooling families left out. A test that starts a Python or `vera` process is no oracle in the copy (§ Oracle), and one that fails there with no mutant active is dropped from the run and reported; the sweep drops as many of them as its oracle holds, where a diff changes a handful of test files. The tests that read a mutated module's own text are no mutant's oracle either — in the copy that text is mutmut's generated file — and the sweep deselects them per bin, the test and not the module, so a module's other tests stay the bin's oracle: a bin that met more of them than the lane's drop bound stopped the slice before it decided a mutant, and the night decided nothing. A test the lane cannot drop (the same one twice, or the budget gone) stops the slice, its record naming that test and the night's report naming it in the night's problems. An exception the engine's own code raises stops the slice instead, dropping no further test, and its record and the night's report name the exception and the engine's frame (§ CI: the diff lane, The oracle). A function's count is taken only from a listing `mutmut results` printed, and a count of zero only from a run that finished: mutmut lists nothing for a function it had not yet generated when the budget stopped it. On the measuring machine, beside another mutmut run, the stats pass over that oracle took 491 s and 588 s, and a sample bin of five functions spent 1,142 s before its first mutant, 546 s of it in the clean run of its covering tests; a runner is about 2.5 times slower.
+ - The `stitch` job folds the slices' records into the state and keeps it as the `mutation-sweep-state` artifact for 90 days.
+ 
+ **The cycle.** When every function's every mutant is decided, the cycle closes: its per-module totals and its survivors are kept in the state, and that night's artifact holds `mutation-summary.csv`, `mutation.json` and `mutation-survivors.csv`. Two measurements bound a cycle's length. The first samples (whole-file chunks outside the core at about 2 worker-seconds a mutant, the core at 0.05 to 0.2 mutants a second at four workers) project 160 to 250 runner hours of mutants: 43 to 68 job-nights at 3.7 h of mutants a job, so 6 to 10 nights at seven jobs. A bin of five functions measured under the sweep's own oracle cost 71 worker-seconds a mutant: 65 of its 114 mutants hung their first covering test until `tests/pipeline.py`'s 120 s stage budget ended it, each killed but only after 120 s. If that is the norm, a cycle is about 52 nights. The first week's nights decide between them: each night's measured cost moves the plan's factor halfway to it, and `JOBS` is the constant to raise (to `MAX_JOBS`, 12) if the cost holds. The follow-up that shortens a hung mutant four times over is a sweep-only stage budget, an environment knob in `tests/pipeline.py`, to be sized once the first nights report. A function that changes during a cycle is measured again within it, so a closed cycle holds every function's code as the sweep last found it.
+diff --git a/changelog.d/+mutation-sweep-copy-drops.fixed.md b/changelog.d/+mutation-sweep-copy-drops.fixed.md
+new file mode 100644
+index 0000000..c2dcc1e
+--- /dev/null
++++ b/changelog.d/+mutation-sweep-copy-drops.fixed.md
+@@ -0,0 +1 @@
++- **The nightly sweep leaves out of a bin's selection the tests that read a mutated module's own text, which is what stopped it short** (`scripts/mutate_sweep.py`, `scripts/mutate_diff.py`).  A test that asserts over a `vera/**/*.py` module's text passes in the live tree and fails inside mutmut's copy, where the file it reads is mutmut's generated one with every mutant inlined: no mutant of that module can reach it, and the lane can only learn that by dropping the test and running the stats pass again.  A pull request's handful of changed test files affords that, and the diff lane drops them (`MAX_COPY_DROPS`, five); the sweep's oracle is every test file its rule admits, so one bin mutates many such modules, and a bin that met more than five of them exhausted the bound and stopped the slice before it decided a mutant — the night decided nothing and the tracking issue was filed.  The sweep now deselects them up front, the test and not the module, so a module's other tests stay the bin's oracle: `reading_tests` reads the admitted test files and names each test that reads the text of a file the bin mutates, by a file read (`read_text`/`read_bytes`/`open` of a path or `__file__` naming the module) or by `inspect.getsource` of a module the test names, and a marker that only names a module (`pytest.mark.matrix(decides=[…])`) is not a read and stays.  `run_dropping` also takes its drop bound as an argument — the sweep passes its oracle's size — and a test the lane still cannot drop (the same one twice, or the budget gone) heads the record's `engine_tail`, so the night's problems name it: `slice 3: stopped by the engine: tests/test_x.py::test_y fails in the copy with no mutant active`.
+diff --git a/scripts/mutate_diff.py b/scripts/mutate_diff.py
+index 261f4b8..92a809b 100644
+--- a/scripts/mutate_diff.py
++++ b/scripts/mutate_diff.py
+@@ -952,12 +952,15 @@ def run_engine(cmd: Sequence[str], *, cwd: Path, budget_s: float, log_path: Path
+ 
+ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
+                  config_for: Callable[[Sequence[str]], str], budget_s: float, workdir: Path,
+-                 env: Mapping[str, str]) -> tuple[EngineRun, Path, list[str]]:
++                 env: Mapping[str, str],
++                 max_drops: int = MAX_COPY_DROPS) -> tuple[EngineRun, Path, list[str]]:
+     """Run the engine in ``tree`` within ``budget_s``; when a test stops its
+     stats pass or its clean run (it fails inside mutmut's copy with no mutant
+     active, so it is no oracle there), drop it and run again in what is left
+-    of the budget, up to ``MAX_COPY_DROPS`` tests.  When the engine's own code
+-    raised instead (:func:`engine_failure`), no test is at fault: the run
++    of the budget, up to ``max_drops`` tests (``MAX_COPY_DROPS``: a diff changes
++    a handful of test files, where the sweep's oracle is every test file its
++    rule admits, so the sweep passes its own bound).  When the engine's own
++    code raised instead (:func:`engine_failure`), no test is at fault: the run
+     stops there, drops no further test, and the returned run's ``error``
+     names the exception and the engine's frame.  ``config_for(dropped)`` is the
+     ``pyproject.toml`` text for a run without the tests dropped so far.
+@@ -976,7 +979,7 @@ def run_dropping(cmd: Sequence[str], *, tree: Path, pyproject: Path,
+         text = log.read_text(encoding="utf-8", errors="replace")
+         run.error = engine_failure(text)
+         failing = None if run.error is not None else copy_failure(text)
+-        if (failing is None or failing in dropped or len(dropped) >= MAX_COPY_DROPS
++        if (failing is None or failing in dropped or len(dropped) >= max_drops
+                 or remaining <= 0):
+             return run, log, dropped
+         dropped.append(failing)
+diff --git a/scripts/mutate_sweep.py b/scripts/mutate_sweep.py
+index f9f7914..2106ae7 100644
+--- a/scripts/mutate_sweep.py
++++ b/scripts/mutate_sweep.py
+@@ -581,6 +581,91 @@ def engine_targets(picks: Sequence[Pick]) -> list[str]:
+     return targets
+ 
+ 
++#: The calls that read a file's text, and the ones that read a module's own
++#: text off the imported object.
++_TEXT_READS = frozenset({"read_text", "read_bytes", "readlines", "open"})
++_SOURCE_READS = frozenset({"getsource", "getsourcefile", "getsourcelines", "getsourcefiles"})
++
++
++def _named_by(files: Sequence[str]) -> list[str]:
++    """How a test names one of ``files``: its file name, and the module it is
++    imported as (``vera/smt.py`` -> ``smt.py``, ``vera.smt``)."""
++    names: list[str] = []
++    for path in files:
++        names.append(Path(path).name)
++        names.append(path.removesuffix(".py").replace("/", "."))
++    return names
++
++
++def _call_name(node: ast.Call) -> str:
++    func = node.func
++    return func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
++
++
++def _reads_source(node: ast.AST, source: str, names: Sequence[str],
++                 holder: ast.AST | None = None) -> bool:
++    """Whether ``node`` reads the text of a module ``names`` names: a file
++    read whose path names it, or an ``inspect.getsource`` of it in a test that
++    names it."""
++    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
++        holder = node
++    if isinstance(node, ast.Call):
++        name = _call_name(node)
++        if name in _TEXT_READS:
++            try:
++                text = ast.unparse(node)
++            except (AttributeError, ValueError):  # a node unparse cannot render
++                text = ""
++            if any(n in text for n in names):
++                return True
++        elif name in _SOURCE_READS:
++            # The test names the module it inspects, and it may do so in an
++            # import above it rather than in the function that reads.
++            for text in (ast.get_source_segment(source, holder) if holder is not None else None,
++                         source):
++                if text is not None and any(n in text for n in names):
++                    return True
++    return any(_reads_source(child, source, names, holder) for child in ast.iter_child_nodes(node))
++
++
++def reads_a_modules_source(source: str, files: Sequence[str]) -> bool:
++    """Whether a test module reading ``source`` reads the text of one of
++    ``files`` (``vera/...py``), a bin's mutated files.
++
++    Inside mutmut's copy that text is the engine's generated file with every
++    mutant inlined, so the test fails there with no mutant active and is no
++    mutant's oracle: ``scripts/mutate_diff.py`` drops it after the run that
++    stops on it, which a diff's handful of changed test files affords, and
++    the sweep — whose oracle is every test file its rule admits, so that one
++    bin may mutate many such modules — leaves it out of the bin's selection
++    up front instead, where dropping it would cost a stats pass a test."""
++    return bool(reading_tests(source, "", files))
++
++
++def _tests_of(tree: ast.Module) -> list[tuple[str, ast.AST]]:
++    """Every test of the module with the id pytest gives it: a module-level
++    ``test_*`` function, or a ``test_*`` method of a top-level class."""
++    found: list[tuple[str, ast.AST]] = []
++    for stmt in tree.body:
++        if isinstance(stmt, ast.FunctionDef) and stmt.name.startswith("test_"):
++            found.append((stmt.name, stmt))
++        elif isinstance(stmt, ast.ClassDef):
++            found += [(f"{stmt.name}::{m.name}", m) for m in stmt.body
++                      if isinstance(m, ast.FunctionDef) and m.name.startswith("test_")]
++    return found
++
++
++def reading_tests(source: str, path: str, files: Sequence[str]) -> list[str]:
++    """The ids of the tests in ``source`` (``path``) that read the text of one
++    of ``files``: the deselects a bin's run needs, one test at a time, so the
++    module's other tests stay its oracle."""
++    names = _named_by(files)
++    if not any(name in source for name in names):
++        return []
++    return [f"{path}::{name}" for name, node in _tests_of(ast.parse(source))
++            if _reads_source(node, source, names)]
++
++
+ # ---------------------------------------------------------------------------
+ # A night's slice: running the plan's bin
+ # ---------------------------------------------------------------------------
+@@ -743,6 +828,14 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
+         (tree / path).write_text(md.narrow(source, keep), encoding="utf-8")
+     tests = sorted(p.relative_to(tree).as_posix() for p in (tree / "tests").glob("test_*.py"))
+     selection, _ = md.oracle_tests(tests, tree)
++    # A test that reads a mutated module's own text is no mutant's oracle in
++    # the copy, where that text is the engine's generated file: it would stop
++    # the stats pass and be dropped, at the price of a rerun a test, and a bin
++    # that mutates more such modules than the lane's drop bound stops the
++    # slice before it decides a mutant.  Deselect them up front instead, the
++    # test and not the module, so its other tests stay the bin's oracle.
++    sources = {path: (tree / path).read_text(encoding="utf-8") for path in selection}
++    reading = [test for path in selection for test in reading_tests(sources[path], path, files)]
+     record["selection"] = len(selection)
+     pyproject = tree / "pyproject.toml"
+     config = pyproject.read_text(encoding="utf-8")
+@@ -755,9 +848,10 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
+         run, log, dropped = md.run_dropping(
+             [*engine, "run", "--max-children", str(args.max_children), *engine_targets(picks)],
+             tree=tree, pyproject=pyproject, budget_s=args.budget, workdir=workdir, env=env,
++            max_drops=len(selection),
+             config_for=lambda dropped: md.rewrite_config(
+                 config, only_mutate=files, extra_tests=selection, also_copy=also_copy,
+-                extra_args=[f"--deselect={test}" for test in dropped]))
++                extra_args=[f"--deselect={test}" for test in (*reading, *dropped)]))
+     finally:
+         if beat is not None:
+             beat.stop()
+@@ -794,6 +888,16 @@ def run_slice(args: argparse.Namespace, *, repo: Path, workdir: Path, engine: li
+             stopped = stopped or "unmapped"
+             record["engine_tail"] = [str(exc)]
+     record["stopped"] = stopped
++    if stopped == "engine" and record["engine_error"] is None:
++        # A test that fails in the copy with no mutant active stops the run
++        # and is no oracle there, so the lane drops it and runs again; one it
++        # cannot drop (the same test twice, or the budget gone) stops the
++        # slice, and the record names it rather than leaving the stitch to say
++        # only that the engine stopped.
++        failing = md.copy_failure(text)
++        if failing is not None:
++            record["engine_tail"] = [f"{failing} fails in the copy with no mutant active",
++                                     *record["engine_tail"]]
+     if stopped not in (None, "budget") and not record["engine_tail"]:
+         record["engine_tail"] = md._tail(log)
+     record["elapsed_s"] = round(time.monotonic() - started, 1)
+@@ -991,10 +1095,15 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
+     for record in valid:
+         added += merge(state, record, problems, notes)
+         if record.get("stopped") not in (None, "budget"):
+-            # What stopped it: a lane's reason, or the exception the engine's
+-            # own code raised, when it raised one.
+-            why = ((record.get("engine_tail") or [None])[0] if record["stopped"] == "lane"
+-                   else record.get("engine_error") if record["stopped"] == "engine" else None)
++            # What stopped it: a lane's reason, the exception the engine's own
++            # code raised when it raised one, the test the lane could not drop,
++            # or the result mutmut listed for a function the night did not plan.
++            if record["stopped"] == "lane":
++                why = (record.get("engine_tail") or [None])[0]
++            elif record["stopped"] in ("engine", "unmapped"):
++                why = record.get("engine_error") or (record.get("engine_tail") or [None])[0]
++            else:
++                why = None
+             problems.append(f"slice {record['slice']}: stopped by the {record['stopped']}"
+                             + (f": {why}" if why else ""))
+     if not problems and added == 0 and any(r.get("planned") for r in valid):
+diff --git a/tests/test_mutation_oracle_roster.py b/tests/test_mutation_oracle_roster.py
+new file mode 100644
+index 0000000..20f1201
+--- /dev/null
++++ b/tests/test_mutation_oracle_roster.py
+@@ -0,0 +1,89 @@
++"""A test that reads a mutated module's own text is no mutant's oracle there.
++
++The class: a test that asserts over a `vera/**/*.py` module's text passes in
++the live tree and fails inside mutmut's copy, where the file it reads is
++mutmut's generated one with every mutant inlined.  It cannot kill a mutant of
++the module it reads, and the lane can only learn that by dropping it and
++starting the stats pass again — which a diff's handful of changed test files
++affords and the nightly sweep does not: its oracle is every test file its rule
++admits, so one bin may mutate many such modules, and a bin that met more of
++them than the lane's drop bound stopped the slice before it decided a mutant.
++
++`scripts/mutate_sweep.py`'s `reads_a_modules_source` decides which of a bin's
++admitted tests read the text of a file that bin mutates, and the slice leaves
++them out of its selection up front.  These pin the rule: a file read, an
++`inspect.getsource` of a module the test names, and the negative that matters
++most — a test that merely NAMES a module (a `pytest.mark.matrix(decides=[…])`
++marker, say) is still an oracle and must stay in the selection.
++"""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++
++
++def _sweep() -> object:
++    path = ROOT / "scripts" / "mutate_sweep.py"
++    spec = importlib.util.spec_from_file_location("mutate_sweep", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules["mutate_sweep"] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++sw = _sweep()
++
++
++class TestReadsAModulesSource:
++    def test_a_file_read_of_a_mutated_module_is_left_out(self) -> None:
++        source = "def test_x():\n    text = (ROOT / 'vera' / 'smt.py').read_text()\n"
++        assert sw.reads_a_modules_source(source, ["vera/smt.py"]) is True
++
++    def test_a_file_read_of_a_module_this_bin_does_not_mutate_is_no_reason_to_drop_it(self) -> None:
++        source = "def test_x():\n    text = (ROOT / 'vera' / 'smt.py').read_text()\n"
++        assert sw.reads_a_modules_source(source, ["vera/verifier.py"]) is False
++
++    def test_a_module_opened_by_its_dotted_name_is_left_out(self) -> None:
++        source = ("import vera.smt as smt\n\n\ndef test_x():\n"
++                  "    return open(vera.smt.__file__).read()\n")
++        assert sw.reads_a_modules_source(source, ["vera/smt.py"]) is True
++
++    def test_an_inspect_getsource_of_a_mutated_module_is_left_out(self) -> None:
++        source = ("import inspect\nimport vera.smt as smt_mod\n\n\n"
++                  "def test_x():\n    src_file = inspect.getsourcefile(smt_mod)\n")
++        assert sw.reads_a_modules_source(source, ["vera/smt.py"]) is True
++
++    def test_a_marker_that_only_names_a_mutated_module_stays_in_the_selection(self) -> None:
++        """A class instrument names the modules that decide its class and
++        reads none of them; it can still kill their mutants."""
++        source = ("import pytest\n\npytestmark = pytest.mark.matrix(\n"
++                  "    decides=['vera/wasm/context.py', 'vera/smt.py'])\n\n\n"
++                  "def test_x():\n    assert True\n")
++        assert sw.reads_a_modules_source(source, ["vera/wasm/context.py", "vera/smt.py"]) is False
++
++    def test_a_read_of_a_file_the_bin_does_not_mutate_stays(self) -> None:
++        source = ("def test_x():\n"
++                  "    text = (ROOT / 'vera' / 'README.md').read_text()\n"
++                  "    src = (ROOT / 'vera' / 'smt.py').read_text()\n")
++        assert sw.reads_a_modules_source(source, ["vera/verifier.py"]) is False
++        assert sw.reads_a_modules_source(source, ["vera/smt.py"]) is True
++
++    def test_the_reading_test_is_named_and_its_module_s_others_stay(self) -> None:
++        """The deselect is the test, not the module: a module whose other
++        tests exercise the compiler is still the bin's oracle."""
++        source = ("class TestReads:\n"
++                  "    def test_reads(self):\n"
++                  "        return (ROOT / 'vera' / 'smt.py').read_text()\n\n"
++                  "    def test_behaves(self):\n"
++                  "        assert verify('fn f() requires(true) ensures(true) { 1 }')\n\n"
++                  "def test_module_level():\n"
++                  "    return (ROOT / 'vera' / 'smt.py').read_text()\n")
++        assert sw.reading_tests(source, "tests/test_x.py", ["vera/smt.py"]) == [
++            "tests/test_x.py::TestReads::test_reads",
++            "tests/test_x.py::test_module_level",
++        ]

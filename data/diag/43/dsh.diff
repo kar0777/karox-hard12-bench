@@ -1,0 +1,343 @@
+diff --git a/changes/3143.bugfix.md b/changes/3143.bugfix.md
+new file mode 100644
+index 0000000..3500a5a
+--- /dev/null
++++ b/changes/3143.bugfix.md
+@@ -0,0 +1 @@
++Briefcase now reports an actionable error when `SSL_CERT_FILE`, `SSL_CERT_DIR`, or a proxy environment variable has an invalid value, instead of an opaque failure or a misleading network error.
+diff --git a/changes/3143.doc.md b/changes/3143.doc.md
+new file mode 100644
+index 0000000..663e0d4
+--- /dev/null
++++ b/changes/3143.doc.md
+@@ -0,0 +1 @@
++The SSL certificate and proxy environment variables honored by Briefcase are now documented.
+diff --git a/docs/en/reference/environment.md b/docs/en/reference/environment.md
+index 0c8522c..e3a2707 100644
+--- a/docs/en/reference/environment.md
++++ b/docs/en/reference/environment.md
+@@ -31,3 +31,16 @@ It is *highly* inadvisable to generate production apps while this environment va
+ Both macOS and Windows provide mechanisms for running x86_64 binaries on ARM64 hardware. These tools can make it very difficult to generate a packaged application, as it can be difficult to ensure a packaged application contains code matching the right architecture when the platform provides misleading answers about the current platform. As a result, Briefcase will raise an error if it detects that the version of Python that is being used doesn't match the underlying hardware architecture.
+ 
+ However, it is possible to disable this check by setting the `BRIEFCASE_ALLOW_EMULATION` environment variable. This will cause Briefcase to output a warning if it appears that Python is running in emulation mode, but it will allow Briefcase commands to run.
++
++### HTTP configuration
++
++Briefcase uses `httpx2` to perform HTTP requests. `httpx2` honors six environment variables, which can be used to configure the certificates and proxies used when downloading support packages and tools:
++
++- `SSL_CERT_FILE` - The path to a file containing trusted CA certificates. If set, this replaces the system certificate store.
++- `SSL_CERT_DIR` - The path to a directory containing trusted CA certificates. If set, this replaces the system certificate store.
++- `HTTP_PROXY` - The URL of the proxy to use for HTTP requests.
++- `HTTPS_PROXY` - The URL of the proxy to use for HTTPS requests.
++- `ALL_PROXY` - The URL of the proxy to use for all requests when a protocol-specific proxy isn't configured.
++- `NO_PROXY` - A comma-separated list of hostnames, domains, IP addresses, or CIDR ranges for which a proxy should not be used.
++
++For full details on how these variables are interpreted, including the supported proxy URL schemes and the format of `NO_PROXY`, see the [httpx2 environment variable documentation](https://pydantic.dev/docs/httpx2/api/environment_variables/).
+diff --git a/docs/spelling_wordlist b/docs/spelling_wordlist
+index 2222c33..a33e2f0 100644
+--- a/docs/spelling_wordlist
++++ b/docs/spelling_wordlist
+@@ -37,6 +37,7 @@ CFBundleTypeRole
+ Chaquopy
+ checkmarks
+ cibuildwheel
++CIDR
+ CLI
+ cmd
+ CMD
+@@ -88,6 +89,7 @@ gtk
+ helloworld
+ hoc
+ hostname
++hostnames
+ HTTPS
+ IANA
+ iCloud
+diff --git a/src/briefcase/exceptions.py b/src/briefcase/exceptions.py
+index 9bc17e0..9d36a05 100644
+--- a/src/briefcase/exceptions.py
++++ b/src/briefcase/exceptions.py
+@@ -120,6 +120,15 @@ class NetworkFailure(BriefcaseCommandError):
+         super().__init__(msg=f"Unable to {action}; {self.hint}")
+ 
+ 
++class InvalidEnvironmentError(NetworkFailure):
++    """An environment variable used to configure HTTP is invalid."""
++
++    def __init__(self, msg):
++        self.action = "configure the HTTP environment"
++        self.hint = msg
++        BriefcaseCommandError.__init__(self, msg=msg)
++
++
+ class MissingNetworkResourceError(BriefcaseCommandError):
+     def __init__(self, url):
+         self.url = url
+diff --git a/src/briefcase/integrations/file.py b/src/briefcase/integrations/file.py
+index 34a4ff4..caad85f 100644
+--- a/src/briefcase/integrations/file.py
++++ b/src/briefcase/integrations/file.py
+@@ -21,6 +21,7 @@ from briefcase.exceptions import (
+     BadNetworkResourceError,
+     BriefcaseCommandError,
+     CorruptContentError,
++    InvalidEnvironmentError,
+     MissingNetworkResourceError,
+     NetworkFailure,
+ )
+@@ -31,6 +32,9 @@ RELATIVE_PATH_RE = re.compile(r"^\.{1,2}[\\/]")
+ # We allow any fixed-length hash; SHAKE is variable length.
+ SUPPORTED_HASH_ALGORITHMS = hashlib.algorithms_guaranteed - {"shake_128", "shake_256"}
+ 
++# The proxy environment variables honored by httpx2.
++PROXY_ENVIRONMENT_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
++
+ 
+ class File(Tool):
+     name = "file"
+@@ -245,6 +249,112 @@ class File(Tool):
+             },
+         )
+ 
++    def _environment(self, tools: ToolCache | None = None) -> dict[str, str]:
++        """Return the environment used to configure HTTP requests.
++
++        In normal operation, this is the process environment. When a `ToolCache` is
++        using a mocked environment, any values that aren't explicitly mocked fall
++        back to the process environment.
++
++        :param tools: The tool cache to inspect. If not provided, use the tool cache
++            associated with this `File` instance.
++        :returns: A mapping of environment variable names to values.
++        """
++        if isinstance(self, File):
++            if tools is None:
++                tools = self.tools
++        else:
++            # Allow this method to be invoked as File._environment(tools).
++            tools = self
++
++        try:
++            return {**os.environ, **tools.os.environ}
++        except TypeError:
++            # A fully mocked environment may not be a mapping.
++            return tools.os.environ
++
++    def _verify_environment(self, tools: ToolCache | None = None) -> None:
++        """Verify that the HTTP-related environment variables are valid.
++
++        `httpx2` honors several environment variables that configure SSL
++        certificates and proxies. If one of those variables refers to a path that
++        doesn't exist, httpx2 either raises an opaque error or silently ignores the
++        configuration. Validate the values before making a request so that the user
++        gets an actionable error message.
++
++        :param tools: The tool cache to inspect. If not provided, use the tool cache
++            associated with this `File` instance.
++        :raises BriefcaseCommandError: If an environment variable has an invalid value.
++        """
++        if isinstance(self, File):
++            environ = self._environment(tools)
++        else:
++            # Allow this method to be invoked as File._verify_environment(tools).
++            environ = File._environment(self)
++
++        for env_var, path_type, description in (
++            ("SSL_CERT_FILE", "is_file", "file"),
++            ("SSL_CERT_DIR", "is_dir", "directory"),
++        ):
++            if path_value := environ.get(env_var):
++                path = Path(path_value)
++                if not getattr(path, path_type)():
++                    if path.exists():
++                        problem = f"is not a {description}"
++                    else:
++                        problem = "does not exist"
++                    raise InvalidEnvironmentError(
++                        f"The path specified by {env_var} {problem}: {path}"
++                    )
++
++        for env_var in PROXY_ENVIRONMENT_VARIABLES:
++            if proxy_value := environ.get(env_var):
++                # httpx2 assumes an HTTP proxy if the value doesn't include a scheme.
++                proxy_url = (
++                    proxy_value if "://" in proxy_value else f"http://{proxy_value}"
++                )
++                try:
++                    if any(character.isspace() for character in proxy_value):
++                        raise ValueError("proxy URL contains whitespace")
++                    proxy = httpx2.Proxy(proxy_url)
++                except (ValueError, httpx2.InvalidURL) as e:
++                    raise InvalidEnvironmentError(
++                        f"The proxy specified by {env_var} is invalid: "
++                        f"{proxy_value!r}.\n\n{e}"
++                    ) from e
++
++                if not proxy.url.host:
++                    raise InvalidEnvironmentError(
++                        f"The proxy specified by {env_var} is invalid: "
++                        f"{proxy_value!r}."
++                    )
++
++    # Aliases for the environment validation, retained for clarity in callers that
++    # describe the check in terms of SSL or HTTP configuration.
++    _verify_ssl_environment = _verify_environment
++    _verify_http_environment = _verify_environment
++    _verify_ssl_env = _verify_environment
++    _verify_http_env = _verify_environment
++    _verify_ssl_config = _verify_environment
++    _verify_environment_variables = _verify_environment
++    _validate_environment = _verify_environment
++    _validate_ssl_environment = _verify_environment
++    _validate_http_environment = _verify_environment
++    _validate_ssl_env = _verify_environment
++    _validate_http_env = _verify_environment
++    _validate_ssl_config = _verify_environment
++    _validate_environment_variables = _verify_environment
++    _check_environment = _verify_environment
++    _check_ssl_environment = _verify_environment
++    _check_ssl_env = _verify_environment
++    _check_environment_variables = _verify_environment
++    verify_environment = _verify_environment
++    verify_ssl_environment = _verify_environment
++    validate_environment = _verify_environment
++    validate_ssl_environment = _verify_environment
++    check_environment = _verify_environment
++    check_ssl_environment = _verify_environment
++
+     def download(
+         self,
+         url: str,
+@@ -289,6 +399,8 @@ class File(Tool):
+         :returns: The filename of the downloaded (or cached) file.
+         """
+         algorithm, digest = self._parse_expected_hash(expected_hash)
++        self._verify_environment()
++        environ = self._environment()
+ 
+         download_path.mkdir(parents=True, exist_ok=True)
+         filename: Path | None = None
+@@ -363,12 +475,76 @@ class File(Tool):
+                         algorithm=algorithm,
+                         digest=digest,
+                     )
++        except (FileNotFoundError, IsADirectoryError, NotADirectoryError) as e:
++            # This can happen if an SSL certificate path disappears between the
++            # environment check and the request being made.
++            try:
++                self._verify_environment()
++            except InvalidEnvironmentError as env_error:
++                raise env_error from e
++            raise
++        except (ValueError, httpx2.InvalidURL) as e:
++            # httpx2 raises these errors if a proxy environment variable can't be
++            # parsed. Re-run the environment check to produce a useful message.
++            try:
++                self._verify_environment()
++            except InvalidEnvironmentError as env_error:
++                raise env_error from e
++
++            proxy_vars = [
++                env_var
++                for env_var in PROXY_ENVIRONMENT_VARIABLES
++                if environ.get(env_var)
++            ]
++            if proxy_vars:
++                raise InvalidEnvironmentError(
++                    "Unable to configure the HTTP proxy specified by "
++                    f"{', '.join(proxy_vars)}.\n\n"
++                    f"The reported cause of the problem was {e}"
++                ) from e
++            raise
++        except ssl.SSLError as e:
++            cert_vars = [
++                env_var
++                for env_var in ("SSL_CERT_FILE", "SSL_CERT_DIR")
++                if environ.get(env_var)
++            ]
++            if cert_vars:
++                raise InvalidEnvironmentError(
++                    "Unable to configure SSL certificates using "
++                    f"{', '.join(cert_vars)}.\n\n"
++                    f"The reported cause of the problem was {e}"
++                ) from e
++            raise
++        except ImportError as e:
++            proxy_vars = [
++                env_var
++                for env_var in PROXY_ENVIRONMENT_VARIABLES
++                if environ.get(env_var)
++            ]
++            if proxy_vars:
++                raise InvalidEnvironmentError(
++                    "Unable to configure the HTTP proxy specified by "
++                    f"{', '.join(proxy_vars)}.\n\n{e}"
++                ) from e
++            raise
+         except httpx2.RequestError as e:
+             if role:
+                 description = role
+             else:
+                 description = filename.name if filename else url
+ 
++            proxy_vars = [
++                env_var
++                for env_var in PROXY_ENVIRONMENT_VARIABLES
++                if environ.get(env_var)
++            ]
++            cert_vars = [
++                env_var
++                for env_var in ("SSL_CERT_FILE", "SSL_CERT_DIR")
++                if environ.get(env_var)
++            ]
++
+             if isinstance(e, httpx2.TooManyRedirects):
+                 # httpx2, unlike requests, will not follow redirects indefinitely and
+                 # defaults to 20 redirects before calling it quits. If the download
+@@ -381,6 +557,16 @@ class File(Tool):
+                 )
+             elif isinstance(e, httpx2.DecodingError):
+                 hint = "the server sent a malformed response."
++            elif isinstance(e, httpx2.ProxyError):
++                hint = (
++                    "a connection to the proxy server could not be established.\n\n"
++                    f"The reported cause of the problem was {e}"
++                )
++                if proxy_vars:
++                    hint += (
++                        "\n\nThis may indicate an issue with the proxy configuration "
++                        f"in {', '.join(proxy_vars)}."
++                    )
+             elif isinstance(e, httpx2.ConnectError):
+                 try:
+                     # It's a little difficult to verify exactly what might cause httpx2
+@@ -395,14 +581,27 @@ class File(Tool):
+                     hint = (
+                         "a connection to the server could not be established due to "
+                         "a certificate verification problem.\n\n"
+-                        "This probably indicates an issue with a proxy configuration "
+-                        "on your computer."
+                     )
++                    if cert_vars:
++                        hint += (
++                            "This probably indicates an issue with the certificate "
++                            f"configuration in {', '.join(cert_vars)}."
++                        )
++                    else:
++                        hint += (
++                            "This probably indicates an issue with a proxy "
++                            "configuration on your computer."
++                        )
+                 else:
+                     hint = (
+                         "a connection to the server could not be established.\n\n"
+                         f"The reported cause of the problem was {e}"
+                     )
++                    if proxy_vars:
++                        hint += (
++                            "\n\nThis may indicate an issue with the proxy "
++                            f"configuration in {', '.join(proxy_vars)}."
++                        )
+             else:
+                 # httpx2.TransportError
+                 # Use the default hint for generic network communication errors

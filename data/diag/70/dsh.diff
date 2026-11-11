@@ -1,0 +1,170 @@
+diff --git a/changelog.d/1756.fixed.md b/changelog.d/1756.fixed.md
+new file mode 100644
+index 0000000..0e62483
+--- /dev/null
++++ b/changelog.d/1756.fixed.md
+@@ -0,0 +1 @@
++- **An `if` or `match` joining an `@Int` branch with a `@Nat` branch is typed `@Int`, so the verifier obligates the narrowing** ([#1756](https://github.com/aallan/vera/issues/1756)).  The join handed the result the `@Nat` branch's type whenever that branch was the second one, so binding a `-1` sentinel beside a `@Nat` into a `@Nat` slot recorded no `nat_bind` obligation: `vera verify` accepted the program and `vera run` trapped at the emitted guard.  A mixed `@Int` / `@Nat` branch pair now takes the formal least upper bound `@Int`, whichever branch is written first, in an `if` and in a `match`; `vera verify` refuses a negative branch with E503, and a non-negative one (`-1 * -3`) records the `nat_bind` check its guard answers.
+diff --git a/vera/checker/calls.py b/vera/checker/calls.py
+index 9ef714a..eb0f1ac 100644
+--- a/vera/checker/calls.py
++++ b/vera/checker/calls.py
+@@ -55,6 +55,7 @@ from vera.types import (
+     erases_to_unit,
+     is_effect_subtype,
+     is_subtype,
++    numeric_join,
+     pretty_effect,
+     pretty_type,
+     pretty_inferred_type,
+@@ -223,12 +224,22 @@ class _Join:
+     and one that disagrees is a conflict.  A variable that is not open
+     matches only itself.  The checker's unknown (`?`, an empty literal's
+     element type) has no name: it is filled where it stands, except
+-    inside a function type, where it is kept."""
++    inside a function type, where it is kept.
++
++    *numeric_lub* makes a mixed `Int` / `Nat` position take the formal
++    least upper bound, `Int` (spec §2.2.1: only `Nat <: Int` is a widening;
++    the reverse is the verifier-mediated narrowing relaxation).  An `if` or
++    `match` reads it, so a branch typed `Int` is never handed a `Nat`
++    branch's type and left with no narrowing to obligate (#1756).  An array
++    literal does not: its element type is its first element's, completed by
++    the later ones (#1584), which the argument judgement may widen."""
+ 
+     def __init__(self, rigid: frozenset[str],
+-                 data_types: typing.Mapping[str, AdtInfo]) -> None:
++                 data_types: typing.Mapping[str, AdtInfo], *,
++                 numeric_lub: bool = False) -> None:
+         self.rigid = rigid
+         self.data_types = data_types
++        self.numeric_lub = numeric_lub
+         self.kept: tuple[frozenset[str], frozenset[str]] = (
+             frozenset(), frozenset())
+         self.behaviour: tuple[frozenset[str], frozenset[str]] = (
+@@ -302,7 +313,8 @@ class _Join:
+         if prior is None:
+             self.bound[side][name] = other
+             return other
+-        again = _Join(self.rigid, self.data_types).join(prior, other)
++        again = _Join(self.rigid, self.data_types,
++                      numeric_lub=self.numeric_lub).join(prior, other)
+         if again is None:
+             self.conflict = True
+             return None
+@@ -365,7 +377,13 @@ class _Join:
+             return _rewrapped(
+                 b, FunctionType(tuple(params), ret, b_base.effect))
+         # Leaves (primitives): a subtype either way, as the argument
+-        # judgement accepts them (Nat and Int).
++        # judgement accepts them (Nat and Int).  An `if` / `match` join
++        # takes the formal LUB of a mixed pair instead, so the result is
++        # `Int` whichever branch is written first (#1756).
++        if self.numeric_lub:
++            formal = numeric_join(a_base, b_base)
++            if formal is not None and not types_equal(a_base, b_base):
++                return a if types_equal(a_base, formal) else b
+         if is_subtype(a_base, b_base) or is_subtype(b_base, a_base):
+             return b
+         return None
+@@ -444,7 +462,8 @@ class CallsMixin:
+                 and _compatible_modulo_typevars(
+                     ty, target, frozenset(self.env.type_params)))
+ 
+-    def _join(self, ty: Type, onto: Type) -> Type | None:
++    def _join(self, ty: Type, onto: Type, *,
++              numeric_lub: bool = False) -> Type | None:
+         """The type a value of *ty* and a value of *onto* have together:
+         *onto*, with each position it leaves open given *ty*'s type there;
+         None where the two do not agree (#1668).
+@@ -455,12 +474,18 @@ class CallsMixin:
+         variable code generation compiles behaviour for, a built-in's,
+         or the enclosing function's own is not filled.  Where both leave a
+         position open it stays open, for the context to fill.  *onto*
+-        itself comes back where *ty* fills nothing."""
+-        return self._join_parts(ty, onto).joined
++        itself comes back where *ty* fills nothing.
++
++        *numeric_lub* gives a mixed `Int` / `Nat` position the formal LUB
++        `Int` rather than *onto*'s side, which an `if` and a `match` read
++        (#1756)."""
++        return self._join_parts(ty, onto, numeric_lub=numeric_lub).joined
+ 
+-    def _join_parts(self, ty: Type, onto: Type) -> JoinOutcome:
++    def _join_parts(self, ty: Type, onto: Type, *,
++                    numeric_lub: bool = False) -> JoinOutcome:
+         """`_join`, with why it failed where it did (`JoinOutcome`)."""
+-        walk = _Join(frozenset(self.env.type_params), self.env.data_types)
++        walk = _Join(frozenset(self.env.type_params), self.env.data_types,
++                     numeric_lub=numeric_lub)
+         joined = walk.join(ty, onto)
+         if joined is None and not walk.conflict and is_subtype(ty, onto):
+             # A subtype the walk refuses (`Never` beside a variable that
+diff --git a/vera/checker/control.py b/vera/checker/control.py
+index 3a22bc3..c03170d 100644
+--- a/vera/checker/control.py
++++ b/vera/checker/control.py
+@@ -245,11 +245,14 @@ class ControlFlowMixin:
+         # two have together (`_join`, #1668): the type of the branch the
+         # other is a subtype of, with each position it leaves open given by
+         # the other, so `[]` beside `["abc"]` is an `Array<String>` in
+-        # either order.
++        # either order.  A mixed `@Int` / `@Nat` pair takes the formal LUB
++        # `@Int`, whichever branch carries it (#1756): the relaxed
++        # `Int <: Nat` rule is a narrowing the verifier must obligate, not
++        # a reason to hand an `Int` branch the `Nat` branch's type.
+         if is_subtype(then_ty, else_ty):
+-            return self._join(then_ty, else_ty) or else_ty
++            return self._join(then_ty, else_ty, numeric_lub=True) or else_ty
+         if is_subtype(else_ty, then_ty):  # pragma: no cover — subtyping is symmetric for current rules
+-            return self._join(else_ty, then_ty) or then_ty
++            return self._join(else_ty, then_ty, numeric_lub=True) or then_ty
+ 
+         # Re-synthesis: a branch with an unresolved type variable is
+         # synthesized again with the other branch's type expected, so a
+@@ -262,14 +265,15 @@ class ControlFlowMixin:
+         if contains_typevar(then_ty) and not contains_typevar(else_ty):
+             then_ty = self._synth_expr(
+                 expr.then_branch, expected=else_ty) or then_ty
+-            joined = self._join(then_ty, else_ty)
++            joined = self._join(then_ty, else_ty, numeric_lub=True)
+         elif contains_typevar(else_ty) and not contains_typevar(then_ty):
+             else_ty = self._synth_expr(
+                 expr.else_branch, expected=then_ty) or else_ty
+-            joined = self._join(else_ty, then_ty)
++            joined = self._join(else_ty, then_ty, numeric_lub=True)
+         else:
+-            outcome = self._join_parts(else_ty, then_ty)
+-            joined = outcome.joined or self._join(then_ty, else_ty)
++            outcome = self._join_parts(else_ty, then_ty, numeric_lub=True)
++            joined = (outcome.joined
++                      or self._join(then_ty, else_ty, numeric_lub=True))
+             if (joined is None and outcome.builtin
+                     and self._fits(else_ty, then_ty)):
+                 # A built-in's type variable the join leaves alone: the
+@@ -350,11 +354,14 @@ class ControlFlowMixin:
+                 # position open and this arm leaves none, it is this arm's
+                 # type, with any part this arm leaves unknown given by
+                 # them; otherwise it is theirs, with each position they
+-                # leave open given by this arm.
++                # leave open given by this arm.  A mixed `@Int` / `@Nat`
++                # pair takes the formal LUB `@Int` (#1756), as an `if`'s
++                # branches do.
+                 joined: Type | None
+                 if (contains_typevar(result_type)
+                         and not contains_typevar(arm_ty)):
+-                    outcome = self._join_parts(result_type, arm_ty)
++                    outcome = self._join_parts(
++                        result_type, arm_ty, numeric_lub=True)
+                     joined = outcome.joined
+                     if (joined is None and outcome.builtin
+                             and self._fits(result_type, arm_ty)):
+@@ -364,7 +371,7 @@ class ControlFlowMixin:
+                         # gave.
+                         joined = arm_ty
+                 else:
+-                    joined = self._join(arm_ty, result_type)
++                    joined = self._join(arm_ty, result_type, numeric_lub=True)
+                     if joined is None and is_subtype(result_type, arm_ty):
+                         joined = result_type
+                 if joined is not None:

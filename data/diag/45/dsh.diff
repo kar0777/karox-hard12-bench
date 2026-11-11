@@ -1,0 +1,92 @@
+diff --git a/toqito/state_metrics/measured_relative_entropy.py b/toqito/state_metrics/measured_relative_entropy.py
+index d54a21f..ebb30a8 100644
+--- a/toqito/state_metrics/measured_relative_entropy.py
++++ b/toqito/state_metrics/measured_relative_entropy.py
+@@ -2,10 +2,9 @@
+ 
+ import cvxpy as cvx
+ import numpy as np
+-import scipy.linalg
+ 
+ from toqito._quadrature import _gauss_legendre_01
+-from toqito.matrix_props import is_density, is_positive_semidefinite
++from toqito.matrix_props import is_density, is_positive_semidefinite, is_support_subset
+ 
+ 
+ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1e-5) -> float:
+@@ -68,13 +67,18 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+     are the weights and nodes, respectively, for the \(m\)-point Gauss--Legendre quadrature
+     on the interval \([0, 1]\).
+ 
++    If the support of \(\rho\) is not contained in the support of \(\sigma\),
++    the measured relative entropy is infinite: measuring onto the kernel of
++    \(\sigma\) gives an outcome with \(p > 0\) and \(q = 0\).
++
+     Args:
+         rho: Density operator.
+         sigma: Positive semi-definite operator.
+         eps: Tolerance level.
+ 
+     Returns:
+-        The measured relative entropy between `rho` and `sigma`.
++        The measured relative entropy between `rho` and `sigma`, or `np.inf` if
++        the support of `rho` is not contained in the support of `sigma`.
+ 
+     Raises:
+         ValueError: If `rho` if not a density operator or if `sigma` is not positive semi-definite.
+@@ -106,8 +110,15 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+         raise ValueError("Measured relative entropy is only defined if sigma is positive semi-definite.")
+     if np.array_equal(rho, sigma):
+         return 0
++    if not is_support_subset(rho, sigma):
++        return np.inf
++    rho, sigma = _restrict_to_support(rho, sigma)
+     n = len(rho)
++    if n == 1:
++        return float(np.real(np.log(rho[0, 0] / sigma[0, 0])))
+     m, k = _find_mk(rho, sigma, eps)
++    if m == 0 and k == 0:
++        return 0.0
+     w, theta = cvx.Variable((n, n), complex=True), cvx.Variable((n, n), hermitian=True)
+     ts = [cvx.Variable((n, n), hermitian=True) for _ in range(m)]
+     zs = [cvx.Variable((n, n), hermitian=True) for _ in range(k + 1)]
+@@ -137,10 +148,22 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+     return obj.value
+ 
+ 
++def _restrict_to_support(rho: np.ndarray, sigma: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
++    """Restrict ``rho`` and ``sigma`` to the support of ``rho``."""
++    eigvals, eigvecs = np.linalg.eigh((rho + rho.conj().T) / 2)
++    support = eigvals > 1e-12
++    if np.all(support):
++        return rho, sigma
++    basis = eigvecs[:, support]
++    return basis.conj().T @ rho @ basis, basis.conj().T @ sigma @ basis
++
++
+ def _compute_a(rho: np.ndarray, sigma: np.ndarray) -> float:
+     """Find optimal a."""
+-    rho_half_inv = scipy.linalg.inv(scipy.linalg.sqrtm(rho))
+-    X = rho_half_inv @ sigma @ rho_half_inv
++    eigvals, eigvecs = np.linalg.eigh((rho + rho.conj().T) / 2)
++    sqrt_inv = (eigvecs / np.sqrt(eigvals)) @ eigvecs.conj().T
++    X = sqrt_inv @ sigma @ sqrt_inv
++    X = (X + X.conj().T) / 2
+     eigs = np.linalg.eigvalsh(X)
+     a = max(eigs.max(), 1.0 / eigs.min())
+     return a
+@@ -149,8 +172,12 @@ def _compute_a(rho: np.ndarray, sigma: np.ndarray) -> float:
+ def _find_mk(rho: np.ndarray, sigma: np.ndarray, eps: float) -> tuple[int, int]:
+     """Find m and k for the desired epsilon value."""
+     a = _compute_a(rho, sigma)
+-    k1 = int(np.ceil(np.log2(np.log(a))) + 1)
+-    k2 = int(2 * np.ceil(np.sqrt(np.log2(32 * np.log(a) / eps)) / 2))
++    log_a = np.log(a)
++    # The approximation error is already below eps when log(a) is this small.
++    if log_a <= eps / 32:
++        return 0, 0
++    k1 = max(0, int(np.ceil(np.log2(log_a)) + 1))
++    k2 = int(2 * np.ceil(np.sqrt(np.log2(32 * log_a / eps)) / 2))
+     k = k1 + k2
+     m = k2 // 2
+     return m, k

@@ -1,0 +1,83 @@
+diff --git a/toqito/state_metrics/measured_relative_entropy.py b/toqito/state_metrics/measured_relative_entropy.py
+index d54a21f..44b6a42 100644
+--- a/toqito/state_metrics/measured_relative_entropy.py
++++ b/toqito/state_metrics/measured_relative_entropy.py
+@@ -5,7 +5,7 @@ import numpy as np
+ import scipy.linalg
+ 
+ from toqito._quadrature import _gauss_legendre_01
+-from toqito.matrix_props import is_density, is_positive_semidefinite
++from toqito.matrix_props import is_density, is_positive_semidefinite, is_support_subset
+ 
+ 
+ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1e-5) -> float:
+@@ -69,15 +69,16 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+     on the interval \([0, 1]\).
+ 
+     Args:
+-        rho: Density operator.
+-        sigma: Positive semi-definite operator.
++        rho: Density operator. It may be rank deficient.
++        sigma: Positive semi-definite operator. It may be rank deficient.
+         eps: Tolerance level.
+ 
+     Returns:
+-        The measured relative entropy between `rho` and `sigma`.
++        The measured relative entropy between `rho` and `sigma`, or `np.inf` if the support of
++        `rho` is not contained in the support of `sigma`.
+ 
+     Raises:
+-        ValueError: If `rho` if not a density operator or if `sigma` is not positive semi-definite.
++        ValueError: If `rho` is not a density operator or if `sigma` is not positive semi-definite.
+ 
+     Examples:
+         Consider the following quantum state \(\rho = \frac{1}{2}(I + r \cdot \mathbf{\sigma})\)
+@@ -106,6 +107,9 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+         raise ValueError("Measured relative entropy is only defined if sigma is positive semi-definite.")
+     if np.array_equal(rho, sigma):
+         return 0
++    if not is_support_subset(rho, sigma):
++        return np.inf
++
+     n = len(rho)
+     m, k = _find_mk(rho, sigma, eps)
+     w, theta = cvx.Variable((n, n), complex=True), cvx.Variable((n, n), hermitian=True)
+@@ -137,18 +141,36 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+     return obj.value
+ 
+ 
++def _restrict_to_support(rho: np.ndarray, sigma: np.ndarray, tol: float = 1e-12) -> tuple[np.ndarray, np.ndarray]:
++    """Restrict two operators to the support of the first one."""
++    eigvals, eigvecs = np.linalg.eigh((rho + rho.conj().T) / 2)
++    support = eigvals > tol
++    if np.all(support):
++        return rho, sigma
++    basis = eigvecs[:, support]
++    return basis.conj().T @ rho @ basis, basis.conj().T @ sigma @ basis
++
++
+ def _compute_a(rho: np.ndarray, sigma: np.ndarray) -> float:
+     """Find optimal a."""
++    # The eigenvalues of rho^{-1/2} sigma rho^{-1/2} are only defined on the support of rho.
++    # Restricting to that support also makes rho positive definite, which is required by the
++    # inverse square root below. The states themselves are not restricted: sigma may have
++    # components outside the support of rho, and measurements can still use them.
++    rho, sigma = _restrict_to_support(rho, sigma)
+     rho_half_inv = scipy.linalg.inv(scipy.linalg.sqrtm(rho))
+     X = rho_half_inv @ sigma @ rho_half_inv
+-    eigs = np.linalg.eigvalsh(X)
++    eigs = np.linalg.eigvalsh((X + X.conj().T) / 2)
+     a = max(eigs.max(), 1.0 / eigs.min())
+     return a
+ 
+ 
+ def _find_mk(rho: np.ndarray, sigma: np.ndarray, eps: float) -> tuple[int, int]:
+     """Find m and k for the desired epsilon value."""
+-    a = _compute_a(rho, sigma)
++    # If the states agree on the support of rho, a can be as small as 1. In that case the
++    # expressions below are undefined (and a is only an upper bound anyway), so use a safe
++    # lower bound that yields a small non-empty quadrature.
++    a = max(_compute_a(rho, sigma), 2.0)
+     k1 = int(np.ceil(np.log2(np.log(a))) + 1)
+     k2 = int(2 * np.ceil(np.sqrt(np.log2(32 * np.log(a) / eps)) / 2))
+     k = k1 + k2

@@ -1,0 +1,34 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c6e7c2e..ff7e7f0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,8 @@
+ 
+ ## [Unreleased]
+ 
++-   [BUG] `drop_constant_columns` now counts missing values as a distinct value, so a column that mixes one value with missing values is kept, while an all-missing column is dropped as constant.
++
+ ## [v0.32.58] - 2026-10-25
+ 
+ -   No user-facing changes; see the generated release notes.
+diff --git a/janitor/functions/drop_constant_columns.py b/janitor/functions/drop_constant_columns.py
+index 8991ccb..c6c0cf5 100644
+--- a/janitor/functions/drop_constant_columns.py
++++ b/janitor/functions/drop_constant_columns.py
+@@ -8,6 +8,10 @@ import pandas_flavor as pf
+ def drop_constant_columns(df: pd.DataFrame) -> pd.DataFrame:
+     """Finds and drops the constant columns from a Pandas DataFrame.
+ 
++    Missing values count as a distinct value, so a column that mixes one
++    value with missing values is kept, while an all-missing column is
++    dropped as constant.
++
+     Examples:
+         >>> import pandas as pd
+         >>> import janitor
+@@ -36,4 +40,4 @@ def drop_constant_columns(df: pd.DataFrame) -> pd.DataFrame:
+     Returns:
+         The Pandas DataFrame with the constant columns dropped.
+     """
+-    return df.loc[:, df.nunique().ne(1)]
++    return df.loc[:, df.nunique(dropna=False).ne(1)]

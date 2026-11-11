@@ -1,0 +1,45 @@
+diff --git a/markdown/inlinepatterns.py b/markdown/inlinepatterns.py
+index 2f05a1f..7e4b686 100644
+--- a/markdown/inlinepatterns.py
++++ b/markdown/inlinepatterns.py
+@@ -649,6 +649,7 @@ class DelimiterProcessor(InlineProcessor):
+         self.delimiters: dict[str, Delimiter] = {}
+         self.cache_index = 0
+         self.cache_pos = 0
++        self.cache_data_length = 0
+         self.md = md
+         # API for Markdown to pass `safe_mode` into instance
+         self.safe_mode = False
+@@ -691,6 +692,7 @@ class DelimiterProcessor(InlineProcessor):
+         self.stack.clear()
+         self.cache_index = 0
+         self.cache_pos = 0
++        self.cache_data_length = 0
+ 
+     def _build_element(
+         self,
+@@ -804,9 +806,11 @@ class DelimiterProcessor(InlineProcessor):
+     def get_cached_result(self, pos: int, data: str) -> tuple[etree.Element, int, int]:
+         """Get a cached result."""
+ 
+-        # Process the next region(s) in the cache
++        # Process the next region(s) in the cache. Region positions are relative to the
++        # data as it was when the regions were parsed. Any replacements made since then
++        # have changed the length of the data, so use that difference to adjust them.
+         regions = self.regions
+-        offset = pos - self.cache_pos if pos != self.cache_pos else pos - regions[self.cache_index][0]
++        offset = len(data) - self.cache_data_length
+         start, end = regions[self.cache_index][0], regions[self.cache_index][3]
+         el, count = self._build_element(data, self.cache_index, offset)
+         self.increment_next_position(start, count)
+@@ -867,6 +871,10 @@ class DelimiterProcessor(InlineProcessor):
+         if self.regions:
+             return self.get_cached_result(m.start(0), data)
+ 
++        # Track the length of the data the regions are parsed from so that later
++        # replacements can be accounted for when calculating their new positions.
++        self.cache_data_length = len(data)
++
+         # If token is not an opening, quit
+         m2 = self.get_match(data, m.start(0))
+         if m2 is None or m2.lastgroup[0] == 'e':  # type: ignore[index]

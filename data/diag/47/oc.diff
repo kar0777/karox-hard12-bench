@@ -1,0 +1,653 @@
+diff --git a/crosstl/translator/codegen/directx_codegen.py b/crosstl/translator/codegen/directx_codegen.py
+index 7d1df12..b9ad80c 100644
+--- a/crosstl/translator/codegen/directx_codegen.py
++++ b/crosstl/translator/codegen/directx_codegen.py
+@@ -157,6 +157,7 @@ from .buffer_length import BufferLengthUnsupportedError, HlslBufferLength
+ from .buffer_member_layout import (
+     MEMBER_LAYOUT_QUALIFIERS,
+     member_explicit_offset,
++    member_has_explicit_placement,
+     member_is_packed,
+     member_is_row_major,
+     packoffset_text,
+@@ -263,7 +264,9 @@ from .glsl_block_layout import (
+     declared_buffer_layout,
+     hlsl_packoffsets_for_block,
+     member_explicit_alignment,
++    without_explicit_placements,
+ )
++from .glsl_hlsl_cbuffer import layout_scalar_offsets
+ from .glsl_buffer_block_arrays import (
+     glsl_buffer_array_elements,
+     glsl_buffer_block_indexed_access,
+@@ -303,7 +306,11 @@ from .hlsl_buffer_block_atomic_values import (
+     generate_hlsl_buffer_block_interlocked_statement,
+ )
+ from .hlsl_buffer_component_stores import buffer_component_store
+-from .hlsl_buffer_layout import HlslLayoutError, cbuffer_placement
++from .hlsl_buffer_layout import (
++    HLSL_CBUFFER_LAYOUT,
++    HlslLayoutError,
++    cbuffer_struct_placements,
++)
+ from .hlsl_byte_address_atomics import (
+     emit_hlsl_byte_address_atomic_helpers,
+     hlsl_byte_address_atomic_expression,
+@@ -13491,13 +13498,13 @@ float4x4 __crossgl_inverse_float4_4(float4x4 m) {
+             for member in getattr(node, "members", []) or []
+             if getattr(member, "name", None) and not isinstance(member, FunctionNode)
+         ]
+-        if not any(member_explicit_offset(member) is not None for member in members):
+-            return {}
+         structs = {
+             struct.name: struct
+             for struct in getattr(ast, "structs", []) or []
+             if getattr(struct, "name", None)
+         }
++        if not self.hlsl_members_hold_placement(members, structs):
++            return {}
+ 
+         def struct_members(name):
+             struct = structs.get(name)
+@@ -13518,41 +13525,66 @@ float4x4 __crossgl_inverse_float4_4(float4x4 m) {
+                 (node.name,),
+                 self.hlsl_constant_int_value,
+             )
+-            offsets = []
+-            natural = []
+-            cursor = natural_cursor = 0
+-            for (name, member_type), explicit in zip(
+-                layout_type.members, layout_type.offsets
+-            ):
+-                natural_start, natural_size = cbuffer_placement(
+-                    member_type, natural_cursor
++            if any(
++                layout_scalar_offsets(member_type, HLSL_CBUFFER_LAYOUT)
++                != layout_scalar_offsets(
++                    without_explicit_placements(member_type), HLSL_CBUFFER_LAYOUT
+                 )
+-                natural.append(natural_start)
+-                natural_cursor = natural_start + natural_size
+-                if explicit is None:
+-                    start, size = cbuffer_placement(member_type, cursor)
+-                else:
+-                    if explicit < cursor:
+-                        raise HlslLayoutError(
+-                            f"member '{name}' at byte {explicit} overlaps the member before it"
+-                        )
+-                    start, size = cbuffer_placement(member_type, explicit)
+-                    if start != explicit:
+-                        raise HlslLayoutError(
+-                            f"member '{name}' at byte {explicit} breaks the constant-buffer "
+-                            f"packing of its type, which starts at byte {start}"
+-                        )
+-                offsets.append(start)
+-                cursor = start + size
+-            if offsets == natural:
++                for _name, member_type in layout_type.members
++            ):
++                # packoffset reaches only the block's own members: read nested placements from registers.
++                return HlslRegisterBlockPlan(HLSL_CBUFFER_LAYOUT, layout_type)
++            placements, _size = cbuffer_struct_placements(
++                layout_type, allow_partial_offsets=True
++            )
++            natural, _natural_size = cbuffer_struct_placements(
++                without_explicit_placements(layout_type)
++            )
++            if [placement.offset for placement in placements] == [
++                placement.offset for placement in natural
++            ]:
+                 return {}
+             return {
+-                name: packoffset_text(offset)
+-                for (name, _member_type), offset in zip(layout_type.members, offsets)
++                placement.name: packoffset_text(placement.offset)
++                for placement in placements
+             }
+         except HlslLayoutError as exc:
+             raise DirectXBufferLayoutError(node.name, "explicit-offset", exc) from exc
+ 
++    def hlsl_members_hold_placement(self, members, structs, stack=()):
++        """Whether ``members`` or a struct nested in them carries ``@ offset`` or ``@ align``."""
++        for member in members:
++            if member_has_explicit_placement(member):
++                return True
++            if isinstance(member, ArrayNode):
++                member_type = getattr(
++                    member, "element_type", getattr(member, "vtype", None)
++                )
++            else:
++                member_type = getattr(member, "member_type", None) or getattr(
++                    member, "vtype", None
++                )
++            while isinstance(member_type, ArrayType):
++                member_type = member_type.element_type
++            if isinstance(member_type, str):
++                name = split_array_type_suffix(member_type)[0]
++            else:
++                name = getattr(member_type, "name", None)
++            if not name or name in stack:
++                continue
++            struct = structs.get(name)
++            if struct is None:
++                continue
++            nested = [
++                nested_member
++                for nested_member in getattr(struct, "members", []) or []
++                if getattr(nested_member, "name", None)
++                and not isinstance(nested_member, FunctionNode)
++            ]
++            if self.hlsl_members_hold_placement(nested, structs, (*stack, name)):
++                return True
++        return False
++
+     def hlsl_block_member(self, member):
+         """``(name, type, row_major, offset, alignment, packed)`` of a uniform-block or struct member."""
+         if isinstance(member, ArrayNode):
+diff --git a/crosstl/translator/codegen/glsl_block_layout.py b/crosstl/translator/codegen/glsl_block_layout.py
+index c8dce2e..5621b2f 100644
+--- a/crosstl/translator/codegen/glsl_block_layout.py
++++ b/crosstl/translator/codegen/glsl_block_layout.py
+@@ -52,6 +52,7 @@ from .array_utils import split_outer_array_dimension
+ from .hlsl_buffer_layout import (
+     BUFFER_LAYOUT_ATTRIBUTE,
+     HLSL_BUFFER_LAYOUTS,
++    HLSL_CBUFFER_LAYOUT,
+     HlslLayoutError,
+     HlslMemberPlacement,
+     align_to,
+@@ -357,9 +358,32 @@ def layout_struct_placements(layout_type, layout, root=False):
+     """Member placements and size of a struct under ``layout`` (an HLSL or a block layout)."""
+     if layout in BLOCK_LAYOUTS:
+         return block_struct_placements(layout_type, layout, root)
++    if layout == HLSL_CBUFFER_LAYOUT:
++        # A struct nested in a buffer places its members relative to itself, so
++        # an offset on only some of them is not a partial packoffset of a block.
++        return cbuffer_struct_placements(layout_type, allow_partial_offsets=not root)
+     return struct_placements(layout_type, layout)
+ 
+ 
++def without_explicit_placements(layout_type):
++    """``layout_type`` with every explicit offset and alignment removed, nested structs included."""
++    if layout_type.kind == "array":
++        return replace(
++            layout_type, element=without_explicit_placements(layout_type.element)
++        )
++    if layout_type.kind == "struct":
++        return replace(
++            layout_type,
++            offsets=(),
++            alignments=(),
++            members=tuple(
++                (name, without_explicit_placements(member))
++                for name, member in layout_type.members
++            ),
++        )
++    return layout_type
++
++
+ def layout_array_stride(layout_type, layout):
+     if layout in BLOCK_LAYOUTS:
+         return block_array_stride(layout_type, layout)
+diff --git a/crosstl/translator/codegen/glsl_hlsl_cbuffer.py b/crosstl/translator/codegen/glsl_hlsl_cbuffer.py
+index e6d3d96..6efc2de 100644
+--- a/crosstl/translator/codegen/glsl_hlsl_cbuffer.py
++++ b/crosstl/translator/codegen/glsl_hlsl_cbuffer.py
+@@ -35,7 +35,7 @@ import re
+ from dataclasses import dataclass, field
+ from typing import List, Tuple
+ 
+-from ..ast import ArrayNode, FunctionNode
++from ..ast import ArrayNode, ArrayType, FunctionNode
+ from .array_utils import (
+     evaluate_literal_int_expression,
+     fold_array_type_counts,
+@@ -44,6 +44,7 @@ from .array_utils import (
+ )
+ from .buffer_member_layout import (
+     member_explicit_offset,
++    member_has_explicit_placement,
+     member_is_packed,
+     member_is_row_major,
+ )
+@@ -211,7 +212,9 @@ def layout_member_placements(layout_type, layout):
+     if layout in BLOCK_LAYOUTS:
+         placements, _size = block_struct_placements(layout_type, layout)
+     else:
+-        placements, _size = cbuffer_struct_placements(layout_type)
++        placements, _size = cbuffer_struct_placements(
++            layout_type, allow_partial_offsets=True
++        )
+     return placements
+ 
+ 
+@@ -389,6 +392,8 @@ class GLSLHlslConstantBuffers:
+             raise HlslLayoutError(f"recursive struct '{name}' in an HLSL buffer")
+         member_types = self.glsl_struct_member_types(name)
+         members = []
++        offsets = []
++        alignments = []
+         for member in getattr(struct, "members", []) or []:
+             member_name = getattr(member, "name", None)
+             if isinstance(member, FunctionNode) or member_name not in member_types:
+@@ -401,7 +406,53 @@ class GLSLHlslConstantBuffers:
+             if member_is_packed(member):
+                 member_type = packed_layout_type(member_type, member_name)
+             members.append((member_name, member_type))
+-        return struct_type(name, members)
++            offsets.append(member_explicit_offset(member))
++            alignments.append(member_explicit_alignment(member))
++        return struct_type(name, members, offsets, alignments)
++
++    def glsl_hlsl_cbuffer_struct_name(self, type_node):
++        while isinstance(type_node, ArrayType):
++            type_node = type_node.element_type
++        name = (
++            type_node
++            if isinstance(type_node, str)
++            else getattr(type_node, "name", None)
++        )
++        while isinstance(name, str):
++            array_parts = split_outer_array_dimension(name)
++            if array_parts is None:
++                break
++            name = array_parts[0]
++        if not name:
++            return None
++        return self.glsl_source_type_identifier_name(str(name))
++
++    def glsl_hlsl_cbuffer_has_explicit_placement(self, members, stack=()):
++        """Whether ``members`` or a struct nested in them carries ``@ offset`` or ``@ align``."""
++        for member in members:
++            if isinstance(member, FunctionNode) or not getattr(member, "name", None):
++                continue
++            if member_has_explicit_placement(member):
++                return True
++            if isinstance(member, ArrayNode):
++                type_node = getattr(
++                    member, "element_type", getattr(member, "vtype", None)
++                )
++            else:
++                type_node = getattr(member, "member_type", None) or getattr(
++                    member, "vtype", None
++                )
++            name = self.glsl_hlsl_cbuffer_struct_name(type_node)
++            if name is None or name in stack:
++                continue
++            struct = self.glsl_struct_node(name)
++            if struct is None:
++                continue
++            if self.glsl_hlsl_cbuffer_has_explicit_placement(
++                getattr(struct, "members", []) or [], (*stack, name)
++            ):
++                return True
++        return False
+ 
+     # Declarations -----------------------------------------------------------
+ 
+@@ -421,8 +472,8 @@ class GLSLHlslConstantBuffers:
+             for member in getattr(node, "members", []) or []
+             if getattr(member, "name", None) and not isinstance(member, FunctionNode)
+         ]
+-        if source_layout is None and any(
+-            member_explicit_offset(member) is not None for member in members
++        if source_layout is None and self.glsl_hlsl_cbuffer_has_explicit_placement(
++            members
+         ):
+             # A block without a declared layout is declared std140 here; its ``@ offset`` members keep their bytes.
+             source_layout = "std140"
+@@ -451,11 +502,7 @@ class GLSLHlslConstantBuffers:
+                     source_layout != "std140"
+                     or not defaults
+                     or defaults == getattr(self, "literal_int_constants", None)
+-                    or any(
+-                        member_explicit_offset(member) is not None
+-                        or member_explicit_alignment(member) is not None
+-                        for member in members
+-                    )
++                    or self.glsl_hlsl_cbuffer_has_explicit_placement(members)
+                 ):
+                     raise
+                 literal_int_constants = self.literal_int_constants
+diff --git a/crosstl/translator/codegen/hlsl_buffer_layout.py b/crosstl/translator/codegen/hlsl_buffer_layout.py
+index d364a10..703d45b 100644
+--- a/crosstl/translator/codegen/hlsl_buffer_layout.py
++++ b/crosstl/translator/codegen/hlsl_buffer_layout.py
+@@ -217,7 +217,9 @@ def cbuffer_placement(layout_type, offset):
+         return start, stride * (layout_type.count - 1) + element_size
+     if kind == "struct":
+         start = align_to(offset, CBUFFER_REGISTER_SIZE)
+-        _members, size = cbuffer_struct_placements(layout_type)
++        _members, size = cbuffer_struct_placements(
++            layout_type, allow_partial_offsets=True
++        )
+         return start, size
+     raise HlslLayoutError(f"unsupported HLSL buffer value kind '{kind}'")
+ 
+@@ -237,38 +239,74 @@ def cbuffer_array_stride(layout_type):
+     return align_to(element_size, CBUFFER_REGISTER_SIZE)
+ 
+ 
+-def cbuffer_struct_placements(layout_type):
++def cbuffer_struct_placements(layout_type, allow_partial_offsets=False):
+     """Member placements of a struct (or constant buffer) relative to its start.
+ 
+     Members with ``packoffset`` sit at the bytes it names, which must satisfy
+-    the packing rules for their type, and must not overlap.
++    the packing rules for their type, and must not overlap. A struct nested in
++    a buffer may place only some of its members, which are offsets relative to
++    the struct rather than ``packoffset`` qualifiers of the block; the others
++    follow by the packing rules.
+     """
+     if layout_type.offsets:
++        if allow_partial_offsets and None in layout_type.offsets:
++            return cbuffer_partial_placements(layout_type)
+         return cbuffer_explicit_placements(layout_type)
+     placements = []
+     cursor = 0
+-    for name, member_type in layout_type.members:
+-        start, size = cbuffer_placement(member_type, cursor)
++    for (name, member_type), alignment in zip(
++        layout_type.members, _member_alignments(layout_type)
++    ):
++        start, size = cbuffer_placement(
++            member_type, align_to(cursor, alignment) if alignment else cursor
++        )
+         placements.append(HlslMemberPlacement(name, member_type, start, size))
+         cursor = start + size
+     return placements, cursor
+ 
+ 
++def _member_alignments(layout_type):
++    return layout_type.alignments or (None,) * len(layout_type.members)
++
++
+ def cbuffer_explicit_placements(layout_type):
+     if None in layout_type.offsets:
+         raise HlslLayoutError(
+             f"constant buffer '{layout_type.struct_name}' mixes packoffset members "
+             "with members placed in declaration order"
+         )
++    return _cbuffer_offset_placements(layout_type)
++
++
++def cbuffer_partial_placements(layout_type):
++    """Placements of a struct that names the offsets of only some of its members."""
++    return _cbuffer_offset_placements(layout_type)
++
++
++def _cbuffer_offset_placements(layout_type):
+     placements = []
+-    for (name, member_type), offset in zip(layout_type.members, layout_type.offsets):
+-        start, size = cbuffer_placement(member_type, offset)
+-        if start != offset:
+-            raise HlslLayoutError(
+-                f"packoffset of '{name}' at byte {offset} breaks the constant-buffer "
+-                f"packing of its type, which starts at byte {start}"
++    cursor = 0
++    for (name, member_type), offset, alignment in zip(
++        layout_type.members, layout_type.offsets, _member_alignments(layout_type)
++    ):
++        if offset is None:
++            start, size = cbuffer_placement(
++                member_type, align_to(cursor, alignment) if alignment else cursor
+             )
++        else:
++            if alignment and offset % alignment:
++                raise HlslLayoutError(
++                    f"offset {offset} of '{name}' is not a multiple of its "
++                    f"alignment {alignment}"
++                )
++            start, size = cbuffer_placement(member_type, offset)
++            if start != offset:
++                raise HlslLayoutError(
++                    f"packoffset of '{name}' at byte {offset} breaks the constant-buffer "
++                    f"packing of its type, which starts at byte {start}"
++                )
+         placements.append(HlslMemberPlacement(name, member_type, start, size))
++        cursor = max(cursor, start + size)
+     check_disjoint_placements(layout_type.struct_name, placements)
+     return placements, max(
+         (placement.offset + placement.size for placement in placements), default=0
+diff --git a/crosstl/translator/codegen/hlsl_glsl_block_registers.py b/crosstl/translator/codegen/hlsl_glsl_block_registers.py
+index 979b55d..270c8d3 100644
+--- a/crosstl/translator/codegen/hlsl_glsl_block_registers.py
++++ b/crosstl/translator/codegen/hlsl_glsl_block_registers.py
+@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
+ from typing import List
+ 
+ from ..ast import FunctionNode
+-from .glsl_block_layout import block_struct_placements
++from .glsl_block_layout import layout_struct_placements
+ from .glsl_hlsl_cbuffer import (
+     COMPONENTS,
+     WORD_SIZE,
+@@ -33,7 +33,13 @@ from .glsl_hlsl_cbuffer import (
+     layout_matrix_vector_stride,
+     layout_member_placements,
+ )
+-from .hlsl_buffer_layout import CBUFFER_REGISTER_SIZE, align_to, vector_type
++from .hlsl_buffer_layout import (
++    CBUFFER_REGISTER_SIZE,
++    HLSL_CBUFFER_LAYOUT,
++    align_to,
++    cbuffer_struct_placements,
++    vector_type,
++)
+ 
+ # HLSL spellings of the layout scalars.
+ HLSL_SCALAR_TYPES = {
+@@ -133,7 +139,14 @@ class HlslGlslBlockRegisters:
+             for member in getattr(node, "members", []) or []
+             if getattr(member, "name", None) and not isinstance(member, FunctionNode)
+         ]
+-        placements, size = block_struct_placements(layout_type, layout, root=True)
++        if layout == HLSL_CBUFFER_LAYOUT:
++            # A register block reproduces any bytes, including a member placed
++            # by an offset while the members after it follow by packing.
++            placements, size = cbuffer_struct_placements(
++                layout_type, allow_partial_offsets=True
++            )
++        else:
++            placements, size = layout_struct_placements(layout_type, layout, root=True)
+         prefix = f"__crossgl_{node.name}"
+         loader = HlslRegisterLoader(
+             block=node.name,
+diff --git a/crosstl/translator/codegen/metal_hlsl_buffer_layout.py b/crosstl/translator/codegen/metal_hlsl_buffer_layout.py
+index 34b356d..ed36879 100644
+--- a/crosstl/translator/codegen/metal_hlsl_buffer_layout.py
++++ b/crosstl/translator/codegen/metal_hlsl_buffer_layout.py
+@@ -204,7 +204,8 @@ class MetalHlslBufferLayouts:
+             _kind, name, members = resolved
+             if name in stack:
+                 raise HlslLayoutError(f"recursive struct '{name}' in an HLSL buffer")
+-            # Members are ``(name, raw_type)`` or ``(name, raw_type, row_major)``.
++            # Members are ``(name, raw_type, row_major, offset, alignment)``; the
++            # last two are optional.
+             return struct_type(
+                 name,
+                 [
+@@ -216,6 +217,8 @@ class MetalHlslBufferLayouts:
+                     )
+                     for member in members
+                 ],
++                [member[3] if len(member) > 3 else None for member in members],
++                [member[4] if len(member) > 4 else None for member in members],
+             )
+ 
+         metal_type = str(resolved)
+diff --git a/crosstl/translator/codegen/metal_hlsl_resources.py b/crosstl/translator/codegen/metal_hlsl_resources.py
+index 33448e8..b5682e4 100644
+--- a/crosstl/translator/codegen/metal_hlsl_resources.py
++++ b/crosstl/translator/codegen/metal_hlsl_resources.py
+@@ -161,6 +161,8 @@ class MetalHlslResourceMixin:
+                     member.name,
+                     self.struct_member_raw_type(member),
+                     member_is_row_major(member),
++                    member_explicit_offset(member),
++                    member_explicit_alignment(member),
+                 )
+                 for member in getattr(struct, "members", []) or []
+                 if getattr(member, "name", None)
+diff --git a/crosstl/translator/codegen/push_constant_blocks.py b/crosstl/translator/codegen/push_constant_blocks.py
+index fb8a8e3..c35d03e 100644
+--- a/crosstl/translator/codegen/push_constant_blocks.py
++++ b/crosstl/translator/codegen/push_constant_blocks.py
+@@ -18,7 +18,8 @@ binds for push constants, so the program read constants from an unbound descript
+   always declared (with its binding, and with the register loader of :mod:`.glsl_hlsl_cbuffer` when std140 cannot
+   place the members) in the ``#else`` branch. A register loader the stage entries call is defined as an empty
+   function in the Vulkan branch, where the block's members are read directly. A ``scalar`` block enables
+-  ``GL_EXT_scalar_block_layout`` in the Vulkan branch.
++  ``GL_EXT_scalar_block_layout`` in the Vulkan branch. GLSL writes ``layout(offset)`` only for block members, so a
++  struct nested in the block cannot keep a placement that moves; such a block is refused.
+ * Slang declares ``[[vk::push_constant]] cbuffer Name { [[vk::offset(N)]] T member; }`` or
+   ``[[vk::push_constant]] ConstantBuffer<T> name``, which ``slangc`` lays out with the std430 rules and places in
+   the ``PushConstant`` storage class; the block takes no ``vk::binding``, and ``slangc`` gives it a Direct3D
+@@ -40,7 +41,9 @@ from .glsl_block_layout import (
+     block_alignment,
+     block_struct_placements,
+     declared_buffer_layout,
++    without_explicit_placements,
+ )
++from .glsl_hlsl_cbuffer import layout_scalar_offsets
+ from .hlsl_buffer_layout import HlslLayoutError, HlslLayoutType
+ 
+ __all__ = [
+@@ -129,6 +132,30 @@ def _member_offset(member, target, block):
+         raise PushConstantBlockError(target, block, str(exc)) from exc
+ 
+ 
++def _glsl_nested_placements_agree(codegen, owner, members, block_layout, block):
++    """Refuse nested ``@ offset`` or ``@ align`` members that move under ``block_layout``.
++
++    GLSL writes ``layout(offset)`` only for block members, so a struct nested in
++    the push-constant block keeps its natural member offsets in both branches.
++    """
++    for member in members:
++        try:
++            layout_type = codegen.glsl_hlsl_cbuffer_member_layout_type(owner, member)
++            placed = layout_scalar_offsets(layout_type, block_layout)
++            plain = layout_scalar_offsets(
++                without_explicit_placements(layout_type), block_layout
++            )
++        except HlslLayoutError as exc:
++            raise PushConstantBlockError("opengl", block, str(exc)) from exc
++        if placed != plain:
++            raise PushConstantBlockError(
++                "opengl",
++                block,
++                f"member '{member.name}' holds a struct whose @offset or @align members the push-constant "
++                "declaration cannot place; declare the block as a cbuffer to place them",
++            )
++
++
+ # GLSL ---------------------------------------------------------------------------------------------------------------
+ 
+ 
+@@ -193,6 +220,7 @@ def _glsl_writable_offsets(codegen, node, members, block_layout):
+     """Refuse a member offset that GLSL's ``layout(offset = N)`` cannot write: GLSL requires a multiple of the
+     member's alignment (GLSL 4.60 section 4.4.5), so a vector at a relaxed offset (:mod:`.glsl_block_layout`, as DXC
+     places ``float s; float3 v;``) has no GLSL spelling."""
++    _glsl_nested_placements_agree(codegen, node, members, block_layout, node.name)
+     for member in members:
+         offset = _member_offset(member, "opengl", node.name)
+         if offset is None:
+@@ -255,6 +283,7 @@ def _glsl_struct_offsets_agree(codegen, struct, block_layout, var_name):
+     struct, so GLSL writes no offsets for ``T``: one that agrees with the layout, such as an imported
+     ``[[vk::offset(N)]]``, needs none, and another one needs a cbuffer."""
+     members = _members(struct)
++    _glsl_nested_placements_agree(codegen, struct, members, block_layout, var_name)
+     offsets = tuple(_member_offset(member, "opengl", var_name) for member in members)
+     if all(offset is None for offset in offsets):
+         return
+diff --git a/crosstl/translator/codegen/spirv_placed_blocks.py b/crosstl/translator/codegen/spirv_placed_blocks.py
+index 46828f5..52f73b7 100644
+--- a/crosstl/translator/codegen/spirv_placed_blocks.py
++++ b/crosstl/translator/codegen/spirv_placed_blocks.py
+@@ -26,11 +26,11 @@ glslang does for a GLSL block that needs it. A layout no planner reproduces rais
+ 
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass, replace
++from dataclasses import dataclass
+ from types import SimpleNamespace
+ 
+ from ..ast import ArrayNode, ArrayType, FunctionNode
+-from .array_utils import evaluate_literal_int_expression
++from .array_utils import evaluate_literal_int_expression, split_array_type_suffix
+ from .buffer_member_layout import (
+     member_explicit_offset,
+     member_is_packed,
+@@ -47,6 +47,7 @@ from .glsl_block_layout import (
+     layout_array_stride,
+     layout_struct_placements,
+     member_explicit_alignment,
++    without_explicit_placements,
+ )
+ from .hlsl_buffer_layout import (
+     HLSL_CBUFFER_LAYOUT,
+@@ -133,6 +134,32 @@ def _has_explicit_placement(members):
+     )
+ 
+ 
++def _type_struct_name(type_node):
++    while isinstance(type_node, ArrayType):
++        type_node = type_node.element_type
++    if isinstance(type_node, str):
++        return split_array_type_suffix(type_node)[0]
++    return getattr(type_node, "name", None)
++
++
++def _has_nested_placement(codegen, members, stack=()):
++    """Whether a struct member of ``members`` carries ``@ offset`` or ``@ align`` at any depth."""
++    structs = getattr(codegen, "struct_declarations", None) or {}
++    for member in members:
++        name = _type_struct_name(_member_tuple(member)[1])
++        if name is None or name in stack:
++            continue
++        struct = structs.get(name)
++        if struct is None:
++            continue
++        nested = _block_members(struct)
++        if _has_explicit_placement(nested) or _has_nested_placement(
++            codegen, nested, (*stack, name)
++        ):
++            return True
++    return False
++
++
+ def _block_layout_type(codegen, node, members):
+     structs = getattr(codegen, "struct_declarations", None) or {}
+ 
+@@ -140,10 +167,7 @@ def _block_layout_type(codegen, node, members):
+         struct = structs.get(name)
+         if struct is None:
+             return None
+-        return [
+-            (*_member_tuple(member)[:3], None, *_member_tuple(member)[4:])
+-            for member in _block_members(struct)
+-        ]
++        return [_member_tuple(member) for member in _block_members(struct)]
+ 
+     constants = codegen.active_literal_int_constants()
+     return crossgl_struct_layout_type(
+@@ -296,7 +320,7 @@ def _check_validator_extents(
+ def _plain_signature(layout_type, layout):
+     """The placements of a block's members under ``layout`` without explicit offsets or alignments, or ``None``
+     when ``layout`` has no layout for one (a packed vector)."""
+-    plain_type = replace(layout_type, offsets=(), alignments=())
++    plain_type = without_explicit_placements(layout_type)
+     try:
+         plain = _root_placements(plain_type, layout)
+         return _placements_signature(plain, layout)
+@@ -316,7 +340,9 @@ def placed_uniform_block(
+     """
+     layout = declared_buffer_layout(getattr(node, "attributes", None)) or plain_layout
+     members = _block_members(node)
+-    explicit = _has_explicit_placement(members)
++    explicit = _has_explicit_placement(members) or _has_nested_placement(
++        codegen, members, (getattr(node, "name", None),)
++    )
+     if layout not in ALWAYS_PLACED_LAYOUTS and not explicit:
+         return None
+     if layout not in PLACED_LAYOUTS:

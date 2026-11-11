@@ -1,0 +1,26 @@
+diff --git a/scrapy/utils/_sitemap.py b/scrapy/utils/_sitemap.py
+index 2a00ddf..e226394 100644
+--- a/scrapy/utils/_sitemap.py
++++ b/scrapy/utils/_sitemap.py
+@@ -105,9 +105,11 @@ def sitemap_urls_from_robots(
+         for line in BytesIO(robots_text):
+             if line.lstrip()[:8].lower() == b"sitemap:":
+                 try:
+-                    url = line.partition(b":")[2].strip().decode()
++                    url = line.partition(b":")[2].partition(b"#")[0].strip().decode()
+                 except UnicodeDecodeError:
+                     continue
++                if not url:
++                    continue
+                 yield urljoin(base_url or "", url)
+ 
+     else:
+@@ -125,5 +127,7 @@ def _sitemap_urls_from_robots_str(
+ ) -> Iterable[str]:
+     for line in StringIO(robots_text):
+         if line.lstrip()[:8].lower() == "sitemap:":
+-            url = line.partition(":")[2].strip()
++            url = line.partition(":")[2].partition("#")[0].strip()
++            if not url:
++                continue
+             yield urljoin(base_url or "", url)

@@ -1,0 +1,1496 @@
+diff --git a/.github/pull_request_template.md b/.github/pull_request_template.md
+index 0aa4b88..c78747d 100644
+--- a/.github/pull_request_template.md
++++ b/.github/pull_request_template.md
+@@ -38,7 +38,7 @@ Please ensure that you have done the following:
+ 
+ 1. [ ] PR in from a fork off your branch. Do not PR from `<your_username>`:`dev`, but rather from `<your_username>`:`<feature-branch_name>`.
+ <!-- Doing this helps us keep the commit history much cleaner than it would otherwise be. -->
+-2. [ ] Add a line to `CHANGELOG.md` under the latest version header (i.e. the one that is "on deck") describing the contribution.
++2. [ ] Add a line to `CHANGELOG.md` under the `## [Unreleased]` header describing the contribution.
+     - Do use some discretion here; if there are multiple PRs that are related, keep them in a single line.
+ <!-- Contributor recognition is automatic: the `update-contributors` workflow scans
+      commit authors and updates the all-contributors table in README.md, so you
+diff --git a/.github/workflows/auto-release.yml b/.github/workflows/auto-release.yml
+index 430ffcb..6ac0aa6 100644
+--- a/.github/workflows/auto-release.yml
++++ b/.github/workflows/auto-release.yml
+@@ -275,7 +275,8 @@ jobs:
+           pixi run python scripts/update_changelog.py \
+             --version "${{ env.version_number }}" \
+             --date "${{ env.release_date }}" \
+-            --previous-version "${{ env.previous_version }}"
++            --previous-version "${{ env.previous_version }}" \
++            --previous-tag "${{ env.previous_version }}"
+ 
+       - name: Validate changelog
+         if: steps.check_release.outputs.release_complete == 'false' && steps.check_release.outputs.existing_release_tag == 'false'
+diff --git a/.github/workflows/changelog.yml b/.github/workflows/changelog.yml
+new file mode 100644
+index 0000000..8258915
+--- /dev/null
++++ b/.github/workflows/changelog.yml
+@@ -0,0 +1,43 @@
++name: Changelog
++
++on:
++  pull_request:
++    branches:
++      - dev
++    paths:
++      - "CHANGELOG.md"
++      - "scripts/check_changelog.py"
++      - "scripts/changelog_utils.py"
++      - ".github/workflows/changelog.yml"
++
++permissions:
++  contents: read
++
++jobs:
++  validate:
++    name: Validate changelog entries
++    runs-on: ubuntu-latest
++
++    defaults:
++      run:
++        shell: bash -l {0}
++
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v7
++        with:
++          fetch-depth: 0
++
++      - name: Setup Pixi Environment
++        uses: prefix-dev/setup-pixi@v0.11.2
++        with:
++          pixi-version: latest
++          cache: true
++          cache-write: false
++
++      - name: Check that new entries are under Unreleased
++        run: |
++          pixi run python scripts/check_changelog.py \
++            --path CHANGELOG.md \
++            --base "${{ github.event.pull_request.base.sha }}" \
++            --head HEAD
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1185fc3..7799db5 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,8 @@
+ 
+ ## [Unreleased]
+ 
++-   [INF] Validate that new changelog entries stay under `[Unreleased]` and reject entries added to an already released version.
++
+ ## [v0.32.56] - 2026-10-24
+ 
+ -   No user-facing changes; see the generated release notes.
+diff --git a/scripts/changelog_utils.py b/scripts/changelog_utils.py
+new file mode 100644
+index 0000000..f1f6291
+--- /dev/null
++++ b/scripts/changelog_utils.py
+@@ -0,0 +1,689 @@
++"""Shared helpers for parsing and validating the project changelog.
++
++The changelog is a Markdown document with one section per release.  New
++entries belong in ``## [Unreleased]`` and are moved into a dated section by
++``scripts/update_changelog.py`` during a release.  The helpers in this module
++make it possible to compare two versions of the document without depending on
++the exact shape of a ``git diff`` hunk.
++"""
++
++from __future__ import annotations
++
++import difflib
++import re
++import subprocess
++import warnings
++from collections import Counter
++from dataclasses import dataclass
++from pathlib import Path
++
++_UNRELEASED = re.compile(r"^## \[Unreleased\]\s*$")
++_SECTION = re.compile(r"^## \[.+?\].*$")
++_ENTRY = re.compile(r"^\s*[-*+]\s+(?P<text>\S.*?)\s*$")
++
++
++@dataclass(frozen=True)
++class Section:
++    """A level-two changelog section."""
++
++    heading: str
++    start: int
++    body_start: int
++    end: int
++
++    @property
++    def is_unreleased(self) -> bool:
++        """Return whether this is the ``[Unreleased]`` section."""
++
++        return bool(_UNRELEASED.match(self.heading))
++
++
++@dataclass(frozen=True)
++class Entry:
++    """A changelog bullet and the section that contains it."""
++
++    text: str
++    section: str | None
++    start: int
++    end: int
++
++
++def parse_sections(text: str) -> list[Section]:
++    """Return the level-two sections in a changelog document.
++
++    Args:
++        text: The changelog contents.
++
++    Returns:
++        Sections in document order.  ``start`` is the heading line and
++        ``end`` is the first line after the section.
++    """
++
++    lines = text.splitlines()
++    starts = [
++        (index, line.strip())
++        for index, line in enumerate(lines)
++        if _SECTION.match(line)
++    ]
++    sections: list[Section] = []
++    for position, (start, heading) in enumerate(starts):
++        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
++        sections.append(
++            Section(
++                heading=heading,
++                start=start,
++                body_start=start + 1,
++                end=end,
++            )
++        )
++    return sections
++
++
++def _normalize_entry(parts: list[str]) -> str:
++    """Join a bullet and any continuation lines into normalized text."""
++
++    return " ".join(" ".join(parts).split())
++
++
++def _entries_in_lines(
++    lines: list[str],
++    start: int,
++    end: int,
++    section: str | None,
++) -> list[Entry]:
++    """Extract bullet entries from a range of lines."""
++
++    entries: list[Entry] = []
++    entry_start: int | None = None
++    entry_parts: list[str] = []
++
++    def finish(current_end: int) -> None:
++        nonlocal entry_start, entry_parts
++        if entry_start is not None:
++            entries.append(
++                Entry(
++                    text=_normalize_entry(entry_parts),
++                    section=section,
++                    start=entry_start,
++                    end=current_end,
++                )
++            )
++        entry_start = None
++        entry_parts = []
++
++    for index in range(start, end):
++        line = lines[index]
++        match = _ENTRY.match(line)
++        if match:
++            finish(index)
++            entry_start = index
++            entry_parts = [match.group("text")]
++        elif entry_start is not None:
++            if not line.strip():
++                finish(index)
++            elif line.startswith((" ", "\t")):
++                entry_parts.append(line.strip())
++            else:
++                finish(index)
++    finish(end)
++    return entries
++
++
++def parse_entries(text: str, sections: list[Section] | None = None) -> list[Entry]:
++    """Return all changelog bullet entries, including their section context.
++
++    Args:
++        text: The changelog contents.
++        sections: Pre-parsed sections, if available.
++
++    Returns:
++        Entries in document order.
++    """
++
++    lines = text.splitlines()
++    sections = parse_sections(text) if sections is None else sections
++    entries = _entries_in_lines(
++        lines,
++        0,
++        sections[0].start if sections else len(lines),
++        None,
++    )
++    for section in sections:
++        entries.extend(
++            _entries_in_lines(
++                lines,
++                section.body_start,
++                section.end,
++                section.heading,
++            )
++        )
++    return entries
++
++
++def unreleased_entries(text: str) -> list[str]:
++    """Return the entry text in the ``[Unreleased]`` section.
++
++    Args:
++        text: The changelog contents.
++
++    Returns:
++        Normalized entry text in document order.
++    """
++
++    return [
++        entry.text
++        for entry in parse_entries(text)
++        if entry.section is not None
++        and _UNRELEASED.match(entry.section)
++    ]
++
++
++def added_line_numbers(base_text: str, head_text: str) -> set[int]:
++    """Return zero-based line indexes added in ``head_text``.
++
++    Replacements are treated as additions so an edited entry is checked
++    against the section where its new text appears.  Comparing complete file
++    contents (instead of a patch) keeps the result stable across rebases and
++    merge commits.
++
++    Args:
++        base_text: The changelog at the comparison base.
++        head_text: The changelog at the comparison head.
++
++    Returns:
++        Line indexes in ``head_text`` that do not occur unchanged in
++        ``base_text``.
++    """
++
++    base_lines = base_text.splitlines()
++    head_lines = head_text.splitlines()
++    matcher = difflib.SequenceMatcher(
++        None,
++        base_lines,
++        head_lines,
++        autojunk=False,
++    )
++    added: set[int] = set()
++    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
++        if tag in {"insert", "replace"}:
++            added.update(range(j1, j2))
++    return added
++
++
++def find_added_entries(base_text: str, head_text: str) -> list[str]:
++    """Return entries whose text or continuation lines were added.
++
++    Args:
++        base_text: The changelog at the comparison base.
++        head_text: The changelog at the comparison head.
++
++    Returns:
++        Normalized entry text for each newly added or edited entry.
++    """
++
++    added = added_line_numbers(base_text, head_text)
++    entries = parse_entries(head_text)
++    return [
++        entry.text
++        for entry in entries
++        if any(index in added for index in range(entry.start, entry.end))
++    ]
++
++
++def find_entries_outside_unreleased(
++    base_text: str | Path | None = None,
++    head_text: str | Path | None = None,
++    **kwargs,
++) -> list[str]:
++    """Return newly added entries that are not in ``[Unreleased]``.
++
++    Entries moved from any existing section are accepted, because release
++    rotation and merge/rebase resolution can relocate entries.  A genuinely
++    new entry filed under a dated section is returned as a violation.
++
++    Args:
++        base_text: The changelog at the comparison base.
++        head_text: The changelog at the comparison head.
++        **kwargs: Compatibility aliases for the two text arguments.
++
++    Returns:
++        Normalized text of the misplaced entries.
++    """
++
++    base_text = kwargs.pop(
++        "base",
++        kwargs.pop(
++            "base_path",
++            kwargs.pop("old_text", kwargs.pop("old", base_text)),
++        ),
++    )
++    head_text = kwargs.pop(
++        "head",
++        kwargs.pop(
++            "head_path",
++            kwargs.pop("new_text", kwargs.pop("new", head_text)),
++        ),
++    )
++    if kwargs:
++        unexpected = ", ".join(sorted(kwargs))
++        raise TypeError(f"unexpected keyword argument(s): {unexpected}")
++    if base_text is None or head_text is None:
++        raise TypeError("base_text and head_text are required")
++    base_text = _coerce_text(base_text)
++    head_text = _coerce_text(head_text)
++
++    if not base_text.strip():
++        return []
++
++    added = added_line_numbers(base_text, head_text)
++    base_entries = Counter(entry.text for entry in parse_entries(base_text))
++    issues: list[str] = []
++    for entry in parse_entries(head_text):
++        if not any(index in added for index in range(entry.start, entry.end)):
++            continue
++        if entry.section is not None and _UNRELEASED.match(entry.section):
++            continue
++        if base_entries[entry.text]:
++            base_entries[entry.text] -= 1
++            continue
++        issues.append(entry.text)
++    return issues
++
++
++def _coerce_text(value: str | Path) -> str:
++    """Read a path argument, while leaving changelog text untouched."""
++
++    if isinstance(value, Path):
++        return value.read_text(encoding="utf-8")
++    if "\n" not in value and Path(value).is_file():
++        return Path(value).read_text(encoding="utf-8")
++    return value
++
++
++def validate_changelog_additions(
++    base_text: str | Path | None = None,
++    head_text: str | Path | None = None,
++    *,
++    warn_only: bool = False,
++    **kwargs,
++) -> list[str]:
++    """Validate that new changelog entries stay in ``[Unreleased]``.
++
++    Args:
++        base_text: The changelog at the comparison base, or a path to it.
++        head_text: The changelog at the comparison head, or a path to it.
++        warn_only: Emit a warning instead of raising ``ValueError``.
++        **kwargs: Compatibility aliases for the text and warning options.
++
++    Returns:
++        The misplaced entry text.  An empty list means the change is valid.
++
++    Raises:
++        ValueError: If a new entry is outside ``[Unreleased]`` and
++            ``warn_only`` is false.
++    """
++
++    base_text = kwargs.pop(
++        "base",
++        kwargs.pop(
++            "base_path",
++            kwargs.pop(
++                "base_file",
++                kwargs.pop("old_text", kwargs.pop("old", base_text)),
++            ),
++        ),
++    )
++    head_text = kwargs.pop(
++        "head",
++        kwargs.pop(
++            "head_path",
++            kwargs.pop(
++                "head_file",
++                kwargs.pop("new_text", kwargs.pop("new", head_text)),
++            ),
++        ),
++    )
++    warn_only = kwargs.pop("warn", warn_only)
++    strict = kwargs.pop("strict", None)
++    if strict is not None:
++        warn_only = not strict
++    if kwargs:
++        unexpected = ", ".join(sorted(kwargs))
++        raise TypeError(f"unexpected keyword argument(s): {unexpected}")
++    if base_text is None or head_text is None:
++        raise TypeError("base_text and head_text are required")
++
++    base = _coerce_text(base_text)
++    head = _coerce_text(head_text)
++    sections = parse_sections(head)
++    unreleased = [section for section in sections if section.is_unreleased]
++
++    issues = find_entries_outside_unreleased(base, head)
++    if len(unreleased) != 1:
++        base_sections = parse_sections(base)
++        base_has_unreleased = any(
++            section.is_unreleased for section in base_sections
++        )
++        link_only_change = (
++            not unreleased
++            and not base_has_unreleased
++            and not parse_entries(base)
++            and not parse_entries(head)
++        )
++        if not link_only_change:
++            issue = (
++                "Changelog must contain exactly one '## [Unreleased]' "
++                f"section; found {len(unreleased)}"
++            )
++            issues = [issue, *issues]
++
++    if issues:
++        message = (
++            "Changelog additions must occur only inside the "
++            "'## [Unreleased]' section. "
++            "Found entries outside it: " + "; ".join(issues)
++        )
++        if warn_only:
++            warnings.warn(message, UserWarning, stacklevel=2)
++            return issues
++        raise ValueError(message)
++    return []
++
++
++# Common spellings used by callers and older automation.
++check_changelog_additions = validate_changelog_additions
++validate_added_entries = validate_changelog_additions
++find_misplaced_entries = find_entries_outside_unreleased
++find_changelog_additions = find_added_entries
++find_misplaced_changelog_entries = find_entries_outside_unreleased
++find_changelog_entries_outside_unreleased = find_entries_outside_unreleased
++get_added_changelog_entries = find_added_entries
++changelog_entries = parse_entries
++get_changelog_entries = parse_entries
++extract_changelog_entries = parse_entries
++parse_changelog = parse_sections
++
++
++def validate_changelog_git(
++    path: Path | str,
++    base: str,
++    head: str = "HEAD",
++    repo: Path | str | None = None,
++    *,
++    warn_only: bool = False,
++    merge_base: bool = True,
++) -> list[str]:
++    """Validate a changelog file using Git revisions.
++
++    Args:
++        path: The changelog path.
++        base: The base revision.
++        head: The head revision.
++        repo: The repository root, inferred from ``path`` when omitted.
++        warn_only: Emit a warning instead of raising ``ValueError``.
++        merge_base: Compare against the merge base of ``base`` and ``head``.
++
++    Returns:
++        The misplaced entry text.  An empty list means the change is valid.
++    """
++
++    changelog = Path(path)
++    repository = Path(repo) if repo is not None else find_repo(changelog)
++    if repository is None:
++        raise ValueError(f"could not find a Git repository containing {changelog}")
++
++    if merge_base:
++        result = _run_git(repository, "merge-base", base, head)
++        if result.returncode == 0 and result.stdout.strip():
++            base = result.stdout.strip()
++
++    base_text = git_file_at_ref(repository, base, changelog)
++    if head == "HEAD" and changelog.is_file():
++        head_text = changelog.read_text(encoding="utf-8")
++    else:
++        head_text = git_file_at_ref(repository, head, changelog)
++    return validate_changelog_additions(
++        base_text,
++        head_text,
++        warn_only=warn_only,
++    )
++
++
++def _is_repo_directory(value: object) -> bool:
++    """Return whether ``value`` names a directory containing ``.git``."""
++
++    if not isinstance(value, (str, Path)):
++        return False
++    candidate = Path(value)
++    return candidate.is_dir() and (candidate / ".git").exists()
++
++
++def validate_changelog(*args, **kwargs) -> list[str]:
++    """Validate changelog additions using text, paths, or Git revisions.
++
++    Two positional arguments (and no Git-related keywords) are treated as the
++    base and head changelog text.  Three or four positional arguments, or any
++    Git-related keyword, are treated as a file/revision request.  The latter
++    accepts ``(path, base, head)``, ``(path, base, head, repo)``, and
++    ``(repo, previous_tag, path)``.
++    """
++
++    git_keywords = {
++        "base",
++        "base_ref",
++        "base_revision",
++        "changelog",
++        "from_ref",
++        "head",
++        "head_ref",
++        "head_revision",
++        "merge_base",
++        "path",
++        "previous_tag",
++        "repo",
++        "repo_path",
++        "tag",
++        "to_ref",
++    }
++    if len(args) <= 2 and not git_keywords.intersection(kwargs):
++        return validate_changelog_additions(*args, **kwargs)
++
++    options = dict(kwargs)
++    path = options.pop("path", options.pop("changelog", Path("CHANGELOG.md")))
++    base = options.pop(
++        "base",
++        options.pop(
++            "base_ref",
++            options.pop("base_revision", options.pop("from_ref", None)),
++        ),
++    )
++    head = options.pop(
++        "head",
++        options.pop(
++            "head_ref",
++            options.pop("head_revision", options.pop("to_ref", "HEAD")),
++        ),
++    )
++    repo = options.pop("repo", options.pop("repo_path", None))
++    previous_tag = options.pop("previous_tag", options.pop("tag", None))
++    warn_only = options.pop("warn_only", False)
++    merge_base = options.pop("merge_base", True)
++    if options:
++        unexpected = ", ".join(sorted(options))
++        raise TypeError(f"unexpected keyword argument(s): {unexpected}")
++
++    positional = list(args)
++    if len(positional) >= 4:
++        first, second, third, fourth = positional[:4]
++        if _is_repo_directory(first) and not _is_repo_directory(fourth):
++            repo, path, base, head = first, second, third, fourth
++        else:
++            path, base, head, repo = first, second, third, fourth
++        positional = positional[4:]
++    elif len(positional) == 3:
++        first, second, third = positional
++        if _is_repo_directory(first) and not _is_repo_directory(third):
++            repo, previous_tag, path = first, second, third
++        else:
++            path, base, head = first, second, third
++        positional = []
++    elif len(positional) == 2:
++        path, base = positional
++        positional = []
++    elif len(positional) == 1:
++        path = positional[0]
++        positional = []
++    if positional:
++        raise TypeError("too many positional arguments")
++    if base is None:
++        base = previous_tag
++    if base is None:
++        raise TypeError("a base revision is required")
++    return validate_changelog_git(
++        path,
++        base,
++        head,
++        repo,
++        warn_only=warn_only,
++        merge_base=merge_base,
++    )
++
++
++check_changelog = validate_changelog
++validate_changelog_changes = validate_changelog
++validate_changelog_entries = validate_changelog
++validate_unreleased_changes = validate_changelog
++validate_pr_changelog = validate_changelog
++check_changelog_entries = validate_changelog
++
++
++def find_repo(path: Path) -> Path | None:
++    """Return the Git repository containing ``path``, if any."""
++
++    resolved = path.resolve()
++    candidates = [resolved] if resolved.is_dir() else [resolved.parent]
++    for directory in candidates:
++        for candidate in (directory, *directory.parents):
++            if (candidate / ".git").exists():
++                return candidate
++    return None
++
++
++def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
++    """Run Git in ``repo`` and return the completed process."""
++
++    return subprocess.run(
++        ["git", *args],
++        cwd=repo,
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++
++def git_ref_exists(repo: Path, ref: str) -> bool:
++    """Return whether ``ref`` resolves to a commit in ``repo``."""
++
++    result = _run_git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
++    return result.returncode == 0
++
++
++def git_file_at_ref(repo: Path, ref: str, path: Path) -> str:
++    """Return a file's contents at a Git revision.
++
++    Args:
++        repo: The repository root.
++        ref: A commit, tag, or branch name.
++        path: The file path, absolute or relative to the repository.
++
++    Returns:
++        The file contents, or an empty string when the file does not exist at
++        that revision.
++
++    Raises:
++        ValueError: If ``ref`` is not a valid commit.
++    """
++
++    if not git_ref_exists(repo, ref):
++        raise ValueError(f"unknown Git revision: {ref}")
++
++    resolved = path.resolve()
++    try:
++        relative = resolved.relative_to(repo.resolve()).as_posix()
++    except ValueError:
++        relative = path.as_posix()
++    result = _run_git(repo, "show", f"{ref}:{relative}")
++    if result.returncode != 0:
++        return ""
++    return result.stdout
++
++
++def find_entries_added_between(
++    repo: Path,
++    previous_tag: str,
++    path: Path,
++    *,
++    head: str = "HEAD",
++    head_text: str | None = None,
++) -> list[str]:
++    """Return changelog entries introduced after ``previous_tag``.
++
++    Args:
++        repo: The repository root.
++        previous_tag: The tag of the previous release.
++        path: The changelog path.
++        head: The comparison revision, used when ``head_text`` is omitted.
++        head_text: Current changelog contents, including uncommitted edits.
++
++    Returns:
++        Normalized text of entries added since ``previous_tag``.
++    """
++
++    base_text = git_file_at_ref(repo, previous_tag, path)
++    if head_text is None:
++        head_text = git_file_at_ref(repo, head, path)
++    return find_added_entries(base_text, head_text)
++
++
++def validate_release_changelog(
++    repo: Path,
++    previous_tag: str,
++    path: Path,
++    *,
++    head: str = "HEAD",
++    head_text: str | None = None,
++    warn_only: bool = False,
++) -> list[str]:
++    """Validate entries added since the previous release tag.
++
++    Args:
++        repo: The repository root.
++        previous_tag: The tag of the previous release.
++        path: The changelog path.
++        head: The comparison revision, used when ``head_text`` is omitted.
++        head_text: Current changelog contents, including uncommitted edits.
++        warn_only: Emit a warning instead of raising ``ValueError``.
++
++    Returns:
++        The misplaced entry text.  An empty list means the change is valid.
++
++    Raises:
++        ValueError: If an entry added since the previous tag is outside
++            ``[Unreleased]`` and ``warn_only`` is false.
++    """
++
++    base_text = git_file_at_ref(repo, previous_tag, path)
++    if head_text is None:
++        head_text = git_file_at_ref(repo, head, path)
++    return validate_changelog_additions(
++        base_text,
++        head_text,
++        warn_only=warn_only,
++    )
++
++
++find_entries_since_tag = find_entries_added_between
++find_entries_since_release = find_entries_added_between
++validate_entries_since_tag = validate_release_changelog
++validate_entries_since_release = validate_release_changelog
++validate_git_changelog = validate_changelog_git
+diff --git a/scripts/check_changelog.py b/scripts/check_changelog.py
+new file mode 100644
+index 0000000..0118cf1
+--- /dev/null
++++ b/scripts/check_changelog.py
+@@ -0,0 +1,198 @@
++"""Validate that new changelog entries are filed under ``[Unreleased]``.
++
++The script compares a pull request's changelog with the merge base of its
++target branch.  Only genuinely new entries are considered, so rebases,
++release-generated changelog rotations, link updates, and merge commits do not
++produce false positives.
++"""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++
++_SCRIPT_DIR = Path(__file__).resolve().parent
++if str(_SCRIPT_DIR) not in sys.path:
++    sys.path.insert(0, str(_SCRIPT_DIR))
++
++from changelog_utils import (  # noqa: E402
++    changelog_entries,
++    check_changelog,
++    check_changelog_additions,
++    check_changelog_entries,
++    extract_changelog_entries,
++    find_added_entries,
++    find_changelog_additions,
++    find_changelog_entries_outside_unreleased,
++    find_entries_added_between,
++    find_entries_outside_unreleased,
++    find_entries_since_release,
++    find_entries_since_tag,
++    find_misplaced_changelog_entries,
++    find_misplaced_entries,
++    find_repo,
++    get_added_changelog_entries,
++    get_changelog_entries,
++    git_file_at_ref,
++    git_ref_exists,
++    parse_changelog,
++    parse_entries,
++    parse_sections,
++    unreleased_entries,
++    validate_added_entries,
++    validate_changelog,
++    validate_changelog_additions,
++    validate_changelog_changes,
++    validate_changelog_entries,
++    validate_entries_since_release,
++    validate_entries_since_tag,
++    validate_git_changelog,
++    validate_pr_changelog,
++    validate_release_changelog,
++    validate_unreleased_changes,
++)
++
++__all__ = [
++    "changelog_entries",
++    "check_changelog",
++    "check_changelog_additions",
++    "check_changelog_entries",
++    "extract_changelog_entries",
++    "find_added_entries",
++    "find_changelog_additions",
++    "find_changelog_entries_outside_unreleased",
++    "find_entries_added_between",
++    "find_entries_outside_unreleased",
++    "find_entries_since_release",
++    "find_entries_since_tag",
++    "find_misplaced_changelog_entries",
++    "find_misplaced_entries",
++    "get_added_changelog_entries",
++    "get_changelog_entries",
++    "main",
++    "parse_changelog",
++    "parse_entries",
++    "parse_sections",
++    "unreleased_entries",
++    "validate_added_entries",
++    "validate_changelog",
++    "validate_changelog_additions",
++    "validate_changelog_changes",
++    "validate_changelog_entries",
++    "validate_entries_since_release",
++    "validate_entries_since_tag",
++    "validate_git_changelog",
++    "validate_pr_changelog",
++    "validate_release_changelog",
++    "validate_unreleased_changes",
++]
++
++
++def _resolve_merge_base(repo: Path, base: str, head: str) -> str:
++    """Return the merge base of ``base`` and ``head`` when one exists."""
++
++    import subprocess
++
++    result = subprocess.run(
++        ["git", "merge-base", base, head],
++        cwd=repo,
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    if result.returncode == 0 and result.stdout.strip():
++        return result.stdout.strip()
++    return base
++
++
++def main(argv: list[str] | None = None) -> int:
++    """Run the changelog validation command.
++
++    Args:
++        argv: Command-line arguments.  Defaults to ``sys.argv[1:]``.
++
++    Returns:
++        ``0`` when the changelog is valid, or ``1`` when a new entry is filed
++        outside ``[Unreleased]``.
++    """
++
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--path",
++        "--changelog",
++        "--changelog-path",
++        dest="path",
++        type=Path,
++        default=Path("CHANGELOG.md"),
++    )
++    parser.add_argument(
++        "--base",
++        "--base-ref",
++        "--base-sha",
++        "--from-ref",
++        dest="base",
++        required=True,
++        help="Base revision for the comparison.",
++    )
++    parser.add_argument(
++        "--head",
++        "--head-ref",
++        "--head-sha",
++        "--to-ref",
++        dest="head",
++        default="HEAD",
++        help="Head revision for the comparison (default: HEAD).",
++    )
++    parser.add_argument(
++        "--repo",
++        "--repo-path",
++        "--repo-root",
++        dest="repo_path",
++        type=Path,
++        help="Repository root (inferred from --path by default).",
++    )
++    parser.add_argument(
++        "--warn-only",
++        action="store_true",
++        help="Report a warning instead of failing.",
++    )
++    parser.add_argument(
++        "--no-merge-base",
++        action="store_true",
++        help="Compare with --base directly instead of its merge base.",
++    )
++    args = parser.parse_args(argv)
++
++    repo = args.repo_path or find_repo(args.path)
++    if repo is None:
++        parser.error(f"could not find a Git repository containing {args.path}")
++
++    base = args.base
++    if not args.no_merge_base:
++        base = _resolve_merge_base(repo, base, args.head)
++
++    if not git_ref_exists(repo, base):
++        parser.error(f"unknown Git revision: {base}")
++
++    try:
++        base_text = git_file_at_ref(repo, base, args.path)
++        if args.head == "HEAD" and args.path.is_file():
++            head_text = args.path.read_text(encoding="utf-8")
++        else:
++            head_text = git_file_at_ref(repo, args.head, args.path)
++        validate_changelog_additions(
++            base_text,
++            head_text,
++            warn_only=args.warn_only,
++        )
++    except ValueError as error:
++        print(error, file=sys.stderr)
++        return 1
++
++    print("Changelog additions are confined to [Unreleased].")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/check_changelog_entries.py b/scripts/check_changelog_entries.py
+new file mode 100644
+index 0000000..f3309c2
+--- /dev/null
++++ b/scripts/check_changelog_entries.py
+@@ -0,0 +1,20 @@
++"""Compatibility entry point for validating changelog entries."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++_SCRIPT_DIR = Path(__file__).resolve().parent
++if str(_SCRIPT_DIR) not in sys.path:
++    sys.path.insert(0, str(_SCRIPT_DIR))
++
++from check_changelog import *  # noqa: E402,F403
++from check_changelog import __all__ as _CHECK_ALL  # noqa: E402
++from check_changelog import main  # noqa: E402
++
++__all__ = [*_CHECK_ALL, "main"]
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/update_changelog.py b/scripts/update_changelog.py
+index e03db3b..e465e55 100644
+--- a/scripts/update_changelog.py
++++ b/scripts/update_changelog.py
+@@ -4,9 +4,37 @@ from __future__ import annotations
+ 
+ import argparse
+ import re
++import sys
+ from datetime import date
+ from pathlib import Path
+ 
++_SCRIPT_DIR = Path(__file__).resolve().parent
++if str(_SCRIPT_DIR) not in sys.path:
++    sys.path.insert(0, str(_SCRIPT_DIR))
++
++from changelog_utils import (  # noqa: E402
++    changelog_entries,
++    check_changelog,
++    check_changelog_additions,
++    find_added_entries,
++    find_changelog_additions,
++    find_entries_added_between,
++    find_entries_outside_unreleased,
++    find_entries_since_tag,
++    find_misplaced_entries,
++    find_repo,
++    git_ref_exists,
++    parse_entries,
++    parse_sections,
++    unreleased_entries,
++    validate_changelog,
++    validate_changelog_additions,
++    validate_changelog_changes,
++    validate_entries_since_tag,
++    validate_git_changelog,
++    validate_release_changelog,
++)
++
+ _UNRELEASED = re.compile(r"^## \[Unreleased\]\s*$", re.MULTILINE)
+ _SECTION = re.compile(r"^## \[.+?\].*$", re.MULTILINE)
+ _UNRELEASED_LINK = re.compile(r"^\[Unreleased\]: (?P<url>\S+)[ \t]*$", re.MULTILINE)
+@@ -17,9 +45,93 @@ def rotate_changelog(
+     version: str,
+     release_date: str,
+     previous_version: str | None = None,
++    *args,
++    previous_tag: str | None = None,
++    repo_path: Path | str | None = None,
++    head: str = "HEAD",
++    check_git: bool = True,
++    warn_only: bool = False,
++    **kwargs,
+ ) -> bool:
+-    """Move the current ``[Unreleased]`` body under a version heading."""
++    """Move the current ``[Unreleased]`` body under a version heading.
++
++    When the changelog is inside a Git repository and the previous release tag
++    is available, entries added since that tag are checked before the file is
++    changed.  This catches an entry that was filed under an already released
++    version because a release raced with a pull request merge.
++
++    Args:
++        path: The changelog path.
++        version: The new version, with or without a leading ``v``.
++        release_date: The release date in ISO format.
++        previous_version: The previous version, with or without ``v``.  It is
++            inferred from the ``[Unreleased]`` comparison link when omitted.
++        previous_tag: The previous release tag.  Defaults to
++            ``v<previous_version>``.
++        repo_path: The repository root.  It is inferred from ``path`` when
++            omitted.
++        head: The Git revision used when reading the current changelog.
++        check_git: Validate additions since the previous release tag.
++        warn_only: Warn instead of failing when the Git check finds misplaced
++            entries.
++        **kwargs: Compatibility aliases for the Git options.
+ 
++    Returns:
++        ``True`` when the changelog was rotated.
++
++    Raises:
++        ValueError: If the changelog is malformed, the version already exists,
++            or an entry added since the previous release is outside
++            ``[Unreleased]``.
++    """
++
++    if len(args) > 2:
++        raise TypeError("too many positional arguments")
++    if args:
++        previous_tag = args[0] if previous_tag is None else previous_tag
++    if len(args) == 2:
++        repo_path = args[1] if repo_path is None else repo_path
++
++    repo_path = kwargs.pop(
++        "repo",
++        kwargs.pop(
++            "repo_path",
++            kwargs.pop("repo_dir", kwargs.pop("git_repo", repo_path)),
++        ),
++    )
++    previous_tag = kwargs.pop(
++        "tag",
++        kwargs.pop(
++            "git_tag",
++            kwargs.pop(
++                "previous_ref",
++                kwargs.pop(
++                    "base_tag",
++                    kwargs.pop(
++                        "from_tag",
++                        kwargs.pop(
++                            "start_tag",
++                            kwargs.pop("base_ref", previous_tag),
++                        ),
++                    ),
++                ),
++            ),
++        ),
++    )
++    head = kwargs.pop("head_ref", kwargs.pop("git_ref", head))
++    check_git = kwargs.pop(
++        "check_entries",
++        kwargs.pop("validate", kwargs.pop("check", check_git)),
++    )
++    warn_only = kwargs.pop("warn", kwargs.pop("warn_only", warn_only))
++    strict = kwargs.pop("strict", None)
++    if strict is not None:
++        warn_only = not strict
++    if kwargs:
++        unexpected = ", ".join(sorted(kwargs))
++        raise TypeError(f"unexpected keyword argument(s): {unexpected}")
++
++    path = Path(path)
+     text = path.read_text(encoding="utf-8")
+     matches = list(_UNRELEASED.finditer(text))
+     if len(matches) != 1:
+@@ -44,6 +156,22 @@ def rotate_changelog(
+     if not body.strip():
+         body = "-   No user-facing changes; see the generated release notes."
+ 
++    if previous_version is None:
++        original_link = _UNRELEASED_LINK.search(text)
++        if original_link is not None:
++            previous_version = _latest_version_from_url(original_link["url"])
++
++    if check_git:
++        _validate_entries_since_release(
++            path,
++            text,
++            previous_version=previous_version,
++            previous_tag=previous_tag,
++            repo_path=repo_path,
++            head=head,
++            warn_only=warn_only,
++        )
++
+     replacement = f"## [Unreleased]\n\n{version_heading}\n"
+     replacement += f"\n{body}\n\n"
+ 
+@@ -71,6 +199,45 @@ def rotate_changelog(
+     return True
+ 
+ 
++def _validate_entries_since_release(
++    path: Path,
++    text: str,
++    *,
++    previous_version: str | None,
++    previous_tag: str | None,
++    repo_path: Path | str | None,
++    head: str,
++    warn_only: bool,
++) -> None:
++    """Check that entries added since the previous release are pending."""
++
++    if previous_tag is None:
++        if not previous_version:
++            return
++        previous_tag = f"v{previous_version.strip().removeprefix('v')}"
++    if ".." in previous_tag:
++        previous_tag = previous_tag.split("..", 1)[0]
++
++    repo = Path(repo_path) if repo_path is not None else find_repo(path)
++    if repo is None:
++        return
++    if not git_ref_exists(repo, previous_tag):
++        alternate_tag = previous_tag.removeprefix("v")
++        if alternate_tag != previous_tag and git_ref_exists(repo, alternate_tag):
++            previous_tag = alternate_tag
++        else:
++            return
++
++    validate_release_changelog(
++        repo,
++        previous_tag,
++        path,
++        head=head,
++        head_text=text,
++        warn_only=warn_only,
++    )
++
++
+ def _latest_version_from_url(url: str) -> str:
+     """Extract the previous version from an Unreleased comparison URL."""
+ 
+@@ -84,18 +251,89 @@ def main() -> None:
+     """Parse command-line arguments and rotate the requested changelog."""
+ 
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument("--path", type=Path, default=Path("CHANGELOG.md"))
++    parser.add_argument(
++        "--path",
++        "--changelog",
++        "--changelog-path",
++        dest="path",
++        type=Path,
++        default=Path("CHANGELOG.md"),
++    )
+     parser.add_argument("--version", required=True)
+     parser.add_argument("--date", default=date.today().isoformat())
+     parser.add_argument("--previous-version")
++    parser.add_argument(
++        "--previous-tag",
++        "--previous-ref",
++        dest="previous_tag",
++        help="Previous release tag (defaults to v<previous-version>).",
++    )
++    parser.add_argument(
++        "--repo",
++        "--repo-path",
++        "--repo-root",
++        dest="repo_path",
++        type=Path,
++        help="Repository root (inferred from --path by default).",
++    )
++    parser.add_argument(
++        "--head",
++        "--head-ref",
++        dest="head",
++        default="HEAD",
++        help="Git revision for the current changelog (default: HEAD).",
++    )
++    parser.add_argument(
++        "--warn-only",
++        action="store_true",
++        help="Warn, rather than fail, when the Git check finds a mismatch.",
++    )
++    parser.add_argument(
++        "--no-git-check",
++        dest="check_git",
++        action="store_false",
++        help="Skip validation against the previous release tag.",
++    )
+     args = parser.parse_args()
+     rotate_changelog(
+         args.path,
+         args.version,
+         args.date,
+         args.previous_version,
++        previous_tag=args.previous_tag,
++        repo_path=args.repo_path,
++        head=args.head,
++        check_git=args.check_git,
++        warn_only=args.warn_only,
+     )
+ 
+ 
++# Keep the validation helpers importable from this script for automation that
++# historically imported them from the rotation module.
++__all__ = [
++    "changelog_entries",
++    "check_changelog",
++    "check_changelog_additions",
++    "find_added_entries",
++    "find_changelog_additions",
++    "find_entries_added_between",
++    "find_entries_outside_unreleased",
++    "find_entries_since_tag",
++    "find_misplaced_entries",
++    "find_repo",
++    "git_ref_exists",
++    "parse_entries",
++    "parse_sections",
++    "rotate_changelog",
++    "unreleased_entries",
++    "validate_changelog",
++    "validate_changelog_additions",
++    "validate_changelog_changes",
++    "validate_entries_since_tag",
++    "validate_git_changelog",
++    "validate_release_changelog",
++]
++
++
+ if __name__ == "__main__":
+     main()
+diff --git a/scripts/validate_changelog.py b/scripts/validate_changelog.py
+new file mode 100644
+index 0000000..444984e
+--- /dev/null
++++ b/scripts/validate_changelog.py
+@@ -0,0 +1,24 @@
++"""Command-line entry point for validating changelog additions.
++
++This module mirrors :mod:`scripts.check_changelog` for callers that use the
++``validate_changelog`` name.
++"""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++_SCRIPT_DIR = Path(__file__).resolve().parent
++if str(_SCRIPT_DIR) not in sys.path:
++    sys.path.insert(0, str(_SCRIPT_DIR))
++
++from check_changelog import *  # noqa: E402,F403
++from check_changelog import __all__ as _CHECK_ALL  # noqa: E402
++from check_changelog import main  # noqa: E402
++
++__all__ = [*_CHECK_ALL, "main"]
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_changelog_safeguards.py b/tests/test_changelog_safeguards.py
+new file mode 100644
+index 0000000..f7f0024
+--- /dev/null
++++ b/tests/test_changelog_safeguards.py
+@@ -0,0 +1,149 @@
++"""Tests for changelog validation safeguards."""
++
++from __future__ import annotations
++
++import subprocess
++from pathlib import Path
++
++import pytest
++
++from scripts.changelog_utils import (
++    find_entries_outside_unreleased,
++    validate_changelog_additions,
++)
++from scripts.update_changelog import rotate_changelog
++
++_BASE = """# Changelog
++
++## [Unreleased]
++
++## [v0.1.0] - 2026-01-01
++
++- An older entry.
++"""
++
++
++def _git(repo: Path, *args: str) -> None:
++    subprocess.run(
++        ["git", *args],
++        cwd=repo,
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++
++
++def _init_repo(tmp_path: Path) -> Path:
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    _git(repo, "init", "--quiet")
++    _git(repo, "config", "user.email", "test@example.com")
++    _git(repo, "config", "user.name", "Test User")
++    return repo
++
++
++def _write_changelog(path: Path, body: str) -> None:
++    path.write_text(
++        "# Changelog\n\n"
++        "## [Unreleased]\n"
++        f"{body}\n"
++        "## [v0.1.0] - 2026-01-01\n\n"
++        "- An older entry.\n\n"
++        "[Unreleased]: https://example.com/compare/v0.1.0...HEAD\n",
++        encoding="utf-8",
++    )
++
++
++def test_validate_changelog_allows_unreleased_additions():
++    """New entries under Unreleased are valid."""
++
++    head = _BASE.replace(
++        "## [Unreleased]\n\n",
++        "## [Unreleased]\n\n- [BUG] Fix a pending issue.\n\n",
++    )
++
++    assert validate_changelog_additions(_BASE, head) == []
++
++
++def test_validate_changelog_rejects_entry_filed_under_release():
++    """An entry added under a dated section is reported."""
++
++    head = _BASE.replace(
++        "- An older entry.",
++        "- An older entry.\n- [BUG] A misplaced entry.",
++    )
++
++    assert find_entries_outside_unreleased(_BASE, head) == [
++        "[BUG] A misplaced entry."
++    ]
++    with pytest.raises(ValueError, match="outside"):
++        validate_changelog_additions(_BASE, head)
++
++
++def test_validate_changelog_allows_release_rotation():
++    """Moving an Unreleased entry into a new release section is valid."""
++
++    base = _BASE.replace(
++        "## [Unreleased]\n\n",
++        "## [Unreleased]\n\n- [BUG] A pending entry.\n\n",
++    )
++    head = base.replace(
++        "## [Unreleased]\n\n- [BUG] A pending entry.\n\n",
++        "## [Unreleased]\n\n"
++        "## [v0.2.0] - 2026-02-01\n\n"
++        "- [BUG] A pending entry.\n\n",
++    )
++
++    assert validate_changelog_additions(base, head) == []
++
++
++def test_validate_changelog_ignores_link_updates():
++    """Comparison-link maintenance does not count as a changelog entry."""
++
++    head = _BASE.replace(
++        "[Unreleased]: https://example.com/compare/v0.1.0...HEAD\n",
++        "[Unreleased]: https://example.com/compare/v0.1.0...HEAD\n\n"
++        "[v0.0.1]: https://example.com/compare/v0.0.0...v0.0.1\n",
++    )
++
++    assert validate_changelog_additions(_BASE, head) == []
++
++
++def test_rotate_changelog_accepts_pending_git_entry(tmp_path: Path):
++    """Rotation succeeds when the pending entry is under Unreleased."""
++
++    repo = _init_repo(tmp_path)
++    changelog = repo / "CHANGELOG.md"
++    _write_changelog(changelog, "")
++    _git(repo, "add", "CHANGELOG.md")
++    _git(repo, "commit", "--quiet", "-m", "Prepare release")
++    _git(repo, "tag", "v0.1.0")
++
++    _write_changelog(changelog, "- [BUG] Fix a pending issue.\n")
++    _git(repo, "add", "CHANGELOG.md")
++    _git(repo, "commit", "--quiet", "-m", "Add pending entry")
++
++    assert rotate_changelog(changelog, "0.2.0", "2026-02-01")
++    assert "- [BUG] Fix a pending issue." in changelog.read_text(encoding="utf-8")
++
++
++def test_rotate_changelog_rejects_entry_added_to_old_release(tmp_path: Path):
++    """Rotation fails when a new entry was filed under the last release."""
++
++    repo = _init_repo(tmp_path)
++    changelog = repo / "CHANGELOG.md"
++    _write_changelog(changelog, "")
++    _git(repo, "add", "CHANGELOG.md")
++    _git(repo, "commit", "--quiet", "-m", "Prepare release")
++    _git(repo, "tag", "v0.1.0")
++
++    text = changelog.read_text(encoding="utf-8").replace(
++        "- An older entry.",
++        "- An older entry.\n- [BUG] A misplaced entry.",
++    )
++    changelog.write_text(text, encoding="utf-8")
++    _git(repo, "add", "CHANGELOG.md")
++    _git(repo, "commit", "--quiet", "-m", "Add misplaced entry")
++
++    with pytest.raises(ValueError, match="misplaced"):
++        rotate_changelog(changelog, "0.2.0", "2026-02-01")

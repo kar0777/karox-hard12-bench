@@ -1,0 +1,115 @@
+diff --git a/pyiceberg/exceptions.py b/pyiceberg/exceptions.py
+index 4a601b0..00b06a2 100644
+--- a/pyiceberg/exceptions.py
++++ b/pyiceberg/exceptions.py
+@@ -152,6 +152,10 @@ class NoSuchSnapshotRefError(ValueError):
+     """Raised when a named snapshot ref (branch or tag) does not exist."""
+ 
+ 
++class SnapshotRefAlreadyExistsError(ValueError):
++    """Raised when creating a named snapshot ref (branch or tag) whose name is already taken."""
++
++
+ class SnapshotRefTypeError(ValueError):
+     """Raised when an operation expects a branch and gets a tag (or vice versa)."""
+ 
+diff --git a/pyiceberg/table/update/snapshot.py b/pyiceberg/table/update/snapshot.py
+index 5ca3eb7..c854a11 100644
+--- a/pyiceberg/table/update/snapshot.py
++++ b/pyiceberg/table/update/snapshot.py
+@@ -31,6 +31,7 @@ from pyiceberg.avro.codecs import AvroCompressionCodec
+ from pyiceberg.exceptions import (
+     NoSuchSnapshotRefError,
+     NotAncestorError,
++    SnapshotRefAlreadyExistsError,
+     SnapshotRefTypeError,
+     ValidationException,
+ )
+@@ -1078,16 +1079,27 @@ class ManageSnapshots(UpdateTableMetadata["ManageSnapshots"]):
+                 refs.pop(update.ref_name, None)
+         return refs
+ 
+-    def _remove_ref_snapshot(self, ref_name: str) -> ManageSnapshots:
++    def _remove_ref_snapshot(self, ref_name: str, ref_type: SnapshotRefType) -> ManageSnapshots:
+         """Remove a snapshot ref.
+ 
+         Args:
+             ref_name: branch / tag name to remove
++            ref_type: the expected type of the ref to remove
+         Stages the updates and requirements for the remove-snapshot-ref.
+ 
+         Returns:
+             This method for chaining
++
++        Raises:
++            NoSuchSnapshotRefError: the ref does not exist.
++            SnapshotRefTypeError: the ref exists, but is not of ``ref_type``.
+         """
++        ref = self._effective_refs().get(ref_name)
++        if ref is None:
++            raise NoSuchSnapshotRefError(f"Ref does not exist: {ref_name}")
++        if ref.snapshot_ref_type != ref_type:
++            raise SnapshotRefTypeError(f"Ref {ref_name} is a {ref.snapshot_ref_type}, not a {ref_type}")
++
+         updates = (RemoveSnapshotRefUpdate(ref_name=ref_name),)
+         requirements = (
+             AssertRefSnapshotId(
+@@ -1112,7 +1124,13 @@ class ManageSnapshots(UpdateTableMetadata["ManageSnapshots"]):
+ 
+         Returns:
+             This for method chaining
++
++        Raises:
++            SnapshotRefAlreadyExistsError: a ref with the same name already exists.
+         """
++        if tag_name in self._effective_refs():
++            raise SnapshotRefAlreadyExistsError(f"Ref {tag_name} already exists")
++
+         update, requirement = self._transaction._set_ref_snapshot(
+             snapshot_id=snapshot_id,
+             ref_name=tag_name,
+@@ -1131,8 +1149,12 @@ class ManageSnapshots(UpdateTableMetadata["ManageSnapshots"]):
+             tag_name (str): name of tag to remove
+         Returns:
+             This for method chaining
++
++        Raises:
++            NoSuchSnapshotRefError: the tag does not exist.
++            SnapshotRefTypeError: the ref exists, but is a branch.
+         """
+-        return self._remove_ref_snapshot(ref_name=tag_name)
++        return self._remove_ref_snapshot(ref_name=tag_name, ref_type=SnapshotRefType.TAG)
+ 
+     def create_branch(
+         self,
+@@ -1153,7 +1175,13 @@ class ManageSnapshots(UpdateTableMetadata["ManageSnapshots"]):
+             min_snapshots_to_keep (Optional[int]): min number of snapshots to keep for the branch
+         Returns:
+             This for method chaining
++
++        Raises:
++            SnapshotRefAlreadyExistsError: a ref with the same name already exists.
+         """
++        if branch_name in self._effective_refs():
++            raise SnapshotRefAlreadyExistsError(f"Ref {branch_name} already exists")
++
+         update, requirement = self._transaction._set_ref_snapshot(
+             snapshot_id=snapshot_id,
+             ref_name=branch_name,
+@@ -1174,8 +1202,15 @@ class ManageSnapshots(UpdateTableMetadata["ManageSnapshots"]):
+             branch_name (str): name of branch to remove
+         Returns:
+             This for method chaining
++
++        Raises:
++            ValueError: the branch is ``main``.
++            NoSuchSnapshotRefError: the branch does not exist.
++            SnapshotRefTypeError: the ref exists, but is a tag.
+         """
+-        return self._remove_ref_snapshot(ref_name=branch_name)
++        if branch_name == MAIN_BRANCH:
++            raise ValueError(f"Cannot remove {MAIN_BRANCH} branch")
++        return self._remove_ref_snapshot(ref_name=branch_name, ref_type=SnapshotRefType.BRANCH)
+ 
+     def set_current_snapshot(self, snapshot_id: int | None = None, ref_name: str | None = None) -> ManageSnapshots:
+         """Set the current snapshot to a specific snapshot ID or ref.

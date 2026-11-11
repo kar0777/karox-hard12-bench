@@ -1,0 +1,227 @@
+diff --git a/src/a2a/server/agent_execution/active_task.py b/src/a2a/server/agent_execution/active_task.py
+index 5e3dab5..745609b 100644
+--- a/src/a2a/server/agent_execution/active_task.py
++++ b/src/a2a/server/agent_execution/active_task.py
+@@ -115,6 +115,11 @@ class EventConsumer:
+         self.active_task = active_task
+         self.task_mode: bool | None = None
+         self.message_to_save: Message | None = None
++        # Set when the producer hands the executor's exception over instead of
++        # writing the FAILED status itself. The consumer then owns that write,
++        # including creating the fallback task when the executor failed before
++        # it ever enqueued one.
++        self.producer_failed = False
+ 
+     async def run(self) -> None:
+         """Consumes events from the agent and updates system state."""
+@@ -160,21 +165,41 @@ class EventConsumer:
+                 )
+ 
+     async def _write_failed_status(self) -> Task | None:
+-        task = await self.active_task._task_manager.get_task()
+-        if not task or task.status.state in TERMINAL_TASK_STATES:
+-            return None
+-        handled_event = TaskStatusUpdateEvent(
+-            task_id=task.id,
+-            context_id=task.context_id,
+-            status=TaskStatus(state=TaskState.TASK_STATE_FAILED),
+-        )
+         try:
++            task = await self.active_task._task_manager.get_task()
++            if not task:
++                if self.producer_failed:
++                    await self._create_failed_task()
++                return None
++            if task.status.state in TERMINAL_TASK_STATES:
++                return None
++            handled_event = TaskStatusUpdateEvent(
++                task_id=task.id,
++                context_id=task.context_id,
++                status=TaskStatus(state=TaskState.TASK_STATE_FAILED),
++            )
+             return await self._handle_task_event(handled_event)
+         except ConcurrentTaskModificationError:
+             # Another writer advanced the task; keep its state.
+             self.active_task._task_manager.invalidate()
+             return None
+ 
++    async def _create_failed_task(self) -> None:
++        """Creates the FAILED task the executor never got to enqueue.
++
++        Only reached for a producer failure, so the fallback never replaces a
++        task the agent already made: the consumer processes the executor's
++        events before the exception that follows them.
++        """
++        task_manager = self.active_task._task_manager
++        task = await task_manager.ensure_task_id(
++            self.active_task._task_id, task_manager.context_id or ''
++        )
++        self.active_task._task_created.set()
++        if task.status.state not in TERMINAL_TASK_STATES:
++            task.status.state = TaskState.TASK_STATE_FAILED
++            await task_manager.save_task_event(task)
++
+     async def _process_event(self, event: Event) -> None:
+         try:
+             await self._process_event_inner(event)
+@@ -219,6 +244,11 @@ class EventConsumer:
+             )
+             self.message_to_save = event.request_context.message
+         elif isinstance(event, BaseException):
++            # The producer enqueues the executor's exception rather than
++            # writing the FAILED status itself, so the consumer stays the only
++            # writer and writes FAILED after the events the executor enqueued
++            # before raising.
++            self.producer_failed = True
+             raise event
+         elif isinstance(event, Message):
+             self._handle_message_event(event)
+@@ -433,7 +463,7 @@ class ActiveTask:
+       permanently ceased execution and closed its queues.
+     """
+ 
+-    def __init__(  # noqa: PLR0913
++    def __init__(  # noqa: PLR0913, PLR0917
+         self,
+         agent_executor: AgentExecutor,
+         task_id: str,
+@@ -667,17 +697,13 @@ class ActiveTask:
+                 'Producer[%s]: Execution failed',
+                 self._task_id,
+             )
+-            # Persist the failure directly instead of relying on the closing
+-            # event queue to carry a final status update.
+-            if request_context:
+-                task = await self._task_manager.ensure_task_id(
+-                    self._task_id,
+-                    request_context.context_id or '',
+-                )
+-                if task.status.state not in TERMINAL_TASK_STATES:
+-                    task.status.state = TaskState.TASK_STATE_FAILED
+-                    await self._task_manager.save_task_event(task)
+-                self._task_created.set()
++            # Hand the failure to the consumer instead of writing it here.
++            # The consumer is the only writer: a write on this path races its
++            # save of a Task the executor enqueued just before raising -- both
++            # insert the same row, so whichever loses either leaves the task
++            # SUBMITTED or replaces the agent's Task with the fallback. The
++            # consumer writes FAILED after the events the executor already
++            # enqueued, and creates the fallback task only if it made none.
+             await self._event_queue_agent.enqueue_event(cast('Event', e))
+ 
+         finally:
+diff --git a/src/a2a/server/request_handlers/default_request_handler.py b/src/a2a/server/request_handlers/default_request_handler.py
+index 48ebec8..86cf56b 100644
+--- a/src/a2a/server/request_handlers/default_request_handler.py
++++ b/src/a2a/server/request_handlers/default_request_handler.py
+@@ -94,7 +94,7 @@ class LegacyRequestHandler(RequestHandler):
+     _running_agents: dict[str, asyncio.Task]
+     _background_tasks: set[asyncio.Task]
+ 
+-    def __init__(  # noqa: PLR0913
++    def __init__(  # noqa: PLR0913, PLR0917
+         self,
+         agent_executor: AgentExecutor,
+         task_store: TaskStore,
+diff --git a/src/a2a/server/request_handlers/default_request_handler_v2.py b/src/a2a/server/request_handlers/default_request_handler_v2.py
+index b135f52..48eba9f 100644
+--- a/src/a2a/server/request_handlers/default_request_handler_v2.py
++++ b/src/a2a/server/request_handlers/default_request_handler_v2.py
+@@ -100,7 +100,7 @@ class DefaultRequestHandlerV2(RequestHandler):
+ 
+     _background_tasks: set[asyncio.Task]
+ 
+-    def __init__(  # noqa: PLR0913
++    def __init__(  # noqa: PLR0913, PLR0917
+         self,
+         agent_executor: AgentExecutor,
+         task_store: TaskStore | VersionedTaskStore,
+diff --git a/tests/server/request_handlers/test_default_request_handler_v2.py b/tests/server/request_handlers/test_default_request_handler_v2.py
+index b30fdc6..ea691b5 100644
+--- a/tests/server/request_handlers/test_default_request_handler_v2.py
++++ b/tests/server/request_handlers/test_default_request_handler_v2.py
+@@ -417,6 +417,27 @@ class FailedStatusThenRaisesAgentExecutor(FailedStatusAgentExecutor):
+         raise self.exception
+ 
+ 
++class FailsAfterEnqueuingTaskAgentExecutor(AgentExecutor):
++    def __init__(self) -> None:
++        self.exception = RuntimeError('fast producer failure')
++        self.task_id: str | None = None
++
++    async def execute(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        assert context.message is not None
++        task = new_task_from_user_message(context.message)
++        task.metadata.update({'agent_key': 'kept'})
++        self.task_id = task.id
++        await event_queue.enqueue_event(task)
++        raise self.exception
++
++    async def cancel(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        pass
++
++
+ async def send_message_with_early_failure(
+     request_handler: DefaultRequestHandlerV2,
+     params: SendMessageRequest,
+@@ -1674,6 +1695,56 @@ async def test_on_message_send_early_producer_exception_preserves_originating_me
+     assert stored_task.history[0].parts[0].text == 'Hi'
+ 
+ 
++@pytest.mark.asyncio
++async def test_on_message_send_failure_after_enqueuing_task_keeps_task_failed():
++    """The consumer is the only writer when the executor fails right after enqueuing its Task.
++
++    Regression: the producer used to persist the FAILED fallback itself, so its
++    insert raced the consumer's save of the Task the executor had just
++    enqueued. One of the two inserts failed, leaving the task SUBMITTED or
++    replacing the agent's Task with the fallback.
++    """
++    pytest.importorskip('sqlalchemy')
++    pytest.importorskip('aiosqlite')
++    from a2a.server.tasks.database_task_store import DatabaseTaskStore
++    from sqlalchemy.ext.asyncio import create_async_engine
++
++    engine = create_async_engine(
++        'sqlite+aiosqlite:///file:failafterenqueuev2?mode=memory&cache=shared&uri=true'
++    )
++    task_store = DatabaseTaskStore(engine=engine)
++    executor = FailsAfterEnqueuingTaskAgentExecutor()
++    request_handler = DefaultRequestHandlerV2(
++        agent_executor=executor,
++        task_store=task_store,
++        agent_card=create_default_agent_card(),
++    )
++    context = create_server_call_context()
++
++    try:
++        # Repeat: the race window is about one store write.
++        for i in range(10):
++            params = SendMessageRequest(
++                message=Message(
++                    role=Role.ROLE_USER,
++                    message_id=f'msg_failure_after_enqueuing_task_{i}',
++                    parts=[Part(text='Hi')],
++                )
++            )
++            with pytest.raises(RuntimeError) as exc_info:
++                await request_handler.on_message_send(params, context)
++
++            assert exc_info.value is executor.exception
++            assert executor.task_id is not None
++            stored_task = await task_store.get(executor.task_id, context)
++            assert stored_task is not None
++            assert stored_task.status.state == TaskState.TASK_STATE_FAILED
++            assert stored_task.metadata['agent_key'] == 'kept'
++    finally:
++        await request_handler.aclose()
++        await engine.dispose()
++
++
+ @pytest.mark.asyncio
+ async def test_on_message_send_stream_task_id_mismatch():
+     mock_task_store = AsyncMock(spec=TaskStore)

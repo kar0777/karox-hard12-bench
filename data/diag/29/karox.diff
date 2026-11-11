@@ -1,0 +1,51 @@
+diff --git a/doc/release_notes/v3.1.0.rst b/doc/release_notes/v3.1.0.rst
+index e8075cb..85f7784 100644
+--- a/doc/release_notes/v3.1.0.rst
++++ b/doc/release_notes/v3.1.0.rst
+@@ -102,3 +102,5 @@ Enhancements
+   :func:`~pydicom.pixels.convert_color_space` where applicable (:issue:`2228`)
+ * Take the color space information from an Adobe APP14 marker into account when decoding
+   pixel data for JPEG transfer syntaxes.
++* Added a warning when reading a dataset that contains multiple instances of the same
++  element at a given level, and use the first instance rather than the last.
+diff --git a/src/pydicom/filereader.py b/src/pydicom/filereader.py
+index d22e08c..201c235 100644
+--- a/src/pydicom/filereader.py
++++ b/src/pydicom/filereader.py
+@@ -408,6 +408,15 @@ def _is_implicit_vr(
+     return found_implicit
+ 
+ 
++def _warn_duplicate(tag: BaseTag) -> None:
++    """Warn that `tag` occurs more than once at the same dataset level."""
++    msg = (
++        f"Duplicate elements at the dataset level - only the first instance of "
++        f"{tag} will be used"
++    )
++    warn_and_log(msg, UserWarning)
++
++
+ def read_dataset(
+     fp: BinaryIO,
+     is_implicit_VR: bool,
+@@ -477,10 +486,19 @@ def read_dataset(
+     )
+     try:
+         if bytelength is None:
+-            raw_data_elements = {e.tag: e for e in de_gen}
++            for raw_data_element in de_gen:
++                if raw_data_element.tag in raw_data_elements:
++                    _warn_duplicate(raw_data_element.tag)
++                    continue
++
++                raw_data_elements[raw_data_element.tag] = raw_data_element
+         else:
+             while fp_tell() - fp_start < bytelength:
+                 raw_data_element = next(de_gen)
++                if raw_data_element.tag in raw_data_elements:
++                    _warn_duplicate(raw_data_element.tag)
++                    continue
++
+                 raw_data_elements[raw_data_element.tag] = raw_data_element
+     except StopIteration:
+         pass

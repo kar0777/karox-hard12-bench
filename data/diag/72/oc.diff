@@ -1,0 +1,80 @@
+diff --git a/docs-website/docs/pipeline-components/builders/answerbuilder.mdx b/docs-website/docs/pipeline-components/builders/answerbuilder.mdx
+index c555e8e..840b48f 100644
+--- a/docs-website/docs/pipeline-components/builders/answerbuilder.mdx
++++ b/docs-website/docs/pipeline-components/builders/answerbuilder.mdx
+@@ -31,7 +31,7 @@ ## Overview
+ 
+ The optional `pattern` parameter defines how to extract answer texts from replies. It needs to be a regular expression with a maximum of one capture group. If a capture group is present, the text matched by the capture group is used as the answer. If no capture group is present, the whole match is used as the answer. If no `pattern` is set, the whole reply is used as the answer text.
+ 
+-The optional `reference_pattern` parameter can be set to a regular expression that parses referenced documents from the replies so that only those referenced documents are listed in the `GeneratedAnswer` objects. Haystack assumes that documents are referenced by their index in the list of input documents and that indices start at 1. For example, if you set the `reference_pattern` to _`\\[(\\d+)\\]`,_ it finds “1” in a string "This is an answer[1]". If `reference_pattern` is not set, all input documents are listed in the `GeneratedAnswer` objects.
++The optional `reference_pattern` parameter can be set to a regular expression that parses referenced documents from the replies so that only those referenced documents are listed in the `GeneratedAnswer` objects. It must have exactly one capture group that captures the document index. Haystack assumes that documents are referenced by their index in the list of input documents and that indices start at 1. For example, if you set the `reference_pattern` to _`\\[(\\d+)\\]`,_ it finds “1” in a string "This is an answer[1]". If `reference_pattern` is not set, all input documents are listed in the `GeneratedAnswer` objects.
+ 
+ ## Usage
+ 
+diff --git a/haystack/components/builders/answer_builder.py b/haystack/components/builders/answer_builder.py
+index aff0535..41cb2b8 100644
+--- a/haystack/components/builders/answer_builder.py
++++ b/haystack/components/builders/answer_builder.py
+@@ -95,6 +95,7 @@ class AnswerBuilder:
+         :param reference_pattern:
+             The regular expression pattern used for parsing the document references.
+             If not specified, no parsing is done, and all documents are returned.
++            The regular expression must have exactly one capture group that captures the document index.
+             References need to be specified as indices of the input documents and start at [1].
+             Example: `\\[(\\d+)\\]` finds "1" in a string "this is an answer[1]".
+             If this parameter is provided, documents metadata will contain a "referenced" key with a boolean value.
+@@ -166,6 +167,7 @@ class AnswerBuilder:
+         :param reference_pattern:
+             The regular expression pattern used for parsing the document references.
+             If not specified, no parsing is done, and all documents are returned.
++            The regular expression must have exactly one capture group that captures the document index.
+             References need to be specified as indices of the input documents and start at [1].
+             Example: `\\[(\\d+)\\]` finds "1" in a string "this is an answer[1]".
+         :param expand_reference_ranges:
+@@ -191,6 +193,8 @@ class AnswerBuilder:
+         reference_pattern = AnswerBuilder._resolve_reference_pattern(
+             reference_pattern=reference_pattern, expand_reference_ranges=expand_reference_ranges
+         )
++        if reference_pattern:
++            AnswerBuilder._check_reference_pattern(reference_pattern)
+ 
+         replies_to_iterate = replies[-1:] if self.last_message_only and replies else replies
+         meta_to_iterate = meta[-1:] if self.last_message_only and meta else meta
+@@ -284,6 +288,11 @@ class AnswerBuilder:
+         matches = re.findall(reference_pattern, reply)
+         idxs: set[int] = set()
+         for match in matches:
++            if not isinstance(match, str) or not match:
++                raise ValueError(
++                    f"Reference pattern '{reference_pattern}' matched text but did not capture a document index. "
++                    f"Please specify a pattern with exactly one capture group that matches the document index."
++                )
+             if expand_ranges:
+                 for part in match.split(","):
+                     part = part.strip()
+@@ -313,3 +322,12 @@ class AnswerBuilder:
+                 f"Pattern '{pattern}' contains multiple capture groups. "
+                 f"Please specify a pattern with at most one capture group."
+             )
++
++    @staticmethod
++    def _check_reference_pattern(reference_pattern: str) -> None:
++        num_groups = re.compile(reference_pattern).groups
++        if num_groups != 1:
++            raise ValueError(
++                f"Reference pattern '{reference_pattern}' contains {num_groups} capture groups. "
++                f"Please specify a pattern with exactly one capture group that matches the document index."
++            )
+diff --git a/releasenotes/notes/validate-answer-builder-reference-pattern-3f8b2c1d4e5f6a7b.yaml b/releasenotes/notes/validate-answer-builder-reference-pattern-3f8b2c1d4e5f6a7b.yaml
+new file mode 100644
+index 0000000..670bd9f
+--- /dev/null
++++ b/releasenotes/notes/validate-answer-builder-reference-pattern-3f8b2c1d4e5f6a7b.yaml
+@@ -0,0 +1,7 @@
++---
++fixes:
++  - |
++    ``AnswerBuilder`` now validates ``reference_pattern`` before using it. A pattern with no capture
++    groups, more than one capture group, or a capture group that matches an empty document index now
++    raises a clear ``ValueError`` instead of failing later with an unclear ``int()`` conversion error.
++    The validation applies to the effective pattern, including a pattern passed to ``run()``.

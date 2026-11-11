@@ -1,0 +1,316 @@
+diff --git a/changes/3143.bugfix.md b/changes/3143.bugfix.md
+new file mode 100644
+index 0000000..b9eaa65
+--- /dev/null
++++ b/changes/3143.bugfix.md
+@@ -0,0 +1 @@
++The documentation now describes the SSL and proxy environment variables that Briefcase honors, and a more helpful error message is raised if `SSL_CERT_FILE` or `SSL_CERT_DIR` point at a location that doesn't exist.
+diff --git a/docs/en/reference/environment.md b/docs/en/reference/environment.md
+index 0c8522c..6d6e7ee 100644
+--- a/docs/en/reference/environment.md
++++ b/docs/en/reference/environment.md
+@@ -31,3 +31,18 @@ It is *highly* inadvisable to generate production apps while this environment va
+ Both macOS and Windows provide mechanisms for running x86_64 binaries on ARM64 hardware. These tools can make it very difficult to generate a packaged application, as it can be difficult to ensure a packaged application contains code matching the right architecture when the platform provides misleading answers about the current platform. As a result, Briefcase will raise an error if it detects that the version of Python that is being used doesn't match the underlying hardware architecture.
+ 
+ However, it is possible to disable this check by setting the `BRIEFCASE_ALLOW_EMULATION` environment variable. This will cause Briefcase to output a warning if it appears that Python is running in emulation mode, but it will allow Briefcase commands to run.
++
++### HTTP and SSL configuration
++
++When Briefcase downloads support files, tools and SDKs, it uses `httpx2`. `httpx2` honors the following environment variables to configure HTTP requests. These can be useful if your computer is behind a proxy, or if it uses a private certificate authority.
++
++- `SSL_CERT_FILE` - The path to a file containing the CA certificates used to verify HTTPS connections.
++- `SSL_CERT_DIR` - The path to a directory containing the CA certificates used to verify HTTPS connections.
++- `HTTP_PROXY` - The URL of the proxy to use for HTTP requests.
++- `HTTPS_PROXY` - The URL of the proxy to use for HTTPS requests.
++- `ALL_PROXY` - The URL of the proxy to use for all requests, regardless of the scheme of the request.
++- `NO_PROXY` - A comma-separated list of hosts that should be accessed without using a proxy.
++
++For full details on the format and behavior of these variables, see [the httpx2 documentation](https://pydantic.dev/docs/httpx2/api/environment_variables/).
++
++If `SSL_CERT_FILE` or `SSL_CERT_DIR` is defined, it must point at an existing file or directory. If it doesn't, Briefcase will raise an error when it attempts to download anything.
+diff --git a/docs/en/reference/index.md b/docs/en/reference/index.md
+index 95cc2a5..719760d 100644
+--- a/docs/en/reference/index.md
++++ b/docs/en/reference/index.md
+@@ -2,7 +2,7 @@
+ 
+ This is the technical reference for public APIs provided by Briefcase.
+ 
+-* [Briefcase configuration options][briefcase-configuration-options] - Configuring the environment variables needed to customize the Briefcase resource directory.
++* [Briefcase configuration options][briefcase-configuration-options] - Configuring the environment variables needed to customize the Briefcase resource directory, and the SSL and proxy configuration used for downloads.
+ * [Project configuration options][project-configuration-options] - Configuring an app built with Briefcase.
+ * [Environment management][environment-management] - Configuring the standalone Python environment that is used by your Briefcase app.
+ * [Command reference][command-reference] - Details about the commands available in Briefcase.
+diff --git a/src/briefcase/integrations/file.py b/src/briefcase/integrations/file.py
+index 34a4ff4..6e95bb9 100644
+--- a/src/briefcase/integrations/file.py
++++ b/src/briefcase/integrations/file.py
+@@ -31,6 +31,9 @@ RELATIVE_PATH_RE = re.compile(r"^\.{1,2}[\\/]")
+ # We allow any fixed-length hash; SHAKE is variable length.
+ SUPPORTED_HASH_ALGORITHMS = hashlib.algorithms_guaranteed - {"shake_128", "shake_256"}
+ 
++# The environment variables that httpx2 honors when configuring proxy usage.
++PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
++
+ 
+ class File(Tool):
+     name = "file"
+@@ -43,9 +46,69 @@ class File(Tool):
+         if hasattr(tools, "file"):
+             return tools.file
+ 
++        # Make sure any SSL configuration in the environment is usable before
++        # the tool is used to download anything.
++        cls.verify_ssl_environment(tools)
++
+         tools.file = File(tools=tools)
+         return tools.file
+ 
++    @staticmethod
++    def http_environment(tools: ToolCache) -> dict[str, str]:
++        """The environment variables used to configure HTTP requests.
++
++        :param tools: The tool cache for the current command.
++        :returns: The environment variables that configure HTTP requests.
++        """
++        return dict(tools.os.environ)
++
++    @classmethod
++    def verify_ssl_environment(cls, tools: ToolCache) -> None:
++        """Verify that SSL certificate configuration in the environment is usable.
++
++        `httpx2` honors the `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables
++        when it constructs the SSL context used for downloads. If either variable
++        points at a location that doesn't exist (or that is of the wrong type), the
++        error raised by the underlying SSL library is opaque, so validate the values
++        up front.
++
++        :param tools: The tool cache for the current command.
++        :raises BriefcaseCommandError: If an environment variable is set to a path
++            that doesn't exist, or that is of the wrong type.
++        """
++        environment = cls.http_environment(tools)
++        for env_var, kind, is_kind in [
++            ("SSL_CERT_FILE", "file", Path.is_file),
++            ("SSL_CERT_DIR", "directory", Path.is_dir),
++        ]:
++            if value := environment.get(env_var):
++                path = Path(value)
++                if not path.exists():
++                    problem = "does not exist"
++                elif not is_kind(path):
++                    problem = f"is not a {kind}"
++                else:
++                    continue
++
++                raise BriefcaseCommandError(
++                    f"The path specified by {env_var} {problem}.\n"
++                    "\n"
++                    f"    {path}\n"
++                    "\n"
++                    f"Please update the {env_var} environment variable so that it "
++                    f"points at an existing {kind}, or unset it."
++                )
++
++    @classmethod
++    def proxy_environment(cls, tools: ToolCache) -> list[str]:
++        """The proxy configuration environment variables that are currently set.
++
++        :param tools: The tool cache for the current command.
++        :returns: The names of the proxy environment variables that are in use.
++        """
++        environment = cls.http_environment(tools)
++        return [env_var for env_var in PROXY_ENV_VARS if environment.get(env_var)]
++
+     @classmethod
+     def sorted_depth_first(cls, paths: Sequence[Path]) -> Iterable[Path]:
+         """Sort a list of paths, so that they appear in lexical order, with
+@@ -290,6 +353,14 @@ class File(Tool):
+         """
+         algorithm, digest = self._parse_expected_hash(expected_hash)
+ 
++        try:
++            self.verify_ssl_environment(self.tools)
++        except BriefcaseCommandError as e:
++            raise NetworkFailure(
++                f"download {role or url}",
++                str(e),
++            ) from e
++
+         download_path.mkdir(parents=True, exist_ok=True)
+         filename: Path | None = None
+         try:
+@@ -403,6 +474,14 @@ class File(Tool):
+                         "a connection to the server could not be established.\n\n"
+                         f"The reported cause of the problem was {e}"
+                     )
++
++                if proxies := self.proxy_environment(self.tools):
++                    hint += (
++                        "\n\nA proxy has been configured using the "
++                        f"{' and '.join(proxies)} environment "
++                        f"{'variable' if len(proxies) == 1 else 'variables'}; "
++                        "verify that the proxy is correct and available."
++                    )
+             else:
+                 # httpx2.TransportError
+                 # Use the default hint for generic network communication errors
+diff --git a/tests/integrations/file/test_File__ssl_environment.py b/tests/integrations/file/test_File__ssl_environment.py
+new file mode 100644
+index 0000000..22df740
+--- /dev/null
++++ b/tests/integrations/file/test_File__ssl_environment.py
+@@ -0,0 +1,153 @@
++import os
++from unittest import mock
++
++import httpx2
++import pytest
++
++from briefcase.exceptions import BriefcaseCommandError, NetworkFailure
++from briefcase.integrations.file import File
++
++
++@pytest.fixture
++def mock_tools(mock_tools):
++    mock_tools.httpx2 = mock.MagicMock(spec_set=httpx2)
++    return mock_tools
++
++
++@pytest.mark.parametrize("env_var", ["SSL_CERT_FILE", "SSL_CERT_DIR"])
++def test_missing_ssl_path(mock_tools, env_var, tmp_path):
++    """If an SSL environment variable points at a path that doesn't exist, an error is
++    raised."""
++    mock_tools.os.environ = {env_var: os.fsdecode(tmp_path / "does-not-exist")}
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match=rf"The path specified by {env_var} does not exist",
++    ):
++        File.verify_ssl_environment(mock_tools)
++
++
++def test_ssl_cert_file_not_a_file(mock_tools, tmp_path):
++    """If SSL_CERT_FILE doesn't point at a file, an error is raised."""
++    mock_tools.os.environ = {"SSL_CERT_FILE": os.fsdecode(tmp_path)}
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match=r"The path specified by SSL_CERT_FILE is not a file",
++    ):
++        File.verify_ssl_environment(mock_tools)
++
++
++def test_ssl_cert_dir_not_a_directory(mock_tools, tmp_path):
++    """If SSL_CERT_DIR doesn't point at a directory, an error is raised."""
++    cert_file = tmp_path / "cert.pem"
++    cert_file.touch()
++    mock_tools.os.environ = {"SSL_CERT_DIR": os.fsdecode(cert_file)}
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match=r"The path specified by SSL_CERT_DIR is not a directory",
++    ):
++        File.verify_ssl_environment(mock_tools)
++
++
++def test_valid_ssl_environment(mock_tools, tmp_path):
++    """If the SSL environment variables point at valid paths, no error is raised."""
++    cert_file = tmp_path / "cert.pem"
++    cert_file.touch()
++    cert_dir = tmp_path / "certs"
++    cert_dir.mkdir()
++    mock_tools.os.environ = {
++        "SSL_CERT_FILE": os.fsdecode(cert_file),
++        "SSL_CERT_DIR": os.fsdecode(cert_dir),
++    }
++
++    File.verify_ssl_environment(mock_tools)
++
++
++def test_process_environment(mock_tools, monkeypatch, tmp_path):
++    """SSL configuration in the process environment is honored."""
++    mock_tools.os = os
++    monkeypatch.setenv("SSL_CERT_FILE", os.fsdecode(tmp_path / "does-not-exist"))
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match=r"The path specified by SSL_CERT_FILE does not exist",
++    ):
++        File.verify_ssl_environment(mock_tools)
++
++
++def test_verify_invalid_ssl_environment(mock_tools, tmp_path):
++    """The File tool can't be verified if the SSL environment is invalid."""
++    delattr(mock_tools, "file")
++    mock_tools.os.environ = {
++        "SSL_CERT_FILE": os.fsdecode(tmp_path / "does-not-exist"),
++    }
++
++    with pytest.raises(BriefcaseCommandError, match=r"SSL_CERT_FILE"):
++        File.verify(mock_tools)
++
++    assert not hasattr(mock_tools, "file")
++
++
++def test_download_invalid_ssl_environment(mock_tools, tmp_path):
++    """A download reports an invalid SSL environment as a network failure, without
++    making a request."""
++    mock_tools.os.environ = {
++        "SSL_CERT_FILE": os.fsdecode(tmp_path / "does-not-exist"),
++    }
++    download_path = tmp_path / "downloads"
++
++    with pytest.raises(
++        NetworkFailure,
++        match=r"The path specified by SSL_CERT_FILE does not exist",
++    ):
++        mock_tools.file.download(
++            url="https://example.com/something.zip",
++            download_path=download_path,
++            role="something",
++        )
++
++    mock_tools.httpx2.stream.assert_not_called()
++    assert not download_path.exists()
++
++
++@pytest.mark.parametrize(
++    ("proxies", "expected"),
++    [
++        (
++            ["HTTPS_PROXY"],
++            r"HTTPS_PROXY environment variable",
++        ),
++        (
++            ["HTTP_PROXY", "ALL_PROXY"],
++            r"HTTP_PROXY and ALL_PROXY environment variables",
++        ),
++    ],
++)
++def test_proxy_connection_error_hint(mock_tools, tmp_path, proxies, expected):
++    """A connection error names any proxy configuration that is in use."""
++    mock_tools.os.environ = {
++        proxy: "http://proxy.example.com:8080" for proxy in proxies
++    }
++    mock_tools.httpx2.stream.side_effect = [
++        httpx2.ConnectError("proxy connection error")
++    ]
++
++    with pytest.raises(NetworkFailure, match=expected):
++        mock_tools.file.download(
++            url="https://example.com/something.zip",
++            download_path=tmp_path,
++        )
++
++
++def test_no_proxy_connection_error_hint(mock_tools, tmp_path):
++    """If no proxy is configured, a connection error doesn't mention a proxy."""
++    mock_tools.os.environ = {}
++    mock_tools.httpx2.stream.side_effect = [httpx2.ConnectError("connection error")]
++
++    with pytest.raises(NetworkFailure, match=r"The reported cause of the problem was"):
++        mock_tools.file.download(
++            url="https://example.com/something.zip",
++            download_path=tmp_path,
++        )

@@ -1,0 +1,67 @@
+diff --git a/docs/changelog.md b/docs/changelog.md
+index 4de3ac6..696fd0e 100644
+--- a/docs/changelog.md
++++ b/docs/changelog.md
+@@ -18,6 +18,9 @@ See the [Contributing Guide](contributing.md) for details.
+ 
+ * Escape the language name in the `codehilite` extension's non-Pygments output to
+   maintain consistency with Pygments output.
++* Fix a regression in inline code spans where an unmatched backtick string caused the
++  text which followed it to be dropped. Unmatched backtick strings are now rendered
++  literally again.
+ 
+ ## [3.11.2] - 2026-10-19
+ 
+diff --git a/markdown/inlinepatterns.py b/markdown/inlinepatterns.py
+index 785585d..2533565 100644
+--- a/markdown/inlinepatterns.py
++++ b/markdown/inlinepatterns.py
+@@ -428,9 +428,6 @@ class BacktickInlineProcessor(InlineProcessor):
+             # This is not ever expected to happen.
+             return None
+ 
+-        longest_span = 0
+-        end = 0
+-
+         # Find an ending span of backticks that matches our opening
+         i = start
+         while i < last:
+@@ -446,16 +443,6 @@ class BacktickInlineProcessor(InlineProcessor):
+             if max_ticks == span_length:
+                 return start, i - span_length
+ 
+-            # Track the longest span of backticks we find as a fallback.
+-            if span_length > longest_span:
+-                longest_span = span_length
+-                end = i
+-
+-        # Since we didn't find an exact matching start and end,
+-        # adjust start to match the largest end we could calculate.
+-        if longest_span:
+-            return start - (max_ticks - longest_span), end - longest_span
+-
+         # We could not find a suitable pairing
+         return None
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..ad8669c
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,16 @@
++"""
++Pytest configuration for the test suite.
++
++Some test modules (for example `test_legacy.py`) adjust the global warning filters
++when they are imported so that any warning raised by a test is an error. Those
++filters must not leak into the collection of later test modules, where they turn
++pytest's own collection warnings into errors and abort the run. Reset the filters
++before each module is collected; pytest applies the warning filters it is
++configured with to each test when it runs.
++"""
++
++import warnings
++
++
++def pytest_collectstart(collector):
++    warnings.resetwarnings()

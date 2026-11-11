@@ -1,0 +1,392 @@
+diff --git a/sqllineage/core/parser/sqlfluff/extractors/create_insert.py b/sqllineage/core/parser/sqlfluff/extractors/create_insert.py
+index bfd5cc7..218f823 100644
+--- a/sqllineage/core/parser/sqlfluff/extractors/create_insert.py
++++ b/sqllineage/core/parser/sqlfluff/extractors/create_insert.py
+@@ -1,17 +1,30 @@
++from typing import NamedTuple
++
+ from sqlfluff.core.parser import BaseSegment
+ 
+ from sqllineage.core.holders import SubQueryLineageHolder
+-from sqllineage.core.models import Path, Table
++from sqllineage.core.models import Column, Path, SubQuery, Table
+ from sqllineage.core.parser.sqlfluff.extractors.base import BaseExtractor
+ from sqllineage.core.parser.sqlfluff.extractors.select import SelectExtractor
+-from sqllineage.core.parser.sqlfluff.models import SqlFluffColumn, SqlFluffTable
++from sqllineage.core.parser.sqlfluff.models import (
++    SqlFluffColumn,
++    SqlFluffSubQuery,
++    SqlFluffTable,
++)
+ from sqllineage.core.parser.sqlfluff.utils import (
++    is_subquery,
+     list_child_segments,
+ )
+ from sqllineage.utils.entities import AnalyzerContext
+ from sqllineage.utils.helpers import escape_identifier_name
+ 
+ 
++class MultiTableInsertClause(NamedTuple):
++    target: BaseSegment
++    columns: list[Column]
++    values: list[BaseSegment]
++
++
+ class CreateInsertExtractor(BaseExtractor):
+     """
+     Create statement and Insert statement lineage extractor
+@@ -31,6 +44,8 @@ class CreateInsertExtractor(BaseExtractor):
+         context: AnalyzerContext,
+     ) -> SubQueryLineageHolder:
+         holder = self._init_holder(context)
++        if self._is_multi_table_insert(statement):
++            return self._extract_multi_table_insert(statement, holder)
+         src_flag = tgt_flag = part_flag = False
+         partition_columns = []
+         # collect partition column names first so that we can filter them out from write_columns later
+@@ -163,6 +178,281 @@ class CreateInsertExtractor(BaseExtractor):
+                 src_flag = False
+         return holder
+ 
++    @staticmethod
++    def _is_multi_table_insert(statement: BaseSegment) -> bool:
++        if statement.type != "insert_statement":
++            return False
++        keywords = [segment.raw_upper for segment in statement.get_children("keyword")]
++        return "ALL" in keywords or "FIRST" in keywords or keywords.count("INTO") > 1
++
++    def _parse_multi_table_insert(
++        self, statement: BaseSegment
++    ) -> tuple[list[MultiTableInsertClause], list[BaseSegment]]:
++        """
++        Split a multi-table INSERT statement into its INTO clauses and source query.
++        The sqlfluff parse tree keeps all INTO clauses as direct children of insert_statement.
++        """
++        clauses: list[MultiTableInsertClause] = []
++        source_segments: list[BaseSegment] = []
++        target: BaseSegment | None = None
++        columns: list[Column] = []
++        values: list[BaseSegment] = []
++
++        def flush_clause() -> None:
++            nonlocal target, columns, values
++            if target is not None:
++                clauses.append(MultiTableInsertClause(target, columns, values))
++            target = None
++            columns = []
++            values = []
++
++        for segment in list_child_segments(statement):
++            if segment.type == "keyword" and segment.raw_upper == "INTO":
++                flush_clause()
++            elif segment.type in (
++                "select_statement",
++                "set_expression",
++                "with_compound_statement",
++            ) or (segment.type == "bracketed" and is_subquery(segment)):
++                flush_clause()
++                source_segments.append(segment)
++            elif target is None:
++                if segment.type in ("table_reference", "object_reference"):
++                    target = segment
++            elif segment.type == "bracketed" and not values:
++                if target_columns := self._list_target_columns(segment):
++                    columns = target_columns
++            elif segment.type == "values_clause":
++                values.append(segment)
++        flush_clause()
++        return clauses, source_segments
++
++    @staticmethod
++    def _list_target_columns(bracketed: BaseSegment) -> list[Column]:
++        sub_segments = list_child_segments(bracketed)
++        if not sub_segments or not all(
++            sub_segment.type in ("column_reference", "column_definition")
++            for sub_segment in sub_segments
++        ):
++            return []
++        columns: list[Column] = []
++        for sub_segment in sub_segments:
++            if sub_segment.type == "column_definition":
++                # sqlfluff's column_definition parse tree varies by dialect. See extract() above.
++                if identifier := sub_segment.get_child("identifier"):
++                    sub_segment = identifier
++                elif column_ref := sub_segment.get_child("column_reference"):
++                    sub_segment = column_ref
++            columns.append(SqlFluffColumn.of(sub_segment))
++        return columns
++
++    @staticmethod
++    def _list_values_rows(values_clauses: list[BaseSegment]) -> list[list[BaseSegment]]:
++        rows: list[list[BaseSegment]] = []
++        for values_clause in values_clauses:
++            for bracketed in values_clause.get_children("bracketed"):
++                if expressions := list(bracketed.get_children("expression")):
++                    rows.append(expressions)
++        return rows
++
++    def _extract_source_query(
++        self, segment: BaseSegment, holder: SubQueryLineageHolder
++    ) -> tuple[SubQueryLineageHolder, SubQuery]:
++        from .cte import CteExtractor
++
++        if segment.type == "bracketed":
++            if inner := next(
++                segment.recursive_crawl(
++                    "select_statement", "set_expression", "with_compound_statement"
++                ),
++                None,
++            ):
++                segment = inner
++        source_subquery = SqlFluffSubQuery.of(segment, None)
++        context = AnalyzerContext(cte=holder.cte, write={source_subquery})
++        if segment.type == "with_compound_statement":
++            source_holder = self.delegate_to(CteExtractor, segment, context)
++        else:
++            source_holder = self.delegate_to(SelectExtractor, segment, context)
++        return source_holder, source_subquery
++
++    def _get_metadata_columns(self, target: Table) -> list[Column]:
++        if self.metadata_provider:
++            return self.metadata_provider.get_table_columns(target)
++        return []
++
++    def _derive_target_columns(
++        self,
++        target: Table,
++        clause: MultiTableInsertClause,
++        source_columns: list[Column],
++    ) -> list[Column]:
++        rows = self._list_values_rows(clause.values)
++        if rows:
++            column_count = len(rows[0])
++            if metadata_columns := self._get_metadata_columns(target):
++                return metadata_columns[:column_count]
++            return [
++                Column(SqlFluffColumn.of(expression).raw_name)
++                for expression in rows[0]
++            ]
++        if metadata_columns := self._get_metadata_columns(target):
++            return metadata_columns[: len(source_columns)]
++        return [Column(source_column.raw_name) for source_column in source_columns]
++
++    @staticmethod
++    def _resolve_value_source_columns(
++        source_columns: list[tuple[str, str | None]],
++        source_subquery: SubQuery | None,
++        source_alias_mapping: dict[str, Path | Table | SubQuery],
++    ) -> list[Column]:
++        columns: list[Column] = []
++        for source_column, qualifier in source_columns:
++            column = Column(source_column)
++            if qualifier is None or (
++                source_subquery is not None and qualifier == source_subquery.alias
++            ):
++                if source_subquery is not None:
++                    column.parent = source_subquery
++                    columns.append(column)
++            else:
++                if parent := source_alias_mapping.get(qualifier):
++                    column.parent = parent
++                else:
++                    column.parent = Table(qualifier)
++                columns.append(column)
++        return columns
++
++    @staticmethod
++    def _get_effective_source_columns(
++        source_column: Column,
++        source_subquery: SubQuery | None,
++        source_holder: SubQueryLineageHolder,
++    ) -> list[Column]:
++        if source_subquery is not None and source_column.parent == source_subquery:
++            # The synthetic source subquery is only an intermediate node. Link the
++            # actual source table columns to the target to keep column lineage concise.
++            try:
++                ancestors = source_holder.go.ancestors(source_column)
++            except KeyError:
++                return []
++            ancestor_columns = [
++                column for column in ancestors if isinstance(column, Column)
++            ]
++            # Prefer the actual table columns. If the source query reads from a CTE
++            # whose lineage is extracted later, keep the CTE column as the bridge.
++            return [
++                column
++                for column in ancestor_columns
++                if not isinstance(column.parent, SubQuery)
++            ] or ancestor_columns
++        return [source_column]
++
++    def _map_values_to_target(
++        self,
++        clause: MultiTableInsertClause,
++        target: Table,
++        target_columns: list[Column],
++        source_subquery: SubQuery | None,
++        source_holder: SubQueryLineageHolder,
++        source_alias_mapping: dict[str, Path | Table | SubQuery],
++        target_holder: SubQueryLineageHolder,
++        holder: SubQueryLineageHolder,
++    ) -> None:
++        for row in self._list_values_rows(clause.values):
++            for idx, expression in enumerate(row):
++                if idx >= len(target_columns):
++                    break
++                target_column = target_columns[idx]
++                if subquery_segments := list(
++                    expression.recursive_crawl("select_statement")
++                ):
++                    # VALUES ((SELECT ...)): the scalar subquery writes to this target column directly.
++                    for subquery_segment in subquery_segments:
++                        target_holder |= self.delegate_to(
++                            SelectExtractor,
++                            subquery_segment,
++                            AnalyzerContext(
++                                cte=holder.cte,
++                                write={target},
++                                write_columns=[target_column],
++                            ),
++                        )
++                    continue
++                source_columns = SqlFluffColumn.of(expression).source_columns
++                for source_column in self._resolve_value_source_columns(
++                    source_columns, source_subquery, source_alias_mapping
++                ):
++                    for effective_source_column in self._get_effective_source_columns(
++                        source_column, source_subquery, source_holder
++                    ):
++                        target_holder.add_column_lineage(
++                            effective_source_column, target_column
++                        )
++
++    def _extract_multi_table_insert(
++        self,
++        statement: BaseSegment,
++        holder: SubQueryLineageHolder,
++    ) -> SubQueryLineageHolder:
++        clauses, source_segments = self._parse_multi_table_insert(statement)
++        source_holder = SubQueryLineageHolder()
++        source_subquery: SubQuery | None = None
++        for source_segment in source_segments:
++            extracted_holder, extracted_subquery = self._extract_source_query(
++                source_segment, holder
++            )
++            source_holder |= extracted_holder
++            if source_subquery is None:
++                source_subquery = extracted_subquery
++        holder |= source_holder
++        # Subqueries in WHEN conditions are also sources of the statement.
++        for segment in list_child_segments(statement):
++            if segment.type == "expression":
++                for subquery_segment in segment.recursive_crawl("select_statement"):
++                    holder |= self.delegate_to(
++                        SelectExtractor,
++                        subquery_segment,
++                        AnalyzerContext(cte=holder.cte),
++                    )
++        source_columns = (
++            source_holder.write_columns if source_subquery is not None else []
++        )
++        source_alias_mapping = source_holder.get_alias_mapping_from_table_group(
++            list(source_holder.read)
++        )
++        for clause in clauses:
++            target = SqlFluffTable.of(clause.target, dialect=self.dialect)
++            target_columns = clause.columns or self._derive_target_columns(
++                target, clause, source_columns
++            )
++            target_holder = SubQueryLineageHolder()
++            target_holder.add_write(target)
++            target_holder.add_write_column(*target_columns)
++            if clause.values:
++                self._map_values_to_target(
++                    clause,
++                    target,
++                    target_columns,
++                    source_subquery,
++                    source_holder,
++                    source_alias_mapping,
++                    target_holder,
++                    holder,
++                )
++            else:
++                # Oracle allows omitting VALUES in a multi-table insert, in which case
++                # the source query columns map to the target columns by position.
++                for source_column, target_column in zip(source_columns, target_columns):
++                    for effective_source_column in self._get_effective_source_columns(
++                        source_column, source_subquery, source_holder
++                    ):
++                        target_holder.add_column_lineage(
++                            effective_source_column, target_column
++                        )
++            holder |= target_holder
++        return holder
++
+     def delegate_to_cte(
+         self, segment: BaseSegment, holder: SubQueryLineageHolder
+     ) -> SubQueryLineageHolder:
+diff --git a/sqllineagejs/package-lock.json b/sqllineagejs/package-lock.json
+index ba3beff..012a7cd 100644
+--- a/sqllineagejs/package-lock.json
++++ b/sqllineagejs/package-lock.json
+@@ -1283,9 +1283,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1303,9 +1300,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1323,9 +1317,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1343,9 +1334,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1363,9 +1351,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1383,9 +1368,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [

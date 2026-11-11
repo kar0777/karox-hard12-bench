@@ -1,0 +1,57 @@
+diff --git a/src/pdm/models/repositories/base.py b/src/pdm/models/repositories/base.py
+index d942482..758721a 100644
+--- a/src/pdm/models/repositories/base.py
++++ b/src/pdm/models/repositories/base.py
+@@ -340,4 +340,6 @@ class BaseRepository:
+             candidate.hashes = self.get_hashes(candidate)
+ 
+         with ThreadPoolExecutor() as executor:
+-            executor.map(do_fetch, candidates)
++            # Consume the iterator so that exceptions raised in worker threads
++            # aren't silently discarded.
++            list(executor.map(do_fetch, candidates))
+diff --git a/src/pdm/models/session.py b/src/pdm/models/session.py
+index 8d0157c..056da32 100644
+--- a/src/pdm/models/session.py
++++ b/src/pdm/models/session.py
+@@ -43,6 +43,7 @@ def _create_truststore_ssl_context() -> SSLContext | None:
+ _ssl_context = _create_truststore_ssl_context()
+ CACHES_TTL = 7 * 24 * 60 * 60  # 7 days
+ MAX_RETRIES = 4
++_cache_cleanup_lock = threading.Lock()
+ 
+ 
+ @cache
+@@ -113,16 +114,25 @@ class PDMPyPIClient(PyPIClient):
+             def cache_transport(transport: httpx2.BaseTransport) -> httpx2.BaseTransport:
+                 return transport
+         else:
+-            # clean up old (pre-hishel 1.0 and 2.0) caches
+-            for cache in ["http-cache.db", ".cache/hishel"]:
+-                cache_db = cache_dir / cache
+-                if not cache_db.exists():
+-                    for f in cache_dir.iterdir():
+-                        if not f.name.startswith(cache):
++            cache_db = cache_dir / ".cache" / "hishel"
++            if not cache_db.is_file():
++                import filelock
++
++                # Clean up old (pre-hishel 1.0 and 2.0) caches only once. The
++                # target database is created before releasing the lock so that
++                # another client can't wipe it while it is being initialized.
++                cache_dir.parent.mkdir(parents=True, exist_ok=True)
++                lock_path = cache_dir.parent / f".{cache_dir.name}.lock"
++                with _cache_cleanup_lock, filelock.FileLock(lock_path):
++                    if not cache_db.is_file():
++                        cache_dir.mkdir(parents=True, exist_ok=True)
++                        for f in cache_dir.iterdir():
+                             if f.is_dir():
+                                 shutil.rmtree(f, ignore_errors=True)
+                             else:
+-                                f.unlink()
++                                f.unlink(missing_ok=True)
++                        cache_db.parent.mkdir(parents=True, exist_ok=True)
++                        cache_db.touch()
+             storage = ThreadedSyncSqliteStorage(database_path=cache_db, default_ttl=CACHES_TTL)
+ 
+             def cache_transport(transport: httpx2.BaseTransport) -> httpx2.BaseTransport:

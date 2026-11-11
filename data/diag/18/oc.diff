@@ -1,0 +1,46 @@
+diff --git a/src/a2a/server/agent_execution/active_task.py b/src/a2a/server/agent_execution/active_task.py
+index 5e3dab5..7071eb0 100644
+--- a/src/a2a/server/agent_execution/active_task.py
++++ b/src/a2a/server/agent_execution/active_task.py
+@@ -160,8 +160,17 @@ class EventConsumer:
+                 )
+ 
+     async def _write_failed_status(self) -> Task | None:
+-        task = await self.active_task._task_manager.get_task()
+-        if not task or task.status.state in TERMINAL_TASK_STATES:
++        # The consumer is the only writer of the failure state. Creating the
++        # fallback here, after the events the executor enqueued before raising
++        # have been processed, means a Task from the executor is already in
++        # place and keeps its metadata. If the executor never enqueued one,
++        # ensure_task_id creates the fallback with the originating message.
++        task = await self.active_task._task_manager.ensure_task_id(
++            self.active_task._task_id,
++            self.active_task._task_manager.context_id or '',
++        )
++        self.active_task._task_created.set()
++        if task.status.state in TERMINAL_TASK_STATES:
+             return None
+         handled_event = TaskStatusUpdateEvent(
+             task_id=task.id,
+@@ -667,17 +676,10 @@ class ActiveTask:
+                 'Producer[%s]: Execution failed',
+                 self._task_id,
+             )
+-            # Persist the failure directly instead of relying on the closing
+-            # event queue to carry a final status update.
+-            if request_context:
+-                task = await self._task_manager.ensure_task_id(
+-                    self._task_id,
+-                    request_context.context_id or '',
+-                )
+-                if task.status.state not in TERMINAL_TASK_STATES:
+-                    task.status.state = TaskState.TASK_STATE_FAILED
+-                    await self._task_manager.save_task_event(task)
+-                self._task_created.set()
++            # Enqueue the failure for the consumer to persist. Writing it here
++            # would race the consumer's save of the Task the executor enqueued
++            # before raising (e.g. two inserts of the same row), which could
++            # leave the stored task SUBMITTED or lose the agent's metadata.
+             await self._event_queue_agent.enqueue_event(cast('Event', e))
+ 
+         finally:

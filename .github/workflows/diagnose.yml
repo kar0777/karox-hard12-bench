@@ -1,0 +1,31 @@
+name: diagnose
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: echo "matrix={\"n\":[$(ls data/diag | sort -n | paste -sd,)]}" >> "$GITHUB_OUTPUT"
+  diag:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/diagnose_one.sh ${{ matrix.n }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-${{ matrix.n }}
+          path: out/${{ matrix.n }}
+          retention-days: 30

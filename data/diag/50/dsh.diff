@@ -1,0 +1,71 @@
+diff --git a/ninja/params/models.py b/ninja/params/models.py
+index 6f70203..0677c7e 100644
+--- a/ninja/params/models.py
++++ b/ninja/params/models.py
+@@ -69,8 +69,21 @@ class ParamModel(BaseModel, ABC):
+             return data
+ 
+         mapped_data: DictStrAny = {}
++        # Keep optional schema params absent when none of their fields were
++        # sent, so that their declared None default is applied.
++        optional_fields = {
++            name for name, field in cls.model_fields.items() if field.default is None
++        }
++        optional_fields.update(
++            field.alias
++            for field in cls.model_fields.values()
++            if field.default is None and field.alias
++        )
+         for key, path in flatten_map.items():
+-            cls._map_data_path(mapped_data, data.get(key), path)
++            value = data.get(key)
++            if value is None and path[0] in optional_fields:
++                continue
++            cls._map_data_path(mapped_data, value, path)
+         return mapped_data
+ 
+     @classmethod
+diff --git a/tests/test_query_schema.py b/tests/test_query_schema.py
+index bba3305..274f29f 100644
+--- a/tests/test_query_schema.py
++++ b/tests/test_query_schema.py
+@@ -252,3 +252,39 @@ def test_nested_optional_query_schema():
+     resp = client.get("/nested?label=test")
+     assert resp.status_code == 200
+     assert resp.json()["label"] == "test"
++
++
++def test_optional_query_schema_default_when_no_fields_sent():
++    class RequiredFields(Schema):
++        x: int
++
++    class OptionalFields(Schema):
++        a: Optional[int] = None
++
++    temp_api = NinjaAPI()
++
++    @temp_api.get("/required")
++    def required_view(request, f: Optional[RequiredFields] = Query(None)):
++        return {"f": f.model_dump() if f else None}
++
++    @temp_api.get("/optional-fields")
++    def optional_view(request, f: Optional[OptionalFields] = Query(None)):
++        return {"f": f.model_dump() if f else None}
++
++    client = TestClient(temp_api)
++
++    resp = client.get("/required")
++    assert resp.status_code == 200
++    assert resp.json() == {"f": None}
++
++    resp = client.get("/optional-fields")
++    assert resp.status_code == 200
++    assert resp.json() == {"f": None}
++
++    resp = client.get("/required?x=1")
++    assert resp.status_code == 200
++    assert resp.json() == {"f": {"x": 1}}
++
++    resp = client.get("/optional-fields?a=1")
++    assert resp.status_code == 200
++    assert resp.json() == {"f": {"a": 1}}

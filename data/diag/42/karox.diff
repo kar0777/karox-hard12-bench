@@ -1,0 +1,91 @@
+diff --git a/src/qwenpaw/plugins/dependency_maintenance.py b/src/qwenpaw/plugins/dependency_maintenance.py
+index cd4d63a..59ef7c0 100644
+--- a/src/qwenpaw/plugins/dependency_maintenance.py
++++ b/src/qwenpaw/plugins/dependency_maintenance.py
+@@ -199,32 +199,50 @@ def state_root():
+                     "DEPENDENCY_STATE_ROOT_UNAVAILABLE: "
+                     "QWENPAW_DEPENDENCY_STATE_DIR must be absolute.",
+                 )
+-            root = canonical(override)
++            selected = Path(override)
+         else:
+             if os.name == "nt":
+-                home = Path(os.environ["USERPROFILE"])
++                selected = Path(os.environ["USERPROFILE"])
+             else:
+-                import pwd
+-
+-                try:
+-                    value = getattr(pwd.getpwuid(os.getuid()), "pw_dir", None)
+-                except KeyError:
+-                    value = None
++                # The environment wins: managed deployments often keep an
++                # unusable passwd home (fnOS app sandboxes) but a valid $HOME.
++                value = os.environ.get("HOME")
+                 if not value or not Path(value).is_absolute():
+-                    value = os.environ.get("HOME")
++                    import pwd
++
++                    try:
++                        value = getattr(
++                            pwd.getpwuid(os.getuid()),
++                            "pw_dir",
++                            None,
++                        )
++                    except KeyError:
++                        value = None
+                 if not value or not Path(value).is_absolute():
+                     raise RuntimeError(
+                         "DEPENDENCY_STATE_ROOT_UNAVAILABLE: provide a stable "
+-                        "absolute startup HOME or an absolute shared "
+-                        "QWENPAW_DEPENDENCY_STATE_DIR.",
++                        "absolute startup HOME, or point the shared absolute "
++                        "QWENPAW_DEPENDENCY_STATE_DIR environment variable at "
++                        "a writable directory.",
+                     )
+-                home = Path(value)
+-            root = canonical(home / ".qwenpaw" / "dependency-environments")
++                selected = Path(value) / ".qwenpaw" / "dependency-environments"
++        try:
++            root = canonical(selected)
++        except OSError as exc:
++            raise _state_root_unavailable(selected, exc) from exc
+         _STATE_ROOT = root
+         os.environ[_STATE_ENV] = str(root)
+     return _STATE_ROOT
+ 
+ 
++def _state_root_unavailable(path, exc):
++    return RuntimeError(
++        f"DEPENDENCY_STATE_ROOT_UNAVAILABLE: cannot use {path} ({exc}). Set "
++        "the absolute QWENPAW_DEPENDENCY_STATE_DIR environment variable to a "
++        "writable directory.",
++    )
++
++
+ def _sidecar(site, suffix):
+     root = canonical(site)
+     identity = hashlib.sha256(os.fsencode(root)).hexdigest()
+@@ -307,8 +325,20 @@ def _try_lock(descriptor):
+ 
+ 
+ def _open_lock(path):
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    return os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
++    try:
++        path.parent.mkdir(parents=True, exist_ok=True)
++        return os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
++    except OSError as exc:
++        if exc.errno not in {
++            errno.EACCES,
++            errno.EPERM,
++            errno.EROFS,
++            errno.ENOENT,
++            errno.ENOTDIR,
++            errno.ENOSPC,
++        }:
++            raise
++        raise _state_root_unavailable(path, exc) from exc
+ 
+ 
+ def open_coordination_lock(path):

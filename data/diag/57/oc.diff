@@ -1,0 +1,27 @@
+diff --git a/markdown/inlinepatterns.py b/markdown/inlinepatterns.py
+index 785585d..1e7022e 100644
+--- a/markdown/inlinepatterns.py
++++ b/markdown/inlinepatterns.py
+@@ -101,7 +101,7 @@ def build_inlinepatterns(md: Markdown, **kwargs: Any) -> util.Registry[InlinePro
+ NOIMG = r'(?<!\!)'
+ """ Match not an image. Partial regular expression which matches if not preceded by `!`. """
+ 
+-BACKTICK_RE = r'(?:(?<!\\)((?:\\{2})+)(?=`+)|(?<!\\)`)'
++BACKTICK_RE = r'(?:(?<!\\)((?:\\{2})+)(?=`+)|(?<!\\)`+)'
+ """ Match backtick quoted string (`` `e=f()` `` or ``` ``e=f("`")`` ```). """
+ 
+ ESCAPE_RE = r'\\(.)'
+@@ -446,8 +446,11 @@ class BacktickInlineProcessor(InlineProcessor):
+             if max_ticks == span_length:
+                 return start, i - span_length
+ 
+-            # Track the longest span of backticks we find as a fallback.
+-            if span_length > longest_span:
++            # Track the longest span of backticks which is shorter than our
++            # opening as a fallback. An opening span may be shortened to
++            # match a shorter closing span, but a longer closing span cannot
++            # close it.
++            if longest_span < span_length < max_ticks:
+                 longest_span = span_length
+                 end = i
+ 

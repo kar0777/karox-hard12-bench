@@ -1,0 +1,72 @@
+diff --git a/src/a2a/server/agent_execution/active_task.py b/src/a2a/server/agent_execution/active_task.py
+index 5e3dab5..1b40152 100644
+--- a/src/a2a/server/agent_execution/active_task.py
++++ b/src/a2a/server/agent_execution/active_task.py
+@@ -161,7 +161,15 @@ class EventConsumer:
+ 
+     async def _write_failed_status(self) -> Task | None:
+         task = await self.active_task._task_manager.get_task()
+-        if not task or task.status.state in TERMINAL_TASK_STATES:
++        if task is None:
++            # The executor failed before creating a task. Create the fallback
++            # here, in the consumer, so every task write stays serialized
++            # behind the executor's events.
++            task = await self.active_task._task_manager.ensure_task_id(
++                self.active_task._task_id,
++                self.active_task._task_manager.context_id or '',
++            )
++        if task.status.state in TERMINAL_TASK_STATES:
+             return None
+         handled_event = TaskStatusUpdateEvent(
+             task_id=task.id,
+@@ -169,11 +177,14 @@ class EventConsumer:
+             status=TaskStatus(state=TaskState.TASK_STATE_FAILED),
+         )
+         try:
+-            return await self._handle_task_event(handled_event)
++            updated_task = await self._handle_task_event(handled_event)
+         except ConcurrentTaskModificationError:
+             # Another writer advanced the task; keep its state.
+             self.active_task._task_manager.invalidate()
+             return None
++        else:
++            self.active_task._task_created.set()
++            return updated_task
+ 
+     async def _process_event(self, event: Event) -> None:
+         try:
+@@ -667,17 +678,9 @@ class ActiveTask:
+                 'Producer[%s]: Execution failed',
+                 self._task_id,
+             )
+-            # Persist the failure directly instead of relying on the closing
+-            # event queue to carry a final status update.
+-            if request_context:
+-                task = await self._task_manager.ensure_task_id(
+-                    self._task_id,
+-                    request_context.context_id or '',
+-                )
+-                if task.status.state not in TERMINAL_TASK_STATES:
+-                    task.status.state = TaskState.TASK_STATE_FAILED
+-                    await self._task_manager.save_task_event(task)
+-                self._task_created.set()
++            # Let the consumer persist the failure after it has applied the
++            # events the executor enqueued before raising. Writing here would
++            # race the consumer's save of the executor's Task.
+             await self._event_queue_agent.enqueue_event(cast('Event', e))
+ 
+         finally:
+@@ -907,10 +910,9 @@ class ActiveTask:
+             # returns the shared _task_manager._current_task, which may already
+             # have been yielded to a subscriber. Copying keeps THIS terminal
+             # write off the yielded reference. It is not a file-wide guarantee:
+-            # ordinary status writes (save_task_event -> ensure_task -> CopyFrom,
+-            # and the producer-failure write above) still update the shared
+-            # object in place. Making every write copy-on-yield is the general
+-            # property tracked in #1175 and #1191.
++            # ordinary status writes (save_task_event -> ensure_task -> CopyFrom)
++            # still update the shared object in place. Making every write
++            # copy-on-yield is the general property tracked in #1175 and #1191.
+             updated = Task()
+             updated.CopyFrom(task)
+             updated.status.state = TaskState.TASK_STATE_CANCELED

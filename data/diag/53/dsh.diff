@@ -1,0 +1,159 @@
+diff --git a/.github/workflows/mutation-nightly.yml b/.github/workflows/mutation-nightly.yml
+index 8b1158d..af8690f 100644
+--- a/.github/workflows/mutation-nightly.yml
++++ b/.github/workflows/mutation-nightly.yml
+@@ -206,6 +206,11 @@ jobs:
+           github-token: ${{ github.token }}
+ 
+       - name: Download the slices' records
++        # A night can lose every slice (a runner taken away, or an artifact
++        # upload that never happened).  The stitch still runs, notes the
++        # missing slices and keeps a state, rather than failing before it
++        # can report the night.
++        continue-on-error: true
+         uses: actions/download-artifact@v8
+         with:
+           pattern: mutation-sweep-slice-*
+diff --git a/MUTATION.md b/MUTATION.md
+index 0d536af..68d81d7 100644
+--- a/MUTATION.md
++++ b/MUTATION.md
+@@ -117,7 +117,7 @@ The core baseline it wrote, still committed until the sweep's first cycle closes
+ 
+ **What it mutates.** The diff from the pull request's merge base, mapped to the units mutmut mutates: a top-level function, or a method of a top-level class, a nested function belonging to the one that encloses it. A unit counts as changed when its code differs from the merge base's (its `ast`, docstrings set aside) or it is new, so a docstring, a comment or a layout change alone mutates nothing. The script extracts the head commit into a scratch tree (`git archive`; the checkout is never touched) and gives every unit the diff leaves alone in a changed file `# pragma: no mutate block` on its header, so mutmut generates the changed units' mutants and no others. Inside those units it generates only the window's: the mutants whose node starts within two lines (`--context`) of a line the diff adds, or of a point where it removes lines and adds none, or on the first line of a node that spans such a line and whose mutants mutmut places on that first line though the text they change lies below it. Those nodes are a call (an argument's `None` and its removal, a `dict` keyword's rename, a string method's swap after a receiver of several lines), a `match` (a `case`'s removal), an assignment, plain, annotated or augmented, a binary or boolean operation, a comparison's operator, which starts with the line break before it, a conditional expression and a lambda (`ENCLOSING_KINDS` in the script). An edit to a diagnostic's `error_code="E302",` at `vera/checker/control.py`:430 so keeps the argument's `None` and its removal, which mutmut places on the call's first line at :419: the window holds 17 of the function's 143 mutants, where the edit's lines alone hold 5. The engine is the script itself run with `--as-engine`, which counts each unit's mutants on every line and in the window with mutmut's own visitor, then hands each narrowed file's window to mutmut's covered-lines hook (`get_covered_lines_for_file`, the filter it reads a node's start line against); a mutmut without that hook stops the run as an engine failure, and the lane checks the mutants mutmut lists against the counts. The 330 mutants of the four functions [#1760](https://github.com/aallan/vera/pull/1760) changed ran out the budget at 97 decided; 85 of them lie in the window. A file's every mutant can be far more than the diff's: `vera/verifier.py`'s are a 213 MB module that took 447 s to generate, where the 16 functions [#1715](https://github.com/aallan/vera/pull/1715) changed in it and in `vera/smt.py` took 41 s.
+ 
+-**The oracle.** The repository's `[tool.mutmut]` selection, plus the pull request's own changed `tests/test_*.py` files that reach the compiler in process (they import `vera`, directly or through a `tests/` helper), bar the families the selection leaves out on purpose: the subprocess, Node and tooling suites. mutmut's stats pass records which tests reach each function, and each mutant runs only those, fastest first, stopping at the first failure. A test that starts a Python or `vera` process is skipped in the copy and listed (§ Oracle). Any other test that fails inside mutmut's copy with no mutant active stops the stats pass or the clean run of the covering tests; it is no oracle there, so the lane drops it, runs again (up to five drops), and lists it in the summary and the record. An exception the engine's own code raises stops the pass the same way, and no test is at fault: going outward from the traceback's innermost frame past the standard library's, the first frame is in the installed `mutmut` package (a hook of its stats pass, its trampoline). The run then stops at that attempt, red, drops no further test, and the summary and the record (`engine_error`) name the exception and that frame. A hook raising outside a test's phases is read the same way, from the traceback pytest prints as its own internal error (`INTERNALERROR>` on every line); a traceback a test printed or logged, in its report's `Captured …` sections, is no report and decides nothing. Such a section runs from its rule to pytest's next, and pytest draws its rules the terminal's width: both lanes hand the engine `COLUMNS=80`, so a rule is 79 characters or more. A `RecursionError` is the engine's only when, besides, none of its ten innermost frames outside the standard library is the copy's (`mutants/`, `tests/`), a frame Python prints once more with `[Previous line repeated N more times]` counting N more times: a recursion runs out of stack wherever the stack ends, and in the copy every call through mutmut's trampoline adds the engine's frames, so a recursion through the code under test that the suite passes can run out inside them, and stays the test's, while a function of the engine recursing on itself, even inside a test's call, fills the ten with its own frames.
++**The oracle.** The repository's `[tool.mutmut]` selection, plus the pull request's own changed `tests/test_*.py` files that reach the compiler in process (they import `vera`, directly or through a `tests/` helper), bar the families the selection leaves out on purpose: the subprocess, Node and tooling suites. mutmut's stats pass records which tests reach each function, and each mutant runs only those, fastest first, stopping at the first failure. A test that starts a Python or `vera` process is skipped in the copy and listed (§ Oracle). Any other test that fails inside mutmut's copy with no mutant active stops the stats pass or the clean run of the covering tests; it is no oracle there, so the lane drops it, runs again (up to ten drops), and lists it in the summary and the record. An exception the engine's own code raises stops the pass the same way, and no test is at fault: going outward from the traceback's innermost frame past the standard library's, the first frame is in the installed `mutmut` package (a hook of its stats pass, its trampoline). The run then stops at that attempt, red, drops no further test, and the summary and the record (`engine_error`) name the exception and that frame. A hook raising outside a test's phases is read the same way, from the traceback pytest prints as its own internal error (`INTERNALERROR>` on every line); a traceback a test printed or logged, in its report's `Captured …` sections, is no report and decides nothing. Such a section runs from its rule to pytest's next, and pytest draws its rules the terminal's width: both lanes hand the engine `COLUMNS=80`, so a rule is 79 characters or more. A `RecursionError` is the engine's only when, besides, none of its ten innermost frames outside the standard library is the copy's (`mutants/`, `tests/`), a frame Python prints once more with `[Previous line repeated N more times]` counting N more times: a recursion runs out of stack wherever the stack ends, and in the copy every call through mutmut's trampoline adds the engine's frames, so a recursion through the code under test that the suite passes can run out inside them, and stays the test's, while a function of the engine recursing on itself, even inside a test's call, fills the ten with its own frames.
+ 
+ **The verdict.** Red for a defect, green for an unfinished run. Exit 1 when a mutant of the diff survives, whatever else stopped the run; 2 when the run itself fails: the engine fails or counts no window, mutmut reports a mutant of a function the lane did not map to the diff, or more or fewer of a function's mutants than its window holds, which in the narrowed tree means the mapping, the narrowing or the window went wrong, or the lane itself fails before mutmut decides anything; and 0 otherwise, a run the budget stopped included. An exit 0 says in its headline what the run decided: every mutant killed or timed out, the functions no in-process test reaches, which the table names, or that the run is incomplete, when the budget ran out or a mutant was left undecided (`not checked`, `suspicious`, `segfault`, interrupted), and a `::warning::` annotation on the pull request repeats the incomplete headline. No other step of the workflow reads the exit status. A function no in-process test reaches has every mutant `no tests`; it is reported as not observable in process (§ Oracle) and does not fail the run. The job summary has a line naming the selection rule, with the changed functions, their mutants on every line and in the window, and the mutants generated, decided and surviving, then a row per changed function, the first 60 survivors' `mutmut show` diffs (a step summary over 1 MiB is dropped whole), and what the diff changes that mutmut does not mutate; the JSON record, the `mutation-diff` artifact, lists every survivor.
+ 
+diff --git a/scripts/mutate_diff.py b/scripts/mutate_diff.py
+index 261f4b8..04d924d 100644
+--- a/scripts/mutate_diff.py
++++ b/scripts/mutate_diff.py
+@@ -200,7 +200,7 @@ def rule(context: int) -> str:
+ ENGINE_CALL_TIMEOUT_S = 300
+ 
+ #: Tests the lane drops from one run before it calls the run stopped short.
+-MAX_COPY_DROPS = 5
++MAX_COPY_DROPS = 10
+ 
+ #: What mutmut prints when its stats pass or its clean run of the covering
+ #: tests stops on a failing test (both run with ``-x``).
+diff --git a/scripts/mutate_sweep.py b/scripts/mutate_sweep.py
+index f9f7914..8630da3 100644
+--- a/scripts/mutate_sweep.py
++++ b/scripts/mutate_sweep.py
+@@ -319,7 +319,9 @@ def _check_night(night: Any) -> None:
+     if isinstance(night, dict) and "lost" in night:
+         keys.add("lost")
+     rec = _keys(night, keys, "a night")
+-    lost = rec.get("lost", [])
++    lost = rec.get("lost")
++    if lost is None:  # a line written before the field, or with it empty
++        lost = []
+     _check(isinstance(lost, list) and len(lost) == len(set(lost)) <= MAX_JOBS
+            and all(type(n) is int and 0 <= n < MAX_JOBS for n in lost), "a night's lost slices")
+     _text(rec["date"], _DATE, "a night's date")
+@@ -332,17 +334,23 @@ def _check_night(night: Any) -> None:
+                f"a night's {key} are not text")
+     _check(isinstance(rec["slices"], list) and len(rec["slices"]) <= MAX_JOBS, "a night's slices")
+     for line in rec["slices"]:
+-        s = _keys(line, {"slice", "planned", "decided", "stopped", "engine_s", "dropped_tests",
+-                         "subprocess_tests"}, "a night's slice")
++        # These two entered the line after the first nights; a state artifact
++        # from before either still loads, and the fields are checked where
++        # they are present.
++        fields = {"slice", "planned", "decided", "stopped", "engine_s"}
++        if isinstance(line, dict):
++            fields |= {"dropped_tests", "subprocess_tests"} & set(line)
++        s = _keys(line, fields, "a night's slice")
+         _int(s["slice"], 0, MAX_JOBS - 1, "a night's slice number")
+         _int(s["planned"], 0, MAX_MUTANTS, "a night's planned units")
+         _int(s["decided"], 0, MAX_MUTANTS * 10_000, "a night's decided mutants")
+         _check(s["stopped"] in (None, "budget", "engine", "unmapped", "lane"), "a night's stop")
+         _check(s["engine_s"] is None or (type(s["engine_s"]) in (int, float) and 0 <= s["engine_s"] < 1e6),
+                "a night's engine time")
+-        _check(isinstance(s["dropped_tests"], list) and all(
+-            isinstance(x, str) and _TESTID.fullmatch(x) for x in s["dropped_tests"]), "a night's drops")
+-        _int(s["subprocess_tests"], 0, 10**6, "a night's skipped tests")
++        dropped = s.get("dropped_tests", [])
++        _check(isinstance(dropped, list) and all(
++            isinstance(x, str) and _TESTID.fullmatch(x) for x in dropped), "a night's drops")
++        _int(s.get("subprocess_tests", 0), 0, 10**6, "a night's skipped tests")
+ 
+ 
+ def check_state(data: Any) -> dict[str, Any]:
+@@ -413,8 +421,11 @@ def check_record(record: Any) -> None:
+     _check(isinstance(record.get("planned"), list) and all(isinstance(p, dict) for p in record["planned"]),
+            "its plan is not a list of pieces")
+     for key in ("dropped_tests", "subprocess_tests"):
+-        _check(isinstance(record.get(key), list) and all(
+-            isinstance(x, str) and _TESTID.fullmatch(x) for x in record[key]), f"its {key}")
++        # Older records predate one or both fields; a record that carries one
++        # is held to its shape, and a missing one is an empty list.
++        values = record.get(key, [])
++        _check(isinstance(values, list) and all(
++            isinstance(x, str) and _TESTID.fullmatch(x) for x in values), f"its {key}")
+     results = record.get("results")
+     _check(isinstance(results, dict), "its results are not a mapping")
+     for ident, result in results.items():
+@@ -466,8 +477,20 @@ def state_digest(path: Path | None) -> str:
+ def save_state(state: Mapping[str, Any], directory: Path) -> Path:
+     directory.mkdir(parents=True, exist_ok=True)
+     path = directory / STATE_FILE
+-    path.write_text(json.dumps(state, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
+-                    encoding="utf-8")
++    text = json.dumps(state, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
++    # Write beside the state and rename it into place: a runner taken away
++    # mid-write must not leave a truncated state artifact that every later
++    # night refuses.
++    fd, temporary = tempfile.mkstemp(prefix=f".{STATE_FILE}.", suffix=".tmp", dir=directory)
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as fh:
++            fh.write(text)
++        os.replace(temporary, path)
++    finally:
++        try:
++            os.unlink(temporary)
++        except OSError:
++            pass
+     return path
+ 
+ 
+@@ -942,6 +965,9 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
+         number = record.get("slice") if isinstance(record, dict) else None
+         if type(number) is int and 0 <= number < jobs:
+             reported.add(number)
++        if isinstance(record, dict) and "load_error" in record:
++            problems.append(f"{where}: its record cannot be read: {record['load_error']}")
++            continue
+         try:
+             check_record(record)
+         except StateError as exc:
+@@ -973,7 +999,7 @@ def stitch(state_in: Mapping[str, Any], digest: str, records: Sequence[Mapping[s
+     notes: list[str] = [f"slice {n}: no record; its work waits for the next night" for n in lost]
+     if len(lost) > 1:
+         problems.append(f"no record from slices {_listed(lost)}: more than one in a night")
+-    recent = [len(n.get("lost", [])) for n in state_in.get("nights", [])[-(LOST_WINDOW_NIGHTS - 1):]]
++    recent = [len(n.get("lost") or []) for n in state_in.get("nights", [])[-(LOST_WINDOW_NIGHTS - 1):]]
+     recent.append(len(lost))
+     if lost and sum(recent) > LOST_LIMIT:
+         problems.append(f"slices with no record over the last {len(recent)} nights: {sum(recent)}, "
+@@ -1231,7 +1257,15 @@ def cmd_stitch(args: argparse.Namespace) -> int:
+     state_in = load_state(state_path, today)
+     records = []
+     for path in sorted(Path(args.slices).glob("slice-*.json")) if args.slices else []:
+-        records.append(json.loads(path.read_text(encoding="utf-8")))
++        try:
++            records.append(json.loads(path.read_text(encoding="utf-8")))
++        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
++            # A record artifact can be truncated or unreadable.  It is still
++            # a record from that slice: report it as malformed rather than
++            # stop the stitch before the night's other slices are folded in.
++            match = re.fullmatch(r"slice-([0-9]+)\.json", path.name)
++            slice_ = int(match.group(1)) if match is not None else None
++            records.append({"slice": slice_, "load_error": f"{type(exc).__name__}: {exc}"})
+     units = inventory(vera_sources(repo, head))
+     state, night = stitch(state_in, state_digest(state_path), records, jobs=args.of, head=head,
+                           units=units, today=today)

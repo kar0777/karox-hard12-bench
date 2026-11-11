@@ -1,0 +1,155 @@
+diff --git a/armi/physics/neutronics/crossSectionGroupManager.py b/armi/physics/neutronics/crossSectionGroupManager.py
+index 24a1e34..aa5ac95 100644
+--- a/armi/physics/neutronics/crossSectionGroupManager.py
++++ b/armi/physics/neutronics/crossSectionGroupManager.py
+@@ -19,7 +19,7 @@ Blocks are specified to be in a certain *cross section type* and *burnup group*.
+ these form the *cross section group*. By advancing blocks by their burnup into
+ different groups, we capture some of the physical effects related to depletion.
+ 
+-XS types are typically single capital letters like A
++XS types are typically single capital letters like A, though digits are also allowed.
+ BU groups are also capital letters.
+ A XS group of AB is in XS type ``A`` and burnup group ``B``.
+ 
+@@ -81,7 +81,7 @@ def describeInterfaces(cs):
+     return None
+ 
+ 
+-_ALLOWABLE_XS_TYPE_LIST = list(string.ascii_uppercase + string.ascii_lowercase)
++_ALLOWABLE_XS_TYPE_LIST = list(string.ascii_uppercase + string.ascii_lowercase + string.digits)
+ 
+ 
+ def getXSTypeNumberFromLabel(xsTypeLabel: str) -> int:
+@@ -90,9 +90,10 @@ def getXSTypeNumberFromLabel(xsTypeLabel: str) -> int:
+ 
+     Useful for visualizing XS type in XTVIEW.
+ 
+-    2-digit labels are supported when there is only one burnup group.
++    2-digit labels are supported when there is only one burnup group. Numeric labels
++    are encoded using the same ASCII representation as letter labels (e.g. '1' is 49).
+     """
+-    return int("".join(["{:02d}".format(ord(si)) for si in xsTypeLabel]))
++    return int("".join(["{:02d}".format(ord(si)) for si in str(xsTypeLabel)]))
+ 
+ 
+ def getXSTypeLabelFromNumber(xsTypeNumber: int) -> str:
+@@ -101,20 +102,29 @@ def getXSTypeLabelFromNumber(xsTypeNumber: int) -> str:
+ 
+     Useful for visualizing XS type in XTVIEW.
+ 
+-    2-digit labels are supported when there is only one burnup group.
++    2-digit labels are supported when there is only one burnup group. Numeric labels
++    are decoded from their ASCII representation (e.g. 49 becomes '1').
+     """
+     try:
+-        if xsTypeNumber > ord("Z"):
+-            # two digit. Parse
+-            return chr(int(str(xsTypeNumber)[:2])) + chr(int(str(xsTypeNumber)[2:]))
+-        elif xsTypeNumber < ord("A"):
+-            raise ValueError(
+-                f"Cannot convert invalid xsTypeNumber `{xsTypeNumber}` to char. "
+-                "The number must be >= 65 (corresponding to 'A')."
+-            )
+-        else:
+-            return chr(xsTypeNumber)
+-    except ValueError:
++        encodedLabel = str(xsTypeNumber)
++        label = []
++        while encodedLabel:
++            # ASCII values for lower-case letters use three digits, while upper-case
++            # letters, digits, and the first part of the lower-case range use two.
++            if len(encodedLabel) >= 3 and 100 <= int(encodedLabel[:3]) <= 122:
++                code = int(encodedLabel[:3])
++                encodedLabel = encodedLabel[3:]
++            elif len(encodedLabel) >= 2:
++                code = int(encodedLabel[:2])
++                encodedLabel = encodedLabel[2:]
++            else:
++                raise ValueError(f"Cannot convert invalid xsTypeNumber `{xsTypeNumber}` to label.")
++            character = chr(code)
++            if character not in _ALLOWABLE_XS_TYPE_LIST:
++                raise ValueError(f"Cannot convert invalid xsTypeNumber `{xsTypeNumber}` to label.")
++            label.append(character)
++        return "".join(label)
++    except (TypeError, ValueError):
+         runLog.error(f"Error converting {xsTypeNumber} to label.")
+ 
+ 
+@@ -1419,7 +1429,8 @@ class CrossSectionGroupManager(interfaces.Interface):
+         if excludedXSTypes is not None:
+             for xsType in excludedXSTypes:
+                 allocatedXSTypes.add(xsType)
+-        availableXsTypes = sorted(list(set(_ALLOWABLE_XS_TYPE_LIST).difference(allocatedXSTypes)))
++        # Preserve the preferred allocation order (upper-case, lower-case, then digits).
++        availableXsTypes = [xsType for xsType in _ALLOWABLE_XS_TYPE_LIST if xsType not in allocatedXSTypes]
+         if len(availableXsTypes) < howMany:
+             raise ValueError(
+                 "There are not enough available xs types. {} have been allocated, {} are available, and "
+diff --git a/armi/reactor/blockParameters.py b/armi/reactor/blockParameters.py
+index f59c3a6..c992265 100644
+--- a/armi/reactor/blockParameters.py
++++ b/armi/reactor/blockParameters.py
+@@ -307,6 +307,7 @@ def getBlockParameterDefinitions():
+         )
+ 
+         def xsType(self, value):
++            value = str(value)
+             self._p_xsType = value
+             self._p_xsTypeNum = crossSectionGroupManager.getXSTypeNumberFromLabel(value)
+             xsTypeNumDef = parameters.ALL_DEFINITIONS["xsTypeNum"]
+diff --git a/armi/reactor/blueprints/assemblyBlueprint.py b/armi/reactor/blueprints/assemblyBlueprint.py
+index 5cf7cc0..e59df5c 100644
+--- a/armi/reactor/blueprints/assemblyBlueprint.py
++++ b/armi/reactor/blueprints/assemblyBlueprint.py
+@@ -40,6 +40,26 @@ def _configureAssemblyTypes():
+     return assemTypes
+ 
+ 
++class _XsTypeString(str):
++    """A string subclass used to coerce numeric XS type labels to strings in blueprints."""
++
++
++def _representXsType(dumper, data, roundTripData):
++    """Represent XS type labels as plain strings when writing blueprints."""
++    return dumper.represent_data(str(data))
++
++
++class XsTypeList(yamlize.StrList):
++    """A list of cross-section type labels that accepts numeric labels as well as strings."""
++
++    item_type = yamlize.Typed(_XsTypeString, compare_after_cast=False, to_yaml=_representXsType)
++
++    def append(self, item):
++        super().append(item)
++        # Keep the list values as plain strings so they can be serialized normally.
++        self[-1] = str(self[-1])
++
++
+ class Modifications(yamlize.Map):
+     """The names of material modifications and lists of the modification values for each block in the assembly."""
+ 
+@@ -140,7 +160,7 @@ class AssemblyBlueprint(yamlize.Object):
+         type=MaterialModifications,
+         default=MaterialModifications(),
+     )
+-    xsTypes = yamlize.Attribute(key="xs types", type=yamlize.StrList)
++    xsTypes = yamlize.Attribute(key="xs types", type=XsTypeList)
+     # note: yamlizable does not call an __init__ method, instead it uses __new__ and setattr
+ 
+     _assemTypes = _configureAssemblyTypes()
+diff --git a/doc/user/inputs.rst b/doc/user/inputs.rst
+index 081787b..8c436de 100644
+--- a/doc/user/inputs.rst
++++ b/doc/user/inputs.rst
+@@ -1019,8 +1019,9 @@ xs types
+   that have much different compositions to have separate cross section types. The tradeoff is that the more XS types
+   you define, the more CPU time the case will take to run.
+ 
+-  Representing xsType by a single capital letter (A-Z), or 2-letter xsType designations if and only if the ``buGroups``
+-  setting has length 1 (i.e. no burnup groups are defined). This is useful for high-fidelity XS modeling.
++  Representing xsType by a single alphanumeric character (A-Z, a-z, or 0-9), or 2-character xsType designations if and
++  only if the ``buGroups`` setting has length 1 (i.e. no burnup groups are defined). This is useful for high-fidelity XS
++  modeling.
+ 
+   ARMI is able to use lower-case letters (a-z), but this should only be done when working on a case-sensitive file
+   system. On a case-insensitive file system (Windows, and some MacOS systems) this could cause unpredictable errors.

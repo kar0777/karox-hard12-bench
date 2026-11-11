@@ -1,0 +1,101 @@
+diff --git a/toqito/state_metrics/measured_relative_entropy.py b/toqito/state_metrics/measured_relative_entropy.py
+index d54a21f..ffd8973 100644
+--- a/toqito/state_metrics/measured_relative_entropy.py
++++ b/toqito/state_metrics/measured_relative_entropy.py
+@@ -2,11 +2,14 @@
+ 
+ import cvxpy as cvx
+ import numpy as np
+-import scipy.linalg
+ 
+ from toqito._quadrature import _gauss_legendre_01
+ from toqito.matrix_props import is_density, is_positive_semidefinite
+ 
++# Eigenvalues below this fraction of the largest eigenvalue of a positive
++# semi-definite matrix are treated as numerical zeros when computing its support.
++_SUPPORT_TOL = 1e-12
++
+ 
+ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1e-5) -> float:
+     r"""Compute the measured relative entropy of two quantum states. [@huang2025semidefinite].
+@@ -74,7 +77,8 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+         eps: Tolerance level.
+ 
+     Returns:
+-        The measured relative entropy between `rho` and `sigma`.
++        The measured relative entropy between `rho` and `sigma`. The value `np.inf` is returned if the
++        support of `rho` is not contained in the support of `sigma`.
+ 
+     Raises:
+         ValueError: If `rho` if not a density operator or if `sigma` is not positive semi-definite.
+@@ -100,12 +104,27 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+         ```
+ 
+     """
++    rho = np.asarray(rho)
++    sigma = np.asarray(sigma)
+     if not is_density(rho):
+         raise ValueError("Measured relative entropy is only defined if rho is a density operator.")
+     if not is_positive_semidefinite(sigma):
+         raise ValueError("Measured relative entropy is only defined if sigma is positive semi-definite.")
+     if np.array_equal(rho, sigma):
+         return 0
++
++    # A POVM element acting on the kernel of `rho` is observed with probability zero and therefore
++    # contributes nothing to the relative entropy. It thus suffices to consider the support of `rho`,
++    # on which `rho` is positive definite, which is what `_compute_a` requires.
++    support = _support_basis(rho)
++    rho = support.conj().T @ rho @ support
++    sigma = support.conj().T @ sigma @ support
++    sigma_eigs = np.linalg.eigvalsh(_hermitian_part(sigma))
++    if sigma_eigs.size == 0 or sigma_eigs.min() <= _SUPPORT_TOL * sigma_eigs.max():
++        # Some direction in the support of `rho` is annihilated by `sigma`: measuring it gives a
++        # positive probability for `rho` but zero probability for `sigma`, hence an infinite value.
++        return np.inf
++
+     n = len(rho)
+     m, k = _find_mk(rho, sigma, eps)
+     w, theta = cvx.Variable((n, n), complex=True), cvx.Variable((n, n), hermitian=True)
+@@ -137,18 +156,38 @@ def measured_relative_entropy(rho: np.ndarray, sigma: np.ndarray, eps: float = 1
+     return obj.value
+ 
+ 
++def _hermitian_part(mat: np.ndarray) -> np.ndarray:
++    """Return the Hermitian part of a matrix."""
++    return (mat + mat.conj().T) / 2
++
++
++def _support_basis(mat: np.ndarray) -> np.ndarray:
++    """Return an orthonormal basis of the support of a positive semi-definite matrix."""
++    eigs, vecs = np.linalg.eigh(_hermitian_part(mat))
++    if eigs.size == 0:
++        return np.zeros((len(mat), 0), dtype=mat.dtype)
++    return vecs[:, eigs > _SUPPORT_TOL * eigs.max()]
++
++
+ def _compute_a(rho: np.ndarray, sigma: np.ndarray) -> float:
+-    """Find optimal a."""
+-    rho_half_inv = scipy.linalg.inv(scipy.linalg.sqrtm(rho))
++    """Find optimal a.
++
++    This assumes that `rho` is positive definite; the caller restricts it to its support beforehand.
++    """
++    eigs, vecs = np.linalg.eigh(_hermitian_part(rho))
++    rho_half_inv = (vecs / np.sqrt(eigs)) @ vecs.conj().T
+     X = rho_half_inv @ sigma @ rho_half_inv
+-    eigs = np.linalg.eigvalsh(X)
++    eigs = np.linalg.eigvalsh(_hermitian_part(X))
+     a = max(eigs.max(), 1.0 / eigs.min())
+     return a
+ 
+ 
+ def _find_mk(rho: np.ndarray, sigma: np.ndarray, eps: float) -> tuple[int, int]:
+     """Find m and k for the desired epsilon value."""
+-    a = _compute_a(rho, sigma)
++    # The formulas below require `ln(a) >= 1`. The value `a` is 1 when `sigma` agrees with `rho` on
++    # the support of `rho`, in which case no measurement can tell them apart; clamping keeps the
++    # number of terms finite (and the corresponding semi-definite program well defined).
++    a = max(_compute_a(rho, sigma), np.e)
+     k1 = int(np.ceil(np.log2(np.log(a))) + 1)
+     k2 = int(2 * np.ceil(np.sqrt(np.log2(32 * np.log(a) / eps)) / 2))
+     k = k1 + k2

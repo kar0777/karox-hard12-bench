@@ -1,0 +1,91 @@
+diff --git a/news/3996.bugfix.md b/news/3996.bugfix.md
+new file mode 100644
+index 0000000..7866d52
+--- /dev/null
++++ b/news/3996.bugfix.md
+@@ -0,0 +1 @@
++Don't wipe the HTTP cache on every new client and don't drop errors raised while fetching hashes in parallel, which could leave packages without any files in `pdm.lock` or `pylock.toml`.
+diff --git a/src/pdm/models/repositories/base.py b/src/pdm/models/repositories/base.py
+index d942482..91a7846 100644
+--- a/src/pdm/models/repositories/base.py
++++ b/src/pdm/models/repositories/base.py
+@@ -340,4 +340,5 @@ class BaseRepository:
+             candidate.hashes = self.get_hashes(candidate)
+ 
+         with ThreadPoolExecutor() as executor:
+-            executor.map(do_fetch, candidates)
++            # Consume the results so that errors raised in the workers aren't silently dropped.
++            list(executor.map(do_fetch, candidates))
+diff --git a/src/pdm/models/session.py b/src/pdm/models/session.py
+index 8d0157c..32eaf27 100644
+--- a/src/pdm/models/session.py
++++ b/src/pdm/models/session.py
+@@ -45,6 +45,40 @@ CACHES_TTL = 7 * 24 * 60 * 60  # 7 days
+ MAX_RETRIES = 4
+ 
+ 
++_legacy_cache_lock = threading.Lock()
++_cleaned_cache_dirs: set[Path] = set()
++
++
++def _cleanup_legacy_cache(cache_dir: Path, cache_db: Path) -> None:
++    """Remove the caches written by the pdm versions using hishel < 2.
++
++    Those versions kept the responses in the ``.cache/hishel`` directory and the downloaded
++    files directly under the cache directory, neither of which the SQLite storage can use.
++    It runs at most once per directory and process, so that clients created concurrently
++    don't wipe each other's cache, and never when the current cache is already there.
++    """
++    import shutil
++
++    key = cache_dir.resolve()
++    with _legacy_cache_lock:
++        if key in _cleaned_cache_dirs:
++            return
++        _cleaned_cache_dirs.add(key)
++        if cache_db.is_file() or not cache_dir.is_dir():
++            # The current cache is already there, or there is nothing to clean up.
++            return
++        for entry in cache_dir.iterdir():
++            if entry.is_file() and entry.name.startswith(cache_db.name):
++                continue
++            try:
++                if entry.is_dir() and not entry.is_symlink():
++                    shutil.rmtree(entry, ignore_errors=True)
++                else:
++                    entry.unlink()
++            except OSError:
++                pass
++
++
+ @cache
+ def _get_transport(
+     verify: bool | SSLContext | str = True,
+@@ -103,8 +137,6 @@ class ThreadedSyncSqliteStorage(hishel.SqliteStorage):
+ 
+ class PDMPyPIClient(PyPIClient):
+     def __init__(self, *, sources: list[RepositoryConfig], cache_dir: Path | None = None, **kwargs: Any) -> None:
+-        import shutil
+-
+         from httpx2._utils import URLPattern
+         from unearth.fetchers.sync import LocalFSTransport
+ 
+@@ -113,16 +145,8 @@ class PDMPyPIClient(PyPIClient):
+             def cache_transport(transport: httpx2.BaseTransport) -> httpx2.BaseTransport:
+                 return transport
+         else:
+-            # clean up old (pre-hishel 1.0 and 2.0) caches
+-            for cache in ["http-cache.db", ".cache/hishel"]:
+-                cache_db = cache_dir / cache
+-                if not cache_db.exists():
+-                    for f in cache_dir.iterdir():
+-                        if not f.name.startswith(cache):
+-                            if f.is_dir():
+-                                shutil.rmtree(f, ignore_errors=True)
+-                            else:
+-                                f.unlink()
++            cache_db = cache_dir / "http-cache.db"
++            _cleanup_legacy_cache(cache_dir, cache_db)
+             storage = ThreadedSyncSqliteStorage(database_path=cache_db, default_ttl=CACHES_TTL)
+ 
+             def cache_transport(transport: httpx2.BaseTransport) -> httpx2.BaseTransport:

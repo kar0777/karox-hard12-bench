@@ -1,0 +1,58 @@
+diff --git a/haystack/components/builders/answer_builder.py b/haystack/components/builders/answer_builder.py
+index aff0535..662ab7b 100644
+--- a/haystack/components/builders/answer_builder.py
++++ b/haystack/components/builders/answer_builder.py
+@@ -97,6 +97,7 @@ class AnswerBuilder:
+             If not specified, no parsing is done, and all documents are returned.
+             References need to be specified as indices of the input documents and start at [1].
+             Example: `\\[(\\d+)\\]` finds "1" in a string "this is an answer[1]".
++            The regular expression must have exactly one capture group that matches the document index.
+             If this parameter is provided, documents metadata will contain a "referenced" key with a boolean value.
+ 
+         :param last_message_only:
+@@ -168,6 +169,7 @@ class AnswerBuilder:
+             If not specified, no parsing is done, and all documents are returned.
+             References need to be specified as indices of the input documents and start at [1].
+             Example: `\\[(\\d+)\\]` finds "1" in a string "this is an answer[1]".
++            The regular expression must have exactly one capture group that matches the document index.
+         :param expand_reference_ranges:
+             If True, reference ranges like `[6-10]` are expanded to documents 6 through 10.
+             If not specified, the value from the component initialization is used.
+@@ -191,6 +193,8 @@ class AnswerBuilder:
+         reference_pattern = AnswerBuilder._resolve_reference_pattern(
+             reference_pattern=reference_pattern, expand_reference_ranges=expand_reference_ranges
+         )
++        if reference_pattern:
++            AnswerBuilder._check_num_groups_in_reference_regex(reference_pattern)
+ 
+         replies_to_iterate = replies[-1:] if self.last_message_only and replies else replies
+         meta_to_iterate = meta[-1:] if self.last_message_only and meta else meta
+@@ -305,6 +309,15 @@ class AnswerBuilder:
+                 idxs.add(int(match) - 1)
+         return idxs
+ 
++    @staticmethod
++    def _check_num_groups_in_reference_regex(pattern: str) -> None:
++        num_groups = re.compile(pattern).groups
++        if num_groups != 1:
++            raise ValueError(
++                f"Reference pattern '{pattern}' contains {num_groups} capture groups. "
++                f"Please specify a pattern with exactly one capture group that matches the document index."
++            )
++
+     @staticmethod
+     def _check_num_groups_in_regex(pattern: str) -> None:
+         num_groups = re.compile(pattern).groups
+diff --git a/releasenotes/notes/answer-builder-validate-reference-pattern-3c9f5a1d7b2e4f60.yaml b/releasenotes/notes/answer-builder-validate-reference-pattern-3c9f5a1d7b2e4f60.yaml
+new file mode 100644
+index 0000000..8f2ecec
+--- /dev/null
++++ b/releasenotes/notes/answer-builder-validate-reference-pattern-3c9f5a1d7b2e4f60.yaml
+@@ -0,0 +1,7 @@
++---
++fixes:
++  - |
++    ``AnswerBuilder`` now validates ``reference_pattern`` in ``run()`` and raises a clear ``ValueError`` if the
++    effective pattern, either set at initialization or overridden in ``run()``, does not contain exactly one capture
++    group. Previously such a pattern was accepted and only failed when a reply contained a matching reference, with a
++    cryptic ``int()`` error like ``invalid literal for int() with base 10: '[1]'``.

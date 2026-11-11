@@ -1,0 +1,326 @@
+diff --git a/aqua/core/intake_drivers/stac/stac.py b/aqua/core/intake_drivers/stac/stac.py
+index 0627719..32f4f2b 100644
+--- a/aqua/core/intake_drivers/stac/stac.py
++++ b/aqua/core/intake_drivers/stac/stac.py
+@@ -8,7 +8,7 @@ import fsspec
+ import xarray as xr
+ from intake import readers
+ 
+-from aqua.core.intake_drivers.xarray.base import IntakeXarraySourceAdapter
++from aqua.core.intake_drivers.xarray.base import IntakeXarraySourceAdapter, merge_xarray_kwargs
+ from aqua.core.intake_drivers.xarray.readers import TolerantXArrayDatasetReader
+ from aqua.core.logger import log_configure
+ 
+@@ -288,7 +288,8 @@ class IntakeSTACSource(IntakeXarraySourceAdapter):
+         metadata (dict, optional): Extra catalog metadata to merge with STAC metadata.
+         xarray_kwargs (dict, optional): Additional kwargs for xarray open calls.
+         loglevel (str, optional): Logging level. Defaults to 'WARNING'.
+-        **kwargs: Further parameters forwarded to the reader (e.g. chunks).
++        **kwargs: Further parameters forwarded to the reader (e.g. chunks). They take
++            precedence over ``xarray_kwargs`` and the driver defaults.
+ 
+     Raises:
+         TypeError: If ``urlpath`` or ``path`` is a dictionary.
+@@ -369,7 +370,7 @@ class IntakeSTACSource(IntakeXarraySourceAdapter):
+             self.reader = None
+             self.available_items = _get_collection_item_ids(raw_dict)
+ 
+-            super().__init__(None, xarray_kwargs or {}, metadata=combined_metadata)
++            super().__init__(None, merge_xarray_kwargs(xarray_kwargs, kwargs), metadata=combined_metadata)
+             return
+ 
+         collection_info = None
+@@ -457,20 +458,16 @@ class IntakeSTACSource(IntakeXarraySourceAdapter):
+ 
+         # Detect format and configure reader
+         fmt = format.lower() if format else _detect_format(asset_info.get("type"), asset_href)
+-        xarray_kwargs = dict(xarray_kwargs or {})
+ 
+         if fmt == "zarr":
+-            if "chunks" not in xarray_kwargs:
+-                kwargs.setdefault("chunks", {})
++            xarray_kwargs = merge_xarray_kwargs(xarray_kwargs, kwargs, {"chunks": {}})
+             asset_storage = storage_options if (storage_options and _is_fsspec_urlpath(asset_href)) else None
+             data = readers.datatypes.Zarr(asset_href, storage_options=asset_storage, metadata=combined_metadata)
+-            reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=combined_metadata, **kwargs)
++            reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=combined_metadata)
+         else:  # netcdf
+-            xarray_kwargs.setdefault("engine", "netcdf4")
+-            if "chunks" not in xarray_kwargs:
+-                kwargs.setdefault("chunks", {})
++            xarray_kwargs = merge_xarray_kwargs(xarray_kwargs, kwargs, {"engine": "netcdf4", "chunks": {}})
+             data = readers.datatypes.NetCDF3(asset_href, storage_options=storage_options, metadata=combined_metadata)
+-            reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=combined_metadata, **kwargs)
++            reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=combined_metadata)
+ 
+         self.reader = reader
+         self.stac_item = item_dict
+diff --git a/aqua/core/intake_drivers/xarray/base.py b/aqua/core/intake_drivers/xarray/base.py
+index 06ebee3..14652f8 100644
+--- a/aqua/core/intake_drivers/xarray/base.py
++++ b/aqua/core/intake_drivers/xarray/base.py
+@@ -1,6 +1,32 @@
+ from intake.source import base
+ 
+ 
++def merge_xarray_kwargs(xarray_kwargs=None, kwargs=None, defaults=None):
++    """Merge xarray open options with a single, explicit precedence.
++
++    Precedence, from lowest to highest, is driver defaults, catalog
++    ``xarray_kwargs`` and explicit source/Reader kwargs. The merge is shallow, so
++    a value such as ``chunks`` replaces the lower-precedence value as a whole
++    (including an explicit ``None``). Neither input mapping is modified.
++
++    Args:
++        xarray_kwargs (dict, optional): Catalog-provided xarray kwargs. Defaults to None.
++        kwargs (dict, optional): Explicit source/Reader kwargs. Defaults to None.
++        defaults (dict, optional): Driver defaults, applied only for missing keys. Defaults to None.
++
++    Returns:
++        dict: A new mapping of the effective xarray open options.
++    """
++    merged = dict(defaults or {})
++    merged.update(xarray_kwargs or {})
++    merged.update(kwargs or {})
++    return merged
++
++
++# Alias for internal callers that use the private helper name.
++_merge_xarray_kwargs = merge_xarray_kwargs
++
++
+ class IntakeXarraySourceAdapter(base.DataSource):
+     container = "xarray"
+     name = "xarray"
+diff --git a/aqua/core/intake_drivers/xarray/netcdf.py b/aqua/core/intake_drivers/xarray/netcdf.py
+index 2d1d06b..418298d 100644
+--- a/aqua/core/intake_drivers/xarray/netcdf.py
++++ b/aqua/core/intake_drivers/xarray/netcdf.py
+@@ -2,7 +2,7 @@
+ 
+ from intake import readers
+ 
+-from .base import IntakeXarraySourceAdapter
++from .base import IntakeXarraySourceAdapter, merge_xarray_kwargs
+ from .readers import TolerantXArrayDatasetReader
+ 
+ 
+@@ -42,26 +42,24 @@ class IntakeNetCDFSource(IntakeXarraySourceAdapter):
+             :class:`~.readers.TolerantXArrayDatasetReader`.
+         concat_dim (str, optional): Dimension to concatenate the files along. Can be new or
+             pre-existing if ``combine="nested"``; must be None or new if ``combine="by_coords"``.
+-        kwargs: Further parameters forwarded to the reader.
++        kwargs: Further parameters forwarded to the reader. They take precedence over
++            ``xarray_kwargs`` and the driver defaults.
+     """
+ 
+     name = "netcdf"
+ 
+     def __init__(self, urlpath, xarray_kwargs=None, metadata=None, path_as_pattern=True, storage_options=None, **kwargs):
+-        xarray_kwargs = dict(xarray_kwargs or {})
+         # intake infers engine="scipy" from the NetCDF3 datatype, and scipy fails on any
+         # other flavour: netcdf4 reads them all (the backend used to force it downstream)
+-        xarray_kwargs.setdefault("engine", "netcdf4")
+         # AQUA always wants lazy data, but intake routes a single file to ``xr.open_dataset``,
+         # which is eager unless ``chunks`` is given
+-        if "chunks" not in xarray_kwargs:
+-            kwargs.setdefault("chunks", {})
++        xarray_kwargs = merge_xarray_kwargs(xarray_kwargs, kwargs, {"engine": "netcdf4", "chunks": {}})
+ 
+         data = readers.datatypes.NetCDF3(urlpath, storage_options=storage_options, metadata=metadata)
+         if (path_as_pattern is True and "{" in urlpath) or isinstance(path_as_pattern, str):
+             # ``{field}`` patterns become output coordinates: intake has its own reader for that
+-            reader = readers.XArrayPatternReader(data, **xarray_kwargs, metadata=metadata, pattern=path_as_pattern, **kwargs)
++            reader = readers.XArrayPatternReader(data, **xarray_kwargs, metadata=metadata, pattern=path_as_pattern)
+         else:
+-            reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=metadata, **kwargs)
++            reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=metadata)
+         self.reader = reader
+         super().__init__(data, xarray_kwargs, metadata)
+diff --git a/aqua/core/intake_drivers/xarray/xzarr.py b/aqua/core/intake_drivers/xarray/xzarr.py
+index 298b539..050b0db 100644
+--- a/aqua/core/intake_drivers/xarray/xzarr.py
++++ b/aqua/core/intake_drivers/xarray/xzarr.py
+@@ -2,7 +2,7 @@
+ 
+ from intake import readers
+ 
+-from .base import IntakeXarraySourceAdapter
++from .base import IntakeXarraySourceAdapter, merge_xarray_kwargs
+ from .readers import TolerantXArrayDatasetReader
+ 
+ 
+@@ -55,15 +55,14 @@ class IntakeZarrSource(IntakeXarraySourceAdapter):
+         metadata (dict, optional): Catalog metadata for this source.
+         xarray_kwargs (dict, optional): Additional kwargs for the xarray open call.
+         kwargs: Further parameters forwarded to the reader (e.g. chunks, consolidated).
++            They take precedence over ``xarray_kwargs`` and the driver defaults.
+     """
+ 
+     name = "zarr"
+ 
+     def __init__(self, urlpath, storage_options=None, metadata=None, xarray_kwargs=None, **kwargs):
+-        xarray_kwargs = dict(xarray_kwargs or {})
+         # a single store takes the same eager ``xr.open_dataset`` route as a single netcdf file
+-        if "chunks" not in xarray_kwargs:
+-            kwargs.setdefault("chunks", {})
++        xarray_kwargs = merge_xarray_kwargs(xarray_kwargs, kwargs, {"chunks": {}})
+ 
+         # zarr rejects storage_options on a plain local-path store: it is only honoured
+         # when the store is opened as an fsspec URI, so drop it for local urlpaths
+@@ -71,5 +70,5 @@ class IntakeZarrSource(IntakeXarraySourceAdapter):
+             storage_options = None
+ 
+         data = readers.datatypes.Zarr(urlpath, storage_options=storage_options, metadata=metadata)
+-        self.reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=metadata, **kwargs)
++        self.reader = TolerantXArrayDatasetReader(data, **xarray_kwargs, metadata=metadata)
+         super().__init__(data, xarray_kwargs, metadata)
+diff --git a/docs/sphinx/source/adding_data.rst b/docs/sphinx/source/adding_data.rst
+index 09c713e..35b1af1 100644
+--- a/docs/sphinx/source/adding_data.rst
++++ b/docs/sphinx/source/adding_data.rst
+@@ -129,6 +129,12 @@ You can add fixes to your dataset by following examples in the ``aqua/core/confi
+     (``aqua.core.intake_drivers.xarray``), keeping the same catalog syntax as
+     the former intake-xarray ones.
+ 
++For the ``netcdf``, ``zarr`` and ``stac`` drivers, xarray options can be set in
++``args.xarray_kwargs`` or directly in ``args``. Direct arguments (including those
++passed to ``Reader``) take precedence over ``xarray_kwargs``, which take precedence
++over driver defaults. A ``chunks`` mapping is replaced as a whole, and an explicit
++``chunks: null`` in the catalog or a direct source call disables chunking.
++
+ .. _stac-based-sources:
+ 
+ STAC-based sources
+diff --git a/tests/test_intake_drivers_xarray.py b/tests/test_intake_drivers_xarray.py
+index cae43c9..1f9966b 100644
+--- a/tests/test_intake_drivers_xarray.py
++++ b/tests/test_intake_drivers_xarray.py
+@@ -7,6 +7,12 @@ import xarray as xr
+ from intake.source import get_plugin_class
+ 
+ from aqua.core.intake_drivers.xarray import IntakeNetCDFSource, IntakeZarrSource
++from aqua.core.intake_drivers.xarray.base import merge_xarray_kwargs
++
++XARRAY_DRIVERS = [
++    pytest.param(IntakeNetCDFSource, "dummy.nc", {"engine": "netcdf4"}, id="netcdf"),
++    pytest.param(IntakeZarrSource, "dummy.zarr", {}, id="zarr"),
++]
+ 
+ 
+ @pytest.fixture
+@@ -41,6 +47,62 @@ class TestDriverRegistration:
+         assert get_plugin_class("zarr") is IntakeZarrSource
+ 
+ 
++@pytest.mark.aqua
++class TestXarrayKwargsMerge:
++    """Catalog xarray kwargs, explicit source kwargs, and driver defaults have one precedence."""
++
++    def test_merge_does_not_mutate_inputs(self):
++        catalog = {"chunks": {"time": 12, "lat": 4}, "decode_times": False}
++        explicit = {"chunks": {"time": 1}, "decode_times": True}
++
++        merged = merge_xarray_kwargs(catalog, explicit, {"engine": "netcdf4", "chunks": {}})
++
++        assert merged == {"engine": "netcdf4", "chunks": {"time": 1}, "decode_times": True}
++        assert catalog == {"chunks": {"time": 12, "lat": 4}, "decode_times": False}
++        assert explicit == {"chunks": {"time": 1}, "decode_times": True}
++
++    @pytest.mark.parametrize("driver,urlpath,defaults", XARRAY_DRIVERS)
++    def test_catalog_only_options(self, driver, urlpath, defaults):
++        catalog = {"chunks": {"time": 2}, "decode_times": False}
++        source = driver(urlpath, xarray_kwargs=catalog)
++
++        assert source.reader.kwargs["chunks"] == {"time": 2}
++        assert source.reader.kwargs["decode_times"] is False
++        assert source.xarray_kwargs == {**defaults, "chunks": {"time": 2}, "decode_times": False}
++
++    @pytest.mark.parametrize("driver,urlpath,defaults", XARRAY_DRIVERS)
++    def test_explicit_kwargs_override_catalog_options(self, driver, urlpath, defaults):
++        catalog = {"chunks": {"time": 12, "lat": 4}, "decode_times": False}
++        explicit = {"chunks": {"time": 1}, "decode_times": True}
++        source = driver(urlpath, xarray_kwargs=catalog, **explicit)
++
++        # the chunk mapping is replaced as a whole, not combined with the catalog one
++        assert source.reader.kwargs["chunks"] == {"time": 1}
++        assert source.reader.kwargs["decode_times"] is True
++        assert source.xarray_kwargs == {**defaults, "chunks": {"time": 1}, "decode_times": True}
++        assert catalog == {"chunks": {"time": 12, "lat": 4}, "decode_times": False}
++        assert explicit == {"chunks": {"time": 1}, "decode_times": True}
++
++    @pytest.mark.parametrize("driver,urlpath,defaults", XARRAY_DRIVERS)
++    def test_explicit_none_survives(self, driver, urlpath, defaults):
++        source = driver(urlpath, xarray_kwargs={"chunks": {"time": 12}}, chunks=None)
++
++        assert source.reader.kwargs["chunks"] is None
++        assert source.xarray_kwargs == {**defaults, "chunks": None}
++
++    def test_effective_options_used_for_backend_read(self, netcdf_tree):
++        source = IntakeNetCDFSource(
++            str(netcdf_tree / "one.nc"),
++            xarray_kwargs={"chunks": {"time": 12}},
++            chunks={"time": 1},
++        )
++
++        # BackendIntakeXarray reads with source.xarray_kwargs: the explicit override must stick
++        data = source.reader.read(**source.xarray_kwargs)
++
++        assert data["tas"].chunks[0] == (1, 1, 1, 1)
++
++
+ @pytest.mark.aqua
+ class TestIntakeNetCDFSource:
+     """Behaviour of the netcdf source built on the intake 2 readers."""
+@@ -99,7 +161,7 @@ class TestIntakeNetCDFSource:
+     def test_engine_override_from_xarray_kwargs(self):
+         source = IntakeNetCDFSource("dummy.nc", xarray_kwargs={"engine": "h5netcdf"})
+         assert source.reader.kwargs["engine"] == "h5netcdf"
+-        assert source.xarray_kwargs == {"engine": "h5netcdf"}
++        assert source.xarray_kwargs == {"engine": "h5netcdf", "chunks": {}}
+ 
+     def test_call_returns_self(self):
+         source = IntakeNetCDFSource("dummy.nc")
+diff --git a/tests/test_stac_driver.py b/tests/test_stac_driver.py
+index aeaf5f4..4f1c697 100644
+--- a/tests/test_stac_driver.py
++++ b/tests/test_stac_driver.py
+@@ -293,6 +293,38 @@ class TestSTACDriver:
+         with source.read() as data:
+             assert data["temperature"].shape == (5, 10)
+ 
++    @pytest.mark.parametrize("asset_kind", ["netcdf", "zarr"])
++    @pytest.mark.parametrize("explicit_chunks", [{"time": 1}, None], ids=["override", "explicit-none"])
++    def test_xarray_kwargs_precedence(self, tmp_path, asset_kind, explicit_chunks):
++        """Explicit source kwargs override catalog xarray kwargs for both asset formats."""
++        dataset = xr.Dataset(
++            {"value": (("time", "x"), np.ones((4, 3)))},
++            coords={"time": np.arange(4), "x": np.arange(3)},
++        )
++        if asset_kind == "netcdf":
++            dataset.to_netcdf(tmp_path / "data.nc")
++            asset = {"href": "data.nc", "type": "application/x-netcdf"}
++        else:
++            dataset.to_zarr(tmp_path / "data.zarr")
++            asset = {"href": "data.zarr", "type": "application/vnd+zarr"}
++        path = _write_json(
++            tmp_path / "item.json",
++            {"type": "Feature", "id": "kwargs-item", "assets": {"data": asset}},
++        )
++        catalog_kwargs = {"chunks": {"time": 12, "x": 4}, "decode_times": False}
++
++        source = IntakeSTACSource(urlpath=path, xarray_kwargs=catalog_kwargs, chunks=explicit_chunks)
++
++        assert source.reader.kwargs["chunks"] == explicit_chunks
++        assert source.xarray_kwargs["chunks"] == explicit_chunks
++        assert source.reader.kwargs["decode_times"] is False
++        assert catalog_kwargs == {"chunks": {"time": 12, "x": 4}, "decode_times": False}
++        data = source.reader.read(**source.xarray_kwargs)
++        if explicit_chunks is None:
++            assert data["value"].chunks is None
++        else:
++            assert data["value"].chunks[0] == (1, 1, 1, 1)
++
+     @pytest.mark.parametrize(
+         ("assets", "asset", "error", "message"),
+         [

@@ -1,0 +1,43 @@
+diff --git a/mitmproxy/addons/tlsconfig.py b/mitmproxy/addons/tlsconfig.py
+index f68727e..549f36d 100644
+--- a/mitmproxy/addons/tlsconfig.py
++++ b/mitmproxy/addons/tlsconfig.py
+@@ -82,6 +82,20 @@ DEFAULT_HOSTFLAGS = (
+     | getattr(SSL._lib, "X509_CHECK_FLAG_NEVER_CHECK_SUBJECT", 0)  # type: ignore
+ )
+ 
++# Revocation endpoints for the compromised eMudhra CA chain and its Sectigo cross-sign.
++# We block these when --emudhra is enabled: revocation checks for the compromised CA are
++# unnecessary and would otherwise prevent the generated certificates from being accepted.
++EMUDHRA_REVOCATION_HOSTS = frozenset(
++    {
++        "crl.comodoca.com",
++        "crl.emsign.com",
++        "ocsp-a.emsign.com",
++        "ocsp-b.emsign.com",
++        "ocsp-c.emsign.com",
++        "ocsp.comodoca.com",
++    }
++)
++
+ 
+ class AppData(TypedDict):
+     client_alpn: bytes | None
+@@ -668,6 +682,17 @@ class TlsConfig:
+     def request(self, flow: http.HTTPFlow):
+         if not flow.live or flow.error or flow.response:
+             return
++
++        if ctx.options.emudhra or ctx.options.emudhra_old:
++            hosts = {
++                flow.request.host.lower().rstrip("."),
++                flow.request.pretty_host.lower().rstrip("."),
++            }
++            if hosts & EMUDHRA_REVOCATION_HOSTS:
++                flow.metadata["blocklisted"] = True
++                flow.response = http.Response.make(404)
++                return
++
+         # Check if a request has a magic CRL token at the end
+         if flow.request.path.endswith(self.crl_path()):
+             flow.response = http.Response.make(

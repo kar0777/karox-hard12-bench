@@ -1,0 +1,126 @@
+diff --git a/docs-website/docs/pipeline-components/builders/answerbuilder.mdx b/docs-website/docs/pipeline-components/builders/answerbuilder.mdx
+index c555e8e..7c27cfe 100644
+--- a/docs-website/docs/pipeline-components/builders/answerbuilder.mdx
++++ b/docs-website/docs/pipeline-components/builders/answerbuilder.mdx
+@@ -31,7 +31,7 @@ ## Overview
+ 
+ The optional `pattern` parameter defines how to extract answer texts from replies. It needs to be a regular expression with a maximum of one capture group. If a capture group is present, the text matched by the capture group is used as the answer. If no capture group is present, the whole match is used as the answer. If no `pattern` is set, the whole reply is used as the answer text.
+ 
+-The optional `reference_pattern` parameter can be set to a regular expression that parses referenced documents from the replies so that only those referenced documents are listed in the `GeneratedAnswer` objects. Haystack assumes that documents are referenced by their index in the list of input documents and that indices start at 1. For example, if you set the `reference_pattern` to _`\\[(\\d+)\\]`,_ it finds “1” in a string "This is an answer[1]". If `reference_pattern` is not set, all input documents are listed in the `GeneratedAnswer` objects.
++The optional `reference_pattern` parameter can be set to a regular expression that parses referenced documents from the replies so that only those referenced documents are listed in the `GeneratedAnswer` objects. The pattern must contain exactly one capture group that matches the document index. Haystack assumes that documents are referenced by their index in the list of input documents and that indices start at 1. For example, if you set the `reference_pattern` to _`\\[(\\d+)\\]`,_ it finds “1” in a string "This is an answer[1]". If `reference_pattern` is not set, all input documents are listed in the `GeneratedAnswer` objects.
+ 
+ ## Usage
+ 
+diff --git a/haystack/components/builders/answer_builder.py b/haystack/components/builders/answer_builder.py
+index aff0535..07887e0 100644
+--- a/haystack/components/builders/answer_builder.py
++++ b/haystack/components/builders/answer_builder.py
+@@ -96,6 +96,7 @@ class AnswerBuilder:
+             The regular expression pattern used for parsing the document references.
+             If not specified, no parsing is done, and all documents are returned.
+             References need to be specified as indices of the input documents and start at [1].
++            The pattern must contain exactly one capture group that matches the document index.
+             Example: `\\[(\\d+)\\]` finds "1" in a string "this is an answer[1]".
+             If this parameter is provided, documents metadata will contain a "referenced" key with a boolean value.
+ 
+@@ -167,6 +168,7 @@ class AnswerBuilder:
+             The regular expression pattern used for parsing the document references.
+             If not specified, no parsing is done, and all documents are returned.
+             References need to be specified as indices of the input documents and start at [1].
++            The pattern must contain exactly one capture group that matches the document index.
+             Example: `\\[(\\d+)\\]` finds "1" in a string "this is an answer[1]".
+         :param expand_reference_ranges:
+             If True, reference ranges like `[6-10]` are expanded to documents 6 through 10.
+@@ -174,6 +176,10 @@ class AnswerBuilder:
+ 
+         :returns: A dictionary with the following keys:
+             - `answers`: The answers received from the output of the Generator.
++
++        :raises ValueError:
++            If the number of replies and metadata do not match, if `pattern` contains multiple capture groups,
++            or if `reference_pattern` is not a valid regular expression or does not contain exactly one capture group.
+         """
+         if not meta:
+             meta = [{}] * len(replies)
+@@ -191,6 +197,8 @@ class AnswerBuilder:
+         reference_pattern = AnswerBuilder._resolve_reference_pattern(
+             reference_pattern=reference_pattern, expand_reference_ranges=expand_reference_ranges
+         )
++        if reference_pattern:
++            AnswerBuilder._check_reference_pattern(reference_pattern)
+ 
+         replies_to_iterate = replies[-1:] if self.last_message_only and replies else replies
+         meta_to_iterate = meta[-1:] if self.last_message_only and meta else meta
+@@ -284,6 +292,8 @@ class AnswerBuilder:
+         matches = re.findall(reference_pattern, reply)
+         idxs: set[int] = set()
+         for match in matches:
++            if not isinstance(match, str) or not match:
++                raise AnswerBuilder._invalid_reference_index_error(match, reference_pattern)
+             if expand_ranges:
+                 for part in match.split(","):
+                     part = part.strip()
+@@ -291,7 +301,8 @@ class AnswerBuilder:
+                         continue
+                     if "-" in part:
+                         start_str, end_str = part.split("-", 1)
+-                        start, end = int(start_str), int(end_str)
++                        start = AnswerBuilder._parse_reference_index(start_str, reference_pattern)
++                        end = AnswerBuilder._parse_reference_index(end_str, reference_pattern)
+                         if start > end:
+                             continue
+                         # Clamp the range end to the number of documents to avoid materializing a huge
+@@ -300,11 +311,38 @@ class AnswerBuilder:
+                             end = min(end, num_documents)
+                         idxs.update(range(start - 1, end))
+                     else:
+-                        idxs.add(int(part) - 1)
++                        idxs.add(AnswerBuilder._parse_reference_index(part, reference_pattern) - 1)
+             else:
+-                idxs.add(int(match) - 1)
++                idxs.add(AnswerBuilder._parse_reference_index(match, reference_pattern) - 1)
+         return idxs
+ 
++    @staticmethod
++    def _parse_reference_index(value: str, reference_pattern: str) -> int:
++        try:
++            return int(value)
++        except (TypeError, ValueError) as error:
++            raise AnswerBuilder._invalid_reference_index_error(value, reference_pattern) from error
++
++    @staticmethod
++    def _invalid_reference_index_error(value: Any, reference_pattern: str) -> ValueError:
++        return ValueError(
++            f"Reference pattern '{reference_pattern}' matched '{value}', but its capture group did not match. "
++            f"The matched value is not a valid document index. "
++            f"Please specify a pattern with exactly one capture group that matches the document index."
++        )
++
++    @staticmethod
++    def _check_reference_pattern(reference_pattern: str) -> None:
++        try:
++            num_groups = re.compile(reference_pattern).groups
++        except re.error as error:
++            raise ValueError(f"Invalid reference pattern '{reference_pattern}': {error}") from error
++        if num_groups != 1:
++            raise ValueError(
++                f"Reference pattern '{reference_pattern}' contains {num_groups} capture groups. "
++                f"Please specify a pattern with exactly one capture group that matches the document index."
++            )
++
+     @staticmethod
+     def _check_num_groups_in_regex(pattern: str) -> None:
+         num_groups = re.compile(pattern).groups
+diff --git a/releasenotes/notes/validate-answer-builder-reference-pattern-3f9c7a1d2e5b8c40.yaml b/releasenotes/notes/validate-answer-builder-reference-pattern-3f9c7a1d2e5b8c40.yaml
+new file mode 100644
+index 0000000..f61ed8d
+--- /dev/null
++++ b/releasenotes/notes/validate-answer-builder-reference-pattern-3f9c7a1d2e5b8c40.yaml
+@@ -0,0 +1,7 @@
++---
++fixes:
++  - |
++    Validate ``reference_pattern`` in ``AnswerBuilder.run()`` and raise a clear ``ValueError`` when the
++    pattern is invalid, does not contain exactly one capture group, or matches a value that is not a
++    document index. Previously, these cases failed later with cryptic ``int()`` errors when a reply
++    contained a matching reference.

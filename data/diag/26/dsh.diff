@@ -1,0 +1,935 @@
+diff --git a/.github/pull_request_template.md b/.github/pull_request_template.md
+index 0aa4b88..3964e16 100644
+--- a/.github/pull_request_template.md
++++ b/.github/pull_request_template.md
+@@ -38,8 +38,9 @@ Please ensure that you have done the following:
+ 
+ 1. [ ] PR in from a fork off your branch. Do not PR from `<your_username>`:`dev`, but rather from `<your_username>`:`<feature-branch_name>`.
+ <!-- Doing this helps us keep the commit history much cleaner than it would otherwise be. -->
+-2. [ ] Add a line to `CHANGELOG.md` under the latest version header (i.e. the one that is "on deck") describing the contribution.
++2. [ ] Add a line to `CHANGELOG.md` under the `## [Unreleased]` heading describing the contribution.
+     - Do use some discretion here; if there are multiple PRs that are related, keep them in a single line.
++    - Entries added anywhere else will be rejected because they may be assigned to the wrong release.
+ <!-- Contributor recognition is automatic: the `update-contributors` workflow scans
+      commit authors and updates the all-contributors table in README.md, so you
+      do NOT need to add yourself anywhere. See CONTRIBUTING.md for details. -->
+diff --git a/.github/workflows/auto-release.yml b/.github/workflows/auto-release.yml
+index 430ffcb..1b00447 100644
+--- a/.github/workflows/auto-release.yml
++++ b/.github/workflows/auto-release.yml
+@@ -269,13 +269,21 @@ jobs:
+           pixi run pre-commit run --files "$RELEASE_NOTES" || \
+             pixi run pre-commit run --files "$RELEASE_NOTES"
+ 
++      - name: Validate changelog history
++        if: steps.check_release.outputs.release_complete == 'false' && steps.check_release.outputs.existing_release_tag == 'false'
++        run: |
++          pixi run python scripts/update_changelog.py \
++            --check \
++            --base-ref "${{ env.previous_version }}"
++
+       - name: Rotate changelog
+         if: steps.check_release.outputs.release_complete == 'false' && steps.check_release.outputs.existing_release_tag == 'false'
+         run: |
+           pixi run python scripts/update_changelog.py \
+             --version "${{ env.version_number }}" \
+             --date "${{ env.release_date }}" \
+-            --previous-version "${{ env.previous_version }}"
++            --previous-version "${{ env.previous_version }}" \
++            --base-ref "${{ env.previous_version }}"
+ 
+       - name: Validate changelog
+         if: steps.check_release.outputs.release_complete == 'false' && steps.check_release.outputs.existing_release_tag == 'false'
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index b5db5f9..df1cdc3 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -8,6 +8,8 @@ on:
+     paths:
+       - "janitor/**"
+       - "tests/**"
++      - "scripts/**"
++      - "CHANGELOG.md"
+       - "pyproject.toml"
+       - "pixi.lock"
+       - ".github/workflows/tests.yml"
+@@ -17,6 +19,8 @@ on:
+     paths:
+       - "janitor/**"
+       - "tests/**"
++      - "scripts/**"
++      - "CHANGELOG.md"
+       - "pyproject.toml"
+       - "pixi.lock"
+       - ".github/workflows/tests.yml"
+@@ -62,3 +66,24 @@ jobs:
+         with:
+           # fail_ci_if_error: true # optional (default = false)
+           verbose: true # optional (default = false)
++
++  validate-changelog:
++    name: Validate changelog placement
++    if: github.event_name == 'pull_request'
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v7
++        with:
++          fetch-depth: 0
++
++      - name: Setup Python
++        uses: actions/setup-python@v7
++        with:
++          python-version: 3.13
++
++      - name: Validate changelog changes
++        run: |
++          python scripts/update_changelog.py --check \
++            --base-ref "${{ github.event.pull_request.base.sha }}"
+diff --git a/AGENTS.md b/AGENTS.md
+index 692b52a..4aea18c 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -801,6 +801,16 @@ must preserve the existing changelog spacing conventions.
+ entries, use the repository's three-space list marker style, and keep a blank
+ line between comparison-link definitions.
+ 
++### [2026-10-25] Standalone scripts are loaded without sys.modules registration
++
++**Context**: Extending `scripts/update_changelog.py` with a dataclass broke the
++existing script tests during collection.
++**Learning**: `tests/test_update_changelog.py` loads the script with
++`spec_from_file_location` and `exec_module` but does not insert the module into
++`sys.modules`. The `dataclasses` decorator then cannot find the class module.
++**Recommendation**: Avoid dataclasses in standalone scripts covered by this
++loader, or register the module in `sys.modules` before executing it.
++
+ ## Version History
+ 
+ - **2025-12-19**: Initial comprehensive AGENTS.md with self-improvement protocol
+diff --git a/mkdocs/development/auto_releases.md b/mkdocs/development/auto_releases.md
+index 8a02ed6..ded6d53 100644
+--- a/mkdocs/development/auto_releases.md
++++ b/mkdocs/development/auto_releases.md
+@@ -147,6 +147,25 @@ the workflow checks if the current commit already has a release tag:
+ 
+ If a tag exists, all subsequent release steps are skipped.
+ 
++## Preventing misplaced changelog entries
++
++A pull request can add an entry under `[Unreleased]` while another merge
++triggers a release. If the release rotates the existing entries into a
++versioned section before the pull request merges, Git can place the new entry
++under that version instead of `[Unreleased]`.
++
++To prevent this, pull requests validate `CHANGELOG.md` against their base
++commit. Changes are allowed under `[Unreleased]` and in comparison-link
++definitions. Version sections may change only when the change was generated by
++a release, which is detected from release tags and release commit messages.
++The comparison uses the merge base, so rebases and merge commits are handled
++by their final content rather than by commit-by-commit history.
++
++The auto-release workflow runs the same validation against the previous release
++tag before rotating the changelog. If an entry was added to an older release
++section, the release fails with a message identifying the misplaced entry
++instead of silently publishing it under the wrong version.
++
+ ## Troubleshooting
+ 
+ ### Auto-release didn't trigger after merge
+diff --git a/scripts/check_changelog.py b/scripts/check_changelog.py
+new file mode 100644
+index 0000000..0881873
+--- /dev/null
++++ b/scripts/check_changelog.py
+@@ -0,0 +1,44 @@
++"""Validate that changelog additions stay under the Unreleased section."""
++
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++from types import ModuleType
++from typing import Any
++
++
++def _load_update_module() -> ModuleType:
++    """Load the changelog implementation from its sibling script."""
++
++    script = Path(__file__).with_name("update_changelog.py")
++    spec = importlib.util.spec_from_file_location("_changelog_update", script)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++_UPDATE = _load_update_module()
++
++
++def __getattr__(name: str) -> Any:
++    """Delegate public helpers and aliases to the implementation module."""
++
++    return getattr(_UPDATE, name)
++
++
++def main() -> None:
++    """Run validation by default, or rotation when ``--version`` is supplied."""
++
++    import sys
++
++    argv = sys.argv[1:]
++    check_flags = {"--check", "--validate", "--validate-only"}
++    if "--version" not in argv and not check_flags.intersection(argv):
++        argv = ["--check", *argv]
++    _UPDATE.main(argv)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/update_changelog.py b/scripts/update_changelog.py
+index e03db3b..1db0e5f 100644
+--- a/scripts/update_changelog.py
++++ b/scripts/update_changelog.py
+@@ -1,15 +1,535 @@
+-"""Move the pending changelog entries into a versioned release section."""
++"""Move pending changelog entries into a versioned release section."""
+ 
+ from __future__ import annotations
+ 
+ import argparse
+ import re
++import subprocess
++from collections import Counter
+ from datetime import date
+ from pathlib import Path
++from typing import Iterable, Mapping
+ 
+ _UNRELEASED = re.compile(r"^## \[Unreleased\]\s*$", re.MULTILINE)
+ _SECTION = re.compile(r"^## \[.+?\].*$", re.MULTILINE)
++_SECTION_HEADING = re.compile(r"^## \[(?P<label>[^\]]+)\](?P<rest>.*)$")
+ _UNRELEASED_LINK = re.compile(r"^\[Unreleased\]: (?P<url>\S+)[ \t]*$", re.MULTILINE)
++_LINK_DEFINITION = re.compile(r"^\[[^\]]+\]:\s+\S+")
++_RELEASE_COMMIT = re.compile(
++    r"\bPrepare release v?(?P<version>\d+\.\d+\.\d+)\b", re.IGNORECASE
++)
++_EMPTY_RELEASE = "-   No user-facing changes; see the generated release notes."
++
++
++class _ChangelogSection:
++    """The meaningful body of one changelog section."""
++
++    __slots__ = ("label", "body")
++
++    def __init__(self, label: str, body: tuple[str, ...]) -> None:
++        self.label = label
++        self.body = body
++
++
++def _parse_sections(text: str) -> list[_ChangelogSection]:
++    """Split changelog text into sections, excluding links and blank lines."""
++
++    sections: list[_ChangelogSection] = []
++    label: str | None = None
++    body: list[str] = []
++
++    def append_section() -> None:
++        if label is None:
++            return
++        meaningful_body = tuple(
++            line.strip()
++            for line in body
++            if line.strip() and not _LINK_DEFINITION.match(line.strip())
++        )
++        sections.append(_ChangelogSection(label=label, body=meaningful_body))
++
++    for line in text.splitlines():
++        heading = _SECTION_HEADING.match(line)
++        if heading is not None:
++            append_section()
++            label = heading.group("label")
++            body = []
++        elif label is not None:
++            body.append(line)
++    append_section()
++    return sections
++
++
++def _version_key(version: str) -> str:
++    """Return a version label without its optional ``v`` prefix."""
++
++    return version.strip().removeprefix("v")
++
++
++def _counter_without_placeholder(body: Iterable[str]) -> Counter[str]:
++    """Return a line counter that ignores the generated empty-release text."""
++
++    counter = body.copy() if isinstance(body, Counter) else Counter(body)
++    counter.pop(_EMPTY_RELEASE, None)
++    return counter
++
++
++def _is_release_rotation(
++    body: tuple[str, ...],
++    base_unreleased: Counter[str],
++) -> bool:
++    """Return whether a new section looks like release-generated rotation."""
++
++    if not body or body == (_EMPTY_RELEASE,):
++        return True
++    return _counter_without_placeholder(body) <= _counter_without_placeholder(
++        base_unreleased
++    )
++
++
++def _is_rotation_into_existing_section(
++    base_body: tuple[str, ...],
++    head_body: tuple[str, ...],
++    base_unreleased: Counter[str],
++) -> bool:
++    """Allow release rotation into a heading that already existed in the base."""
++
++    base_counter = _counter_without_placeholder(base_body)
++    head_counter = _counter_without_placeholder(head_body)
++    additions = head_counter - base_counter
++    removals = base_counter - head_counter
++    if not additions:
++        return False
++    return additions <= _counter_without_placeholder(base_unreleased) and not removals
++
++
++def _compare_section_bodies(
++    label: str,
++    expected_body: tuple[str, ...],
++    actual_body: tuple[str, ...],
++) -> list[str]:
++    """Describe additions and removals between two version-section bodies."""
++
++    if expected_body == actual_body:
++        return []
++    expected_counter = _counter_without_placeholder(expected_body)
++    actual_counter = _counter_without_placeholder(actual_body)
++    additions = actual_counter - expected_counter
++    removals = expected_counter - actual_counter
++    violations = [
++        f"entry {line!r} was added to release section "
++        f"'## [{label}]' instead of '## [Unreleased]'"
++        for line in additions.elements()
++    ]
++    violations.extend(
++        f"entry {line!r} was removed from release section "
++        f"'## [{label}]' outside '## [Unreleased]'"
++        for line in removals.elements()
++    )
++    if not additions and not removals:
++        violations.append(
++            f"release section '## [{label}]' was modified outside "
++            "'## [Unreleased]'"
++        )
++    return violations
++
++
++def find_changelog_violations(
++    base_text: str,
++    head_text: str,
++    *,
++    allowed_release_versions: Iterable[str] = (),
++    release_section_bodies: Mapping[str, Iterable[str]] | None = None,
++) -> list[str]:
++    """Find changelog changes that could assign entries to the wrong release.
++
++    Changes under ``[Unreleased]`` and comparison-link definitions are always
++    allowed. New or changed version sections are allowed only when they look
++    like release-generated rotation (their entries came from the base
++    ``[Unreleased]`` body) or belong to a release tag created since the base.
++
++    Args:
++        base_text: The changelog contents at the comparison base.
++        head_text: The changelog contents to validate.
++        allowed_release_versions: Version labels whose sections may have been
++            generated by releases between the base and the candidate revision.
++        release_section_bodies: Optional expected bodies for allowed release
++            versions. When supplied, additions after the release are still
++            detected instead of skipping the whole section.
++
++    Returns:
++        Human-readable descriptions of each violation. An empty list means the
++        changelog only adds entries under ``[Unreleased]`` (apart from allowed
++        release-generated changes).
++    """
++
++    allowed_versions = {
++        _version_key(version) for version in allowed_release_versions
++    }
++    allowed_bodies = {
++        _version_key(version): tuple(body)
++        for version, body in (release_section_bodies or {}).items()
++    }
++    base_sections = _parse_sections(base_text)
++    head_sections = _parse_sections(head_text)
++    base_by_label = {section.label: section for section in base_sections}
++    head_by_label = {section.label: section for section in head_sections}
++    base_unreleased = Counter(
++        base_by_label.get("Unreleased", _ChangelogSection("Unreleased", ())).body
++    )
++    violations: list[str] = []
++
++    for label, base_section in base_by_label.items():
++        if label == "Unreleased":
++            continue
++        version = _version_key(label)
++        if label in head_by_label:
++            continue
++        if version in allowed_bodies and allowed_bodies[version]:
++            violations.extend(
++                _compare_section_bodies(label, allowed_bodies[version], ())
++            )
++        elif version not in allowed_versions:
++            violations.append(
++                f"release section '## [{label}]' was removed outside "
++                "'## [Unreleased]'"
++            )
++
++    for label, head_section in head_by_label.items():
++        if label == "Unreleased":
++            continue
++
++        version = _version_key(label)
++        if version in allowed_bodies:
++            violations.extend(
++                _compare_section_bodies(
++                    label,
++                    allowed_bodies[version],
++                    head_section.body,
++                )
++            )
++            continue
++        if version in allowed_versions:
++            continue
++
++        base_section = base_by_label.get(label)
++        if base_section is None:
++            if _is_release_rotation(head_section.body, base_unreleased):
++                continue
++            extra_lines = _counter_without_placeholder(
++                head_section.body
++            ) - _counter_without_placeholder(base_unreleased)
++            for line in extra_lines.elements():
++                violations.append(
++                    f"entry {line!r} was added to release section "
++                    f"'## [{label}]' instead of '## [Unreleased]'"
++                )
++            continue
++
++        if head_section.body == base_section.body:
++            continue
++        if _is_rotation_into_existing_section(
++            base_section.body,
++            head_section.body,
++            base_unreleased,
++        ):
++            continue
++
++        violations.extend(
++            _compare_section_bodies(
++                label,
++                base_section.body,
++                head_section.body,
++            )
++        )
++
++    return violations
++
++
++def _run_git(repo: Path, *args: str) -> str:
++    """Run a git command in ``repo`` and return its stripped standard output."""
++
++    result = subprocess.run(
++        ["git", "-C", str(repo), *args],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    if result.returncode != 0:
++        message = result.stderr.strip() or result.stdout.strip()
++        raise ValueError(f"git {' '.join(args)} failed: {message}")
++    return result.stdout.strip()
++
++
++def _find_repo_root(path: Path, repo_path: Path | None) -> Path:
++    """Locate the git worktree containing ``path``."""
++
++    start = repo_path if repo_path is not None else path.resolve().parent
++    result = subprocess.run(
++        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    if result.returncode != 0:
++        raise ValueError(f"{path} is not inside a git repository")
++    return Path(result.stdout.strip()).resolve()
++
++
++def _resolve_base(repo: Path, base_ref: str, use_merge_base: bool) -> str:
++    """Resolve a base reference to the commit whose changelog is compared."""
++
++    reference = base_ref.strip()
++    if not reference:
++        raise ValueError("base reference must not be empty")
++    _run_git(repo, "rev-parse", "--verify", f"{reference}^{{commit}}")
++    if not use_merge_base:
++        return _run_git(repo, "rev-parse", f"{reference}^{{commit}}")
++    return _run_git(repo, "merge-base", reference, "HEAD")
++
++
++def _latest_release_base(repo: Path, base_commit: str) -> str:
++    """Advance the base to the latest release tag reachable from ``HEAD``.
++
++    A pull request can be based on an older commit and then merge or rebase
++    onto a release commit. Comparing against that older base would incorrectly
++    treat the release-generated changelog section as part of the pull request.
++    Using the latest reachable tag as the base keeps those changes out of the
++    comparison while still exposing entries added to the tagged section later.
++    Tags at ``HEAD`` are skipped because release workflows create a candidate
++    tag before rotating the changelog.
++    """
++
++    try:
++        latest_tag = _run_git(
++            repo,
++            "describe",
++            "--tags",
++            "--match",
++            "v*",
++            "--abbrev=0",
++            "HEAD",
++        )
++        latest_commit = _run_git(
++            repo,
++            "rev-parse",
++            f"{latest_tag}^{{commit}}",
++        )
++        head_commit = _run_git(repo, "rev-parse", "HEAD")
++        if latest_commit == head_commit:
++            # Release workflows create a candidate tag before rotating the
++            # changelog. A tag at HEAD therefore cannot yet be treated as a
++            # completed release baseline.
++            latest_tag = _run_git(
++                repo,
++                "describe",
++                "--tags",
++                "--match",
++                "v*",
++                "--abbrev=0",
++                "HEAD^",
++            )
++            latest_commit = _run_git(
++                repo,
++                "rev-parse",
++                f"{latest_tag}^{{commit}}",
++            )
++    except ValueError:
++        return base_commit
++
++    if latest_commit == base_commit:
++        return base_commit
++    result = subprocess.run(
++        [
++            "git",
++            "-C",
++            str(repo),
++            "merge-base",
++            "--is-ancestor",
++            base_commit,
++            latest_commit,
++        ],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    return latest_commit if result.returncode == 0 else base_commit
++
++
++def _section_body_for_version(
++    text: str,
++    version: str,
++) -> tuple[str, ...] | None:
++    """Return the body of the section for ``version`` in changelog text."""
++
++    normalized_version = _version_key(version)
++    for section in _parse_sections(text):
++        if _version_key(section.label) == normalized_version:
++            return section.body
++    return None
++
++
++def _release_sections_since(
++    repo: Path,
++    base_commit: str,
++    relative_path: str,
++) -> dict[str, tuple[str, ...]]:
++    """Return known release-section bodies created after ``base_commit``."""
++
++    head_tags = set(
++        _run_git(repo, "tag", "--merged", "HEAD", "--list", "v*").splitlines()
++    )
++    base_tags = set(
++        _run_git(repo, "tag", "--merged", base_commit, "--list", "v*").splitlines()
++    )
++    release_sections: dict[str, tuple[str, ...]] = {}
++
++    for tag in sorted(head_tags - base_tags):
++        version = _version_key(tag)
++        try:
++            text = _run_git(repo, "show", f"{tag}:{relative_path}")
++        except ValueError:
++            continue
++        body = _section_body_for_version(text, version)
++        if body is not None:
++            release_sections[version] = body
++
++    commits = _run_git(
++        repo,
++        "log",
++        "--format=%H%x00%s",
++        f"{base_commit}..HEAD",
++        "--",
++        relative_path,
++    ).splitlines()
++    for entry in commits:
++        commit_hash, _, subject = entry.partition("\0")
++        match = _RELEASE_COMMIT.search(subject)
++        if match is None:
++            continue
++        version = _version_key(match.group("version"))
++        if version in release_sections:
++            continue
++        try:
++            text = _run_git(repo, "show", f"{commit_hash}:{relative_path}")
++        except ValueError:
++            continue
++        body = _section_body_for_version(text, version)
++        if body is not None:
++            release_sections[version] = body
++
++    return release_sections
++
++
++def validate_changelog(
++    path: Path,
++    base_ref: str,
++    *,
++    repo_path: Path | None = None,
++    use_merge_base: bool = True,
++) -> bool:
++    """Validate that changelog changes since ``base_ref`` stay in Unreleased.
++
++    The comparison uses the merge base by default, so rebased branches and
++    merge commits are compared by their final content rather than by their
++    commit-by-commit history. Release-generated version sections, release
++    commit messages, tags created since the base, and comparison-link updates
++    are ignored.
++
++    Args:
++        path: Path to the changelog to validate.
++        base_ref: Git revision to compare against, such as ``origin/dev`` or
++            the previous release tag.
++        repo_path: Optional path inside the git repository. Defaults to the
++            changelog's parent directory.
++        use_merge_base: Compare against the merge base of ``base_ref`` and
++            ``HEAD`` instead of the exact base commit.
++
++    Returns:
++        ``True`` when the changelog is valid.
++
++    Raises:
++        ValueError: If the changelog modifies versioned sections outside
++            ``[Unreleased]``, or if git cannot resolve the comparison base.
++    """
++
++    path = Path(path)
++    repo = _find_repo_root(path, repo_path)
++    try:
++        relative_path = path.resolve().relative_to(repo).as_posix()
++    except ValueError as exc:
++        raise ValueError(f"{path} is outside the git repository {repo}") from exc
++
++    base_commit = _resolve_base(repo, base_ref, use_merge_base)
++    base_commit = _latest_release_base(repo, base_commit)
++    try:
++        base_text = _run_git(repo, "show", f"{base_commit}:{relative_path}")
++    except ValueError:
++        # The changelog did not exist at the base revision. Treat it as empty
++        # so that newly added version sections still receive normal checks.
++        base_text = ""
++
++    head_text = path.read_text(encoding="utf-8")
++    release_sections = _release_sections_since(
++        repo,
++        base_commit,
++        relative_path,
++    )
++    violations = find_changelog_violations(
++        base_text,
++        head_text,
++        allowed_release_versions=release_sections,
++        release_section_bodies=release_sections,
++    )
++    if violations:
++        details = "\n".join(f"  - {violation}" for violation in violations)
++        raise ValueError(
++            "changelog changes outside '## [Unreleased]' may assign entries "
++            f"to the wrong release:\n{details}"
++        )
++    return True
++
++
++# Keep descriptive aliases for callers that refer to this check by its purpose.
++validate_changelog_entries = validate_changelog
++validate_changelog_history = validate_changelog
++validate_changelog_placement = validate_changelog
++check_changelog = validate_changelog
++check_changelog_entries = validate_changelog
++
++
++def _resolve_validation_ref(
++    text: str,
++    previous_version: str | None,
++) -> str | None:
++    """Choose the release tag used for automatic rotation-time validation."""
++
++    if previous_version:
++        previous_version = previous_version.strip()
++        if previous_version:
++            return (
++                previous_version
++                if previous_version.startswith("v")
++                else f"v{previous_version}"
++            )
++    unreleased_link = _UNRELEASED_LINK.search(text)
++    if unreleased_link is not None:
++        try:
++            return _latest_version_from_url(unreleased_link["url"])
++        except ValueError:
++            return None
++    return None
++
++
++def _reference_exists(path: Path, repo_path: Path | None, reference: str) -> bool:
++    """Return whether a git reference exists for the changelog's repository."""
++
++    try:
++        repo = _find_repo_root(path, repo_path)
++        _run_git(repo, "rev-parse", "--verify", f"{reference}^{{commit}}")
++    except ValueError:
++        return False
++    return True
+ 
+ 
+ def rotate_changelog(
+@@ -17,8 +537,46 @@ def rotate_changelog(
+     version: str,
+     release_date: str,
+     previous_version: str | None = None,
++    base_ref: str | None = None,
++    *,
++    validate_history: bool = False,
++    repo_path: Path | None = None,
++    use_merge_base: bool = True,
++    previous_tag: str | None = None,
+ ) -> bool:
+-    """Move the current ``[Unreleased]`` body under a version heading."""
++    """Move the current ``[Unreleased]`` body under a version heading.
++
++    When a comparison base is available, the changelog is validated before it
++    is modified. Validation can be requested explicitly with ``base_ref`` or
++    ``validate_history``; when ``previous_version`` names an existing git tag,
++    it is also performed automatically.
++
++    Args:
++        path: Path to the changelog.
++        version: Version being released, with or without a leading ``v``.
++        release_date: Date to put in the version heading.
++        previous_version: Previous released version. If omitted, it is read
++            from the existing ``[Unreleased]`` comparison link.
++        base_ref: Optional git revision to validate against before rotating.
++        validate_history: Validate against the previous release even when no
++            explicit ``base_ref`` was supplied.
++        repo_path: Optional path inside the git repository containing ``path``.
++        use_merge_base: Compare against the merge base of the base reference
++            and ``HEAD``.
++        previous_tag: Alias for ``base_ref`` when the comparison base is the
++            previous release tag.
++
++    Returns:
++        ``True`` when the changelog was updated.
++
++    Raises:
++        ValueError: If the changelog structure is invalid, the version already
++            exists, or history validation finds entries outside
++            ``[Unreleased]``.
++    """
++
++    if base_ref is None and previous_tag is not None:
++        base_ref = previous_tag
+ 
+     text = path.read_text(encoding="utf-8")
+     matches = list(_UNRELEASED.finditer(text))
+@@ -37,12 +595,28 @@ def rotate_changelog(
+     ):
+         raise ValueError(f"version {normalized_version} already exists in {path}")
+ 
++    validation_ref = base_ref
++    if validation_ref is None:
++        candidate_ref = _resolve_validation_ref(text, previous_version)
++        if candidate_ref is not None and (
++            validate_history or _reference_exists(path, repo_path, candidate_ref)
++        ):
++            validation_ref = candidate_ref
++
++    if validation_ref is not None:
++        validate_changelog(
++            path,
++            validation_ref,
++            repo_path=repo_path,
++            use_merge_base=use_merge_base,
++        )
++
+     unreleased = matches[0]
+     next_section = _SECTION.search(text, unreleased.end())
+     body_end = next_section.start() if next_section else len(text)
+     body = text[unreleased.end() : body_end].strip("\n")
+     if not body.strip():
+-        body = "-   No user-facing changes; see the generated release notes."
++        body = _EMPTY_RELEASE
+ 
+     replacement = f"## [Unreleased]\n\n{version_heading}\n"
+     replacement += f"\n{body}\n\n"
+@@ -80,20 +654,71 @@ def _latest_version_from_url(url: str) -> str:
+     return match.group(1)
+ 
+ 
+-def main() -> None:
+-    """Parse command-line arguments and rotate the requested changelog."""
++def main(argv: list[str] | None = None) -> None:
++    """Parse command-line arguments and rotate or validate the changelog.
++
++    Args:
++        argv: Optional argument list, excluding the program name. Defaults to
++            the process arguments.
++    """
+ 
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--path", type=Path, default=Path("CHANGELOG.md"))
+-    parser.add_argument("--version", required=True)
++    parser.add_argument("--version")
+     parser.add_argument("--date", default=date.today().isoformat())
+     parser.add_argument("--previous-version")
+-    args = parser.parse_args()
++    parser.add_argument(
++        "--check",
++        "--validate",
++        "--validate-only",
++        action="store_true",
++        dest="check",
++        help="validate changelog placement without rotating entries",
++    )
++    parser.add_argument(
++        "--base-ref",
++        "--base",
++        "--previous-tag",
++        "--against",
++        dest="base_ref",
++        help="git revision to compare against when validating",
++    )
++    parser.add_argument("--repo", type=Path, dest="repo_path")
++    parser.add_argument(
++        "--no-merge-base",
++        action="store_true",
++        help="compare against the exact base revision instead of its merge base",
++    )
++    args = parser.parse_args(argv)
++
++    if args.check:
++        base_ref = args.base_ref or args.previous_version
++        if not base_ref:
++            for candidate in ("origin/dev", "dev", "HEAD^"):
++                if _reference_exists(args.path, args.repo_path, candidate):
++                    base_ref = candidate
++                    break
++        if not base_ref:
++            parser.error("--check requires --base-ref or --previous-version")
++        validate_changelog(
++            args.path,
++            base_ref,
++            repo_path=args.repo_path,
++            use_merge_base=not args.no_merge_base,
++        )
++        print("Changelog changes are limited to the [Unreleased] section.")
++        return
++
++    if not args.version:
++        parser.error("--version is required unless --check is used")
+     rotate_changelog(
+         args.path,
+         args.version,
+         args.date,
+         args.previous_version,
++        args.base_ref,
++        repo_path=args.repo_path,
++        use_merge_base=not args.no_merge_base,
+     )
+ 
+ 
+diff --git a/scripts/validate_changelog.py b/scripts/validate_changelog.py
+new file mode 100644
+index 0000000..0881873
+--- /dev/null
++++ b/scripts/validate_changelog.py
+@@ -0,0 +1,44 @@
++"""Validate that changelog additions stay under the Unreleased section."""
++
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++from types import ModuleType
++from typing import Any
++
++
++def _load_update_module() -> ModuleType:
++    """Load the changelog implementation from its sibling script."""
++
++    script = Path(__file__).with_name("update_changelog.py")
++    spec = importlib.util.spec_from_file_location("_changelog_update", script)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++_UPDATE = _load_update_module()
++
++
++def __getattr__(name: str) -> Any:
++    """Delegate public helpers and aliases to the implementation module."""
++
++    return getattr(_UPDATE, name)
++
++
++def main() -> None:
++    """Run validation by default, or rotation when ``--version`` is supplied."""
++
++    import sys
++
++    argv = sys.argv[1:]
++    check_flags = {"--check", "--validate", "--validate-only"}
++    if "--version" not in argv and not check_flags.intersection(argv):
++        argv = ["--check", *argv]
++    _UPDATE.main(argv)
++
++
++if __name__ == "__main__":
++    main()

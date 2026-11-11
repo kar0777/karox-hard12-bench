@@ -1,0 +1,33 @@
+diff --git a/src/pydicom/filereader.py b/src/pydicom/filereader.py
+index d22e08c..84920c5 100644
+--- a/src/pydicom/filereader.py
++++ b/src/pydicom/filereader.py
+@@ -475,13 +475,25 @@ def read_dataset(
+         parent_encoding,
+         specific_tags,
+     )
++
++    def add_element(elem: RawDataElement | DataElement) -> None:
++        """Add `elem` to the dataset, warning if it's a duplicate."""
++        if elem.tag in raw_data_elements:
++            warn_and_log(
++                f"Duplicate element {elem.tag} found in dataset, using the first "
++                "occurrence"
++            )
++            return
++
++        raw_data_elements[elem.tag] = elem
++
+     try:
+         if bytelength is None:
+-            raw_data_elements = {e.tag: e for e in de_gen}
++            for elem in de_gen:
++                add_element(elem)
+         else:
+             while fp_tell() - fp_start < bytelength:
+-                raw_data_element = next(de_gen)
+-                raw_data_elements[raw_data_element.tag] = raw_data_element
++                add_element(next(de_gen))
+     except StopIteration:
+         pass
+     except EOFError as details:

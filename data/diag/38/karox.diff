@@ -1,0 +1,146 @@
+diff --git a/markdown/inlinepatterns.py b/markdown/inlinepatterns.py
+index 2f05a1f..eb74a7a 100644
+--- a/markdown/inlinepatterns.py
++++ b/markdown/inlinepatterns.py
+@@ -648,7 +648,12 @@ class DelimiterProcessor(InlineProcessor):
+         self.tokens: list[str] = []
+         self.delimiters: dict[str, Delimiter] = {}
+         self.cache_index = 0
+-        self.cache_pos = 0
++        # The data the cached regions are relative to and the span which the last
++        # call replaced in it. `cache_offset` is the shift of the current data
++        # relative to the data the cached regions are relative to.
++        self.cache_data: str = ''
++        self.cache_span: tuple[int, int] | None = None
++        self.cache_offset = 0
+         self.md = md
+         # API for Markdown to pass `safe_mode` into instance
+         self.safe_mode = False
+@@ -690,7 +695,9 @@ class DelimiterProcessor(InlineProcessor):
+         self.regions.clear()
+         self.stack.clear()
+         self.cache_index = 0
+-        self.cache_pos = 0
++        self.cache_data = ''
++        self.cache_span = None
++        self.cache_offset = 0
+ 
+     def _build_element(
+         self,
+@@ -781,32 +788,54 @@ class DelimiterProcessor(InlineProcessor):
+ 
+     def increment_next_position(self, start: int, count: int) -> None:
+         """
+-        Increment cache position to the next location that we can initiate an insertion.
++        Increment the cache index to the next region that we can initiate an insertion at.
+ 
+-        Cache position should be the first match after our current replacement.
+-        This gives us an anchor to calculate the new offset after insertion.
++        Unpaired delimiters which are left behind by the current replacement are dropped.
+         """
+ 
+-        # Determine next offset
++        # Determine next region
+         self.cache_index += count
+         if self.cache_index < len(self.regions):
+-            self.cache_pos = self.regions[self.cache_index][0]
++            next_start = self.regions[self.cache_index][0]
+             while self.stack:
+                 entry = self.stack.pop(0)
+-                if start < entry[0] <= self.cache_pos:
+-                    self.cache_pos = entry[0]
++                if start < entry[0] <= next_start:
+                     break
+ 
+         # Nothing left to process
+         else:
+             self.reset()
+ 
+-    def get_cached_result(self, pos: int, data: str) -> tuple[etree.Element, int, int]:
++    def cache_matches(self, data: str) -> bool:
++        """
++        Check whether `data` is the cached data with the last returned span replaced.
++
++        If it is, update the offset of the current data relative to the data the cached
++        regions are relative to. If it is not, the cache is stale (the tail of an
++        element is processed as a separate string) and must be discarded.
++        """
++
++        span = self.cache_span
++        if span is None:
++            return False
++        start, end = span
++        previous = self.cache_data
++        # The length of the placeholder which replaced the last returned span.
++        length = len(data) - (len(previous) - (end - start))
++        if (
++            length < 0 or data[:start] != previous[:start] or
++            data[start + length:] != previous[end:]
++        ):
++            return False
++        self.cache_offset += length - (end - start)
++        return True
++
++    def get_cached_result(self, data: str) -> tuple[etree.Element, int, int]:
+         """Get a cached result."""
+ 
+         # Process the next region(s) in the cache
+         regions = self.regions
+-        offset = pos - self.cache_pos if pos != self.cache_pos else pos - regions[self.cache_index][0]
++        offset = self.cache_offset
+         start, end = regions[self.cache_index][0], regions[self.cache_index][3]
+         el, count = self._build_element(data, self.cache_index, offset)
+         self.increment_next_position(start, count)
+@@ -864,8 +893,15 @@ class DelimiterProcessor(InlineProcessor):
+         """Parse delimiter pattern."""
+ 
+         # Do we have entries we haven't returned yet?
++        if self.regions and not self.cache_matches(data):
++            # The cached regions are relative to a different string, such as the tail
++            # of an element. Parse the current data from scratch instead.
++            self.reset()
+         if self.regions:
+-            return self.get_cached_result(m.start(0), data)
++            result = self.get_cached_result(data)
++            self.cache_data = data
++            self.cache_span = (result[1], result[2])
++            return result
+ 
+         # If token is not an opening, quit
+         m2 = self.get_match(data, m.start(0))
+@@ -1026,9 +1062,12 @@ class DelimiterProcessor(InlineProcessor):
+         if self.regions:
+             # Regions may be out of order.
+             self.regions.sort(key=lambda x: x[0])
++            self.cache_offset = 0
+             start, end = self.regions[0][0], self.regions[0][3]
+             el, count = self._build_element(data)
+             self.increment_next_position(start, count)
++            self.cache_data = data
++            self.cache_span = (start, end)
+             return el, start, end
+ 
+         # We failed to pair any valid start/end delimiters, avoid the parsed range next pass.
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..cde27c3
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,17 @@
++"""
++Pytest configuration.
++
++`tests/test_legacy.py` installs `warnings.simplefilter('error')` when it is imported, which
++leaks into the collection of the modules imported after it and turns pytest's own collection
++warnings into errors. Restore the default handling of those warnings before collecting a
++module so that a harmless warning (such as an imported `unittest.TestSuite` class) does not
++abort the collection of an unrelated module.
++"""
++
++import warnings
++
++import pytest
++
++
++def pytest_collectstart(collector):
++    warnings.filterwarnings('ignore', category=pytest.PytestCollectionWarning)

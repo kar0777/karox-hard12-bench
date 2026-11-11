@@ -1,0 +1,187 @@
+diff --git a/gammapy/astro/darkmatter/utils.py b/gammapy/astro/darkmatter/utils.py
+index ca4ee32..27cf052 100644
+--- a/gammapy/astro/darkmatter/utils.py
++++ b/gammapy/astro/darkmatter/utils.py
+@@ -78,23 +78,122 @@ class JFactory:
+ 
+         return np.trapezoid(values, t)
+ 
+-    def _integrate_los(self, impact, separation, ndecade):
+-        """Integrate the physical forward line of sight."""
+-        distance = self.distance
+-        rmax = self.rmax
+-
+-        if distance < rmax:
+-            integral = self._integrate_los_branch(impact, distance, rmax, ndecade)
+-            if separation < np.pi / 2:
+-                integral += 2 * self._integrate_los_branch(
+-                    impact, impact, distance, ndecade
++    def _integrate_los_interval(
++        self, impact, los_center, los_min, los_max, ndecade
++    ):
++        """Integrate the profile over one physical line-of-sight interval.
++
++        The line of sight is parameterized by ``l``, the distance from the
++        observer. Around the point of closest approach, ``l = los_center + s``
++        and the distance to the halo center is ``r**2 = impact**2 + s**2``.
++        """
++        exponent = 2 if self.annihilation else 1
++        unit = self.rmax.unit
++        integral_unit = u.Unit("GeV2 cm-5" if self.annihilation else "GeV cm-2")
++
++        impact = impact.to(unit)
++        los_center = los_center.to(unit)
++        los_min = los_min.to(unit)
++        los_max = los_max.to(unit)
++
++        impact_value = impact.to_value(unit)
++        s_min = (los_min - los_center).to_value(unit)
++        s_max = (los_max - los_center).to_value(unit)
++
++        if impact_value == 0:
++            if s_min * s_max > 0 and hasattr(self.profile, "integral"):
++                radius_min = min(abs(s_min), abs(s_max)) * unit
++                radius_max = max(abs(s_min), abs(s_max)) * unit
++                return self.profile.integral(
++                    radius_min,
++                    radius_max,
++                    0,
++                    ndecade,
++                    self.annihilation,
++                    self.distance,
+                 )
+-            return integral
+ 
+-        if separation < np.pi / 2 and impact < rmax:
+-            return 2 * self._integrate_los_branch(impact, impact, rmax, ndecade)
++            rmax_value = self.rmax.to_value(unit)
++            n = max(2, int((s_max - s_min) / rmax_value * ndecade))
++            s = np.linspace(s_min, s_max, n)
++            radius = np.abs(s) * unit
++            values = self.profile(radius) ** exponent
++            return np.trapezoid(values, s * unit)
++
++        # Include the closest approach and the observer radius as breakpoints
++        # when they lie inside the interval. This keeps the sampling of the
++        # radial profile appropriate when the line of sight crosses them.
++        breakpoints = [s_min]
++        if s_min < 0 < s_max:
++            breakpoints.append(0.0)
++
++        if self.distance < self.rmax:
++            distance_value = self.distance.to_value(unit)
++            s_distance = np.sqrt(max(distance_value**2 - impact_value**2, 0))
++            for point in (-s_distance, s_distance):
++                if s_min < point < s_max:
++                    breakpoints.append(point)
++
++        breakpoints.append(s_max)
++        breakpoints = np.unique(breakpoints)
++
++        t_segments = []
++        for s_start, s_stop in zip(breakpoints[:-1], breakpoints[1:]):
++            if s_stop <= s_start:
++                continue
++
++            t_start = np.arcsinh(s_start / impact_value)
++            t_stop = np.arcsinh(s_stop / impact_value)
++            radius_start = np.hypot(impact_value, s_start)
++            radius_stop = np.hypot(impact_value, s_stop)
++
++            logmin = np.log10(min(radius_start, radius_stop))
++            logmax = np.log10(max(radius_start, radius_stop))
++            n = max(2, int((logmax - logmin) * ndecade))
++
++            t_segment = np.linspace(t_start, t_stop, n)
++            if t_segments:
++                t_segment = t_segment[1:]
++            t_segments.append(t_segment)
++
++        if not t_segments:
++            return 0 * integral_unit
++
++        t = np.concatenate(t_segments)
++        radius = impact * np.cosh(t)
++        values = self.profile(radius) ** exponent * radius
++        return np.trapezoid(values, t)
++
++    def _integrate_los(self, impact, separation, ndecade):
++        """Integrate the physical forward line of sight.
++
++        The forward line of sight is the single interval of line-of-sight
++        distances ``l >= 0`` for which ``r(l) <= rmax``. Its intersection with
++        the sphere of radius ``rmax`` is given by
++        ``l = distance * cos(separation) +/- sqrt(rmax**2 - impact**2)``.
++        """
++        unit = self.rmax.unit
++        integral_unit = u.Unit("GeV2 cm-5" if self.annihilation else "GeV cm-2")
++
++        impact = impact.to(unit)
++        distance = self.distance.to(unit)
++        rmax = self.rmax.to(unit)
++
++        discriminant = rmax**2 - impact**2
++        if discriminant <= 0 * unit**2:
++            return 0 * integral_unit
++
++        los_center = distance * np.cos(separation)
++        los_half_length = np.sqrt(discriminant)
++        los_min = np.maximum(0 * unit, los_center - los_half_length)
++        los_max = los_center + los_half_length
+ 
+-        return 0 * u.Unit("GeV2 cm-5" if self.annihilation else "GeV cm-2")
++        if los_max <= los_min:
++            return 0 * integral_unit
++
++        return self._integrate_los_interval(
++            impact, los_center, los_min, los_max, ndecade
++        )
+ 
+     def _integrate_central_pixel(self, ndecade, rtol, max_subdivision):
+         """Adaptively average the line-of-sight integral over the central pixel."""
+@@ -191,27 +290,26 @@ class JFactory:
+         .. math::
+             r_\perp = D \sin\theta.
+ 
+-        The integration is split into two regions:
+-
+-        1. :math:`D < r_{\max}`: the observer is inside the integration radius.
+-        Directions with :math:`\theta < \pi / 2` cross the inner radial interval
+-        twice, while directions with :math:`\theta \geq \pi / 2` contain only
+-        the outward branch.
+-
+-        2. :math:`D \geq r_{\max}`: the observer is outside the integration radius.
+-        The line of sight contributes only when it points toward the halo and
+-        intersects the integration sphere, i.e. when :math:`\theta < \pi / 2`
+-        and :math:`r_\perp < r_{\max}`.
+-
+-        Each radial branch is evaluated using
++        The physical forward line of sight is a single interval of
++        line-of-sight distances. It is bounded below by the observer
++        (:math:`l = 0`) and above by the far intersection with the integration
++        sphere:
+ 
+         .. math::
+-            \mathrm dl =
+-            \frac{r}{\sqrt{r^2-r_\perp^2}}\,\mathrm dr.
+-
+-        The apparent singularity at :math:`r = r_\perp` is integrable. To avoid
+-        evaluating it directly, each radial branch is integrated with the
+-        substitution :math:`r = r_\perp\cosh t`.
++            l_{\min} &= \max\left(0, D \cos\theta
++                - \sqrt{r_{\max}^2 - r_\perp^2}\right), \\
++            l_{\max} &= D \cos\theta
++                + \sqrt{r_{\max}^2 - r_\perp^2}.
++
++        If the discriminant is not positive, or if :math:`l_{\max} \leq
++        l_{\min}`, the line of sight does not contribute. This description is
++        valid independently of whether the observer is inside or outside the
++        integration sphere.
++
++        The integral is evaluated in the coordinate :math:`s = l - D
++        \cos\theta`, where :math:`r^2 = r_\perp^2 + s^2`. The substitution
++        :math:`s = r_\perp \sinh t` removes the singularity at closest
++        approach and gives :math:`\mathrm dl = r\,\mathrm dt`.
+         """
+         if not np.isfinite(central_pixel_rtol) or central_pixel_rtol <= 0:
+             raise ValueError("central_pixel_rtol must be a finite positive number.")

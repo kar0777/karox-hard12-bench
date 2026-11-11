@@ -1,0 +1,100 @@
+diff --git a/armi/physics/neutronics/crossSectionGroupManager.py b/armi/physics/neutronics/crossSectionGroupManager.py
+index 24a1e34..1423b7f 100644
+--- a/armi/physics/neutronics/crossSectionGroupManager.py
++++ b/armi/physics/neutronics/crossSectionGroupManager.py
+@@ -23,6 +23,8 @@ XS types are typically single capital letters like A
+ BU groups are also capital letters.
+ A XS group of AB is in XS type ``A`` and burnup group ``B``.
+ 
++XS types can also be numbers, like ``1``.
++
+ This module groups the blocks according to their XS groups and can determine
+ which block is to be deemed **representative** of an entire set of blocks in a particular xs group.
+ Then the representative block is sent to a lattice physics kernel for actual physics
+@@ -90,32 +92,41 @@ def getXSTypeNumberFromLabel(xsTypeLabel: str) -> int:
+ 
+     Useful for visualizing XS type in XTVIEW.
+ 
+-    2-digit labels are supported when there is only one burnup group.
++    2-digit labels are supported when there is only one burnup group. Numerical labels
++    (e.g. '1') are also supported.
+     """
+     return int("".join(["{:02d}".format(ord(si)) for si in xsTypeLabel]))
+ 
+ 
+ def getXSTypeLabelFromNumber(xsTypeNumber: int) -> str:
+     """
+-    Convert a XSID label (e.g. 65) to an XS label (e.g. 'A').
++    Convert a XSID number (e.g. 65) to an XS label (e.g. 'A').
+ 
+     Useful for visualizing XS type in XTVIEW.
+ 
+-    2-digit labels are supported when there is only one burnup group.
++    The number is the concatenation of the 2-digit ASCII codes of the characters that make up the
++    label. So 2-digit labels (e.g. 6570 is 'AF') are supported when there is only one burnup
++    group, and numerical labels (e.g. 49 is '1') are supported as well.
+     """
+-    try:
+-        if xsTypeNumber > ord("Z"):
+-            # two digit. Parse
+-            return chr(int(str(xsTypeNumber)[:2])) + chr(int(str(xsTypeNumber)[2:]))
+-        elif xsTypeNumber < ord("A"):
+-            raise ValueError(
+-                f"Cannot convert invalid xsTypeNumber `{xsTypeNumber}` to char. "
+-                "The number must be >= 65 (corresponding to 'A')."
+-            )
+-        else:
+-            return chr(xsTypeNumber)
+-    except ValueError:
+-        runLog.error(f"Error converting {xsTypeNumber} to label.")
++    numberString = str(xsTypeNumber)
++
++    # the label is made up of the 2-digit ASCII code of each of its characters
++    if len(numberString) % 2 == 0:
++        label = "".join(chr(int(numberString[i : i + 2])) for i in range(0, len(numberString), 2))
++        if label.isalnum():
++            return label
++
++    if ord("0") <= xsTypeNumber <= ord("9"):
++        # a single numerical label, e.g. 49 is '1'
++        return chr(xsTypeNumber)
++    elif xsTypeNumber > ord("Z") and len(numberString) > 2:
++        # two digit. Parse
++        return chr(int(numberString[:2])) + chr(int(numberString[2:]))
++
++    raise ValueError(
++        f"Cannot convert invalid xsTypeNumber `{xsTypeNumber}` to a label. The number must be the "
++        "2-digit ASCII codes of the characters of a letter or number label (e.g. 65 for 'A')."
++    )
+ 
+ 
+ def _checkConsistentNuclides(thisComp, repComp):
+diff --git a/armi/reactor/blockParameters.py b/armi/reactor/blockParameters.py
+index f59c3a6..0060c9c 100644
+--- a/armi/reactor/blockParameters.py
++++ b/armi/reactor/blockParameters.py
+@@ -315,7 +315,7 @@ def getBlockParameterDefinitions():
+         pb.defParam(
+             "xsType",
+             units=units.UNITLESS,
+-            description="The xs group letter of this block",
++            description="The xs group label of this block",
+             default="A",
+             setter=xsType,
+         )
+diff --git a/doc/user/inputs.rst b/doc/user/inputs.rst
+index 081787b..147176a 100644
+--- a/doc/user/inputs.rst
++++ b/doc/user/inputs.rst
+@@ -1019,8 +1019,9 @@ xs types
+   that have much different compositions to have separate cross section types. The tradeoff is that the more XS types
+   you define, the more CPU time the case will take to run.
+ 
+-  Representing xsType by a single capital letter (A-Z), or 2-letter xsType designations if and only if the ``buGroups``
+-  setting has length 1 (i.e. no burnup groups are defined). This is useful for high-fidelity XS modeling.
++  Representing xsType by a single capital letter (A-Z), a single number (0-9), or 2-letter xsType designations if and
++  only if the ``buGroups`` setting has length 1 (i.e. no burnup groups are defined). This is useful for high-fidelity
++  XS modeling. Note that numerical xsTypes must be quoted in the YAML input file (e.g. ``xs types: ["1", "2"]``).
+ 
+   ARMI is able to use lower-case letters (a-z), but this should only be done when working on a case-sensitive file
+   system. On a case-insensitive file system (Windows, and some MacOS systems) this could cause unpredictable errors.

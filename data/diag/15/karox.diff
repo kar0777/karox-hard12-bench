@@ -1,0 +1,477 @@
+diff --git a/opentelemetry-api/src/opentelemetry/metrics/__init__.py b/opentelemetry-api/src/opentelemetry/metrics/__init__.py
+index b25a60e..3e5acb1 100644
+--- a/opentelemetry-api/src/opentelemetry/metrics/__init__.py
++++ b/opentelemetry-api/src/opentelemetry/metrics/__init__.py
+@@ -42,7 +42,10 @@ from opentelemetry.metrics._internal.instrument import (
+     CallbackOptions,
+     CallbackT,
+     Counter,
++    CounterOptions,
++    GaugeOptions,
+     Histogram,
++    HistogramOptions,
+     Instrument,
+     NoOpCounter,
+     NoOpHistogram,
+@@ -51,10 +54,14 @@ from opentelemetry.metrics._internal.instrument import (
+     NoOpObservableUpDownCounter,
+     NoOpUpDownCounter,
+     ObservableCounter,
++    ObservableCounterOptions,
+     ObservableGauge,
++    ObservableGaugeOptions,
+     ObservableUpDownCounter,
++    ObservableUpDownCounterOptions,
+     Synchronous,
+     UpDownCounter,
++    UpDownCounterOptions,
+ )
+ from opentelemetry.metrics._internal.instrument import Gauge as _Gauge
+ from opentelemetry.metrics._internal.instrument import NoOpGauge as _NoOpGauge
+@@ -62,14 +69,17 @@ from opentelemetry.metrics._internal.observation import Observation
+ 
+ for obj in [
+     Counter,
++    CounterOptions,
+     Synchronous,
+     Asynchronous,
+     CallbackOptions,
+     _Gauge,
+     _NoOpGauge,
++    GaugeOptions,
+     get_meter_provider,
+     get_meter,
+     Histogram,
++    HistogramOptions,
+     Meter,
+     MeterProvider,
+     Instrument,
+@@ -82,11 +92,15 @@ for obj in [
+     NoOpObservableUpDownCounter,
+     NoOpUpDownCounter,
+     ObservableCounter,
++    ObservableCounterOptions,
+     ObservableGauge,
++    ObservableGaugeOptions,
+     ObservableUpDownCounter,
++    ObservableUpDownCounterOptions,
+     Observation,
+     set_meter_provider,
+     UpDownCounter,
++    UpDownCounterOptions,
+ ]:
+     obj.__module__ = __name__
+ 
+@@ -95,7 +109,10 @@ __all__ = [
+     "CallbackOptions",
+     "CallbackT",
+     "Counter",
++    "CounterOptions",
++    "GaugeOptions",
+     "Histogram",
++    "HistogramOptions",
+     "Instrument",
+     "Meter",
+     "MeterProvider",
+@@ -108,11 +125,15 @@ __all__ = [
+     "NoOpObservableUpDownCounter",
+     "NoOpUpDownCounter",
+     "ObservableCounter",
++    "ObservableCounterOptions",
+     "ObservableGauge",
++    "ObservableGaugeOptions",
+     "ObservableUpDownCounter",
++    "ObservableUpDownCounterOptions",
+     "Observation",
+     "Synchronous",
+     "UpDownCounter",
++    "UpDownCounterOptions",
+     "_Gauge",
+     "_NoOpGauge",
+     "get_meter",
+diff --git a/opentelemetry-api/src/opentelemetry/metrics/_internal/__init__.py b/opentelemetry-api/src/opentelemetry/metrics/_internal/__init__.py
+index 183966b..e7efe07 100644
+--- a/opentelemetry-api/src/opentelemetry/metrics/_internal/__init__.py
++++ b/opentelemetry-api/src/opentelemetry/metrics/_internal/__init__.py
+@@ -42,8 +42,11 @@ from opentelemetry.environment_variables import OTEL_PYTHON_METER_PROVIDER
+ from opentelemetry.metrics._internal.instrument import (
+     CallbackT,
+     Counter,
++    CounterOptions,
+     Gauge,
++    GaugeOptions,
+     Histogram,
++    HistogramOptions,
+     NoOpCounter,
+     NoOpGauge,
+     NoOpHistogram,
+@@ -52,9 +55,13 @@ from opentelemetry.metrics._internal.instrument import (
+     NoOpObservableUpDownCounter,
+     NoOpUpDownCounter,
+     ObservableCounter,
++    ObservableCounterOptions,
+     ObservableGauge,
++    ObservableGaugeOptions,
+     ObservableUpDownCounter,
++    ObservableUpDownCounterOptions,
+     UpDownCounter,
++    UpDownCounterOptions,
+     _MetricsHistogramAdvisory,
+     _ProxyCounter,
+     _ProxyGauge,
+@@ -295,6 +302,28 @@ class Meter(ABC):
+             description: A description for this instrument and what it measures.
+         """
+ 
++    def create_counter_with_options(
++        self,
++        name: str,
++        options: CounterOptions | None = None,
++    ) -> Counter:
++        """Creates a `Counter` instrument from a `CounterOptions` object
++
++        This is the forward compatible alternative to :meth:`create_counter`.
++        New instrument creation parameters are added as fields of
++        :class:`~opentelemetry.metrics.CounterOptions` instead of as arguments
++        of this method, so that its signature never has to change. The default
++        implementation forwards the options supported by
++        :meth:`create_counter` to it and ignores the rest.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = CounterOptions()
++        return self.create_counter(name, options.unit, options.description)
++
+     @abstractmethod
+     def create_up_down_counter(
+         self,
+@@ -311,6 +340,25 @@ class Meter(ABC):
+             description: A description for this instrument and what it measures.
+         """
+ 
++    def create_up_down_counter_with_options(
++        self,
++        name: str,
++        options: UpDownCounterOptions | None = None,
++    ) -> UpDownCounter:
++        """Creates an `UpDownCounter` instrument from an `UpDownCounterOptions` object
++
++        This is the forward compatible alternative to
++        :meth:`create_up_down_counter`. See
++        :meth:`create_counter_with_options` for details.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = UpDownCounterOptions()
++        return self.create_up_down_counter(name, options.unit, options.description)
++
+     @abstractmethod
+     def create_observable_counter(
+         self,
+@@ -455,6 +503,30 @@ class Meter(ABC):
+             description: A description for this instrument and what it measures.
+         """
+ 
++    def create_observable_counter_with_options(
++        self,
++        name: str,
++        options: ObservableCounterOptions | None = None,
++    ) -> ObservableCounter:
++        """Creates an `ObservableCounter` instrument from an `ObservableCounterOptions` object
++
++        This is the forward compatible alternative to
++        :meth:`create_observable_counter`. See
++        :meth:`create_counter_with_options` for details.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = ObservableCounterOptions()
++        return self.create_observable_counter(
++            name,
++            options.callbacks,
++            options.unit,
++            options.description,
++        )
++
+     @abstractmethod
+     def create_histogram(
+         self,
+@@ -473,6 +545,29 @@ class Meter(ABC):
+             description: A description for this instrument and what it measures.
+         """
+ 
++    def create_histogram_with_options(
++        self,
++        name: str,
++        options: HistogramOptions | None = None,
++    ) -> Histogram:
++        """Creates a `Histogram` instrument from a `HistogramOptions` object
++
++        This is the forward compatible alternative to :meth:`create_histogram`.
++        See :meth:`create_counter_with_options` for details.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = HistogramOptions()
++        return self.create_histogram(
++            name,
++            options.unit,
++            options.description,
++            explicit_bucket_boundaries_advisory=options.explicit_bucket_boundaries_advisory,
++        )
++
+     def create_gauge(  # type: ignore # pylint: disable=no-self-use
+         self,
+         name: str,
+@@ -489,6 +584,24 @@ class Meter(ABC):
+         """
+         warnings.warn("create_gauge() is not implemented and will be a no-op")
+ 
++    def create_gauge_with_options(
++        self,
++        name: str,
++        options: GaugeOptions | None = None,
++    ) -> Gauge:
++        """Creates a `Gauge` instrument from a `GaugeOptions` object
++
++        This is the forward compatible alternative to :meth:`create_gauge`. See
++        :meth:`create_counter_with_options` for details.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = GaugeOptions()
++        return self.create_gauge(name, options.unit, options.description)
++
+     @abstractmethod
+     def create_observable_gauge(
+         self,
+@@ -509,6 +622,30 @@ class Meter(ABC):
+             description: A description for this instrument and what it measures.
+         """
+ 
++    def create_observable_gauge_with_options(
++        self,
++        name: str,
++        options: ObservableGaugeOptions | None = None,
++    ) -> ObservableGauge:
++        """Creates an `ObservableGauge` instrument from an `ObservableGaugeOptions` object
++
++        This is the forward compatible alternative to
++        :meth:`create_observable_gauge`. See
++        :meth:`create_counter_with_options` for details.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = ObservableGaugeOptions()
++        return self.create_observable_gauge(
++            name,
++            options.callbacks,
++            options.unit,
++            options.description,
++        )
++
+     @abstractmethod
+     def create_observable_up_down_counter(
+         self,
+@@ -529,6 +666,30 @@ class Meter(ABC):
+             description: A description for this instrument and what it measures.
+         """
+ 
++    def create_observable_up_down_counter_with_options(
++        self,
++        name: str,
++        options: ObservableUpDownCounterOptions | None = None,
++    ) -> ObservableUpDownCounter:
++        """Creates an `ObservableUpDownCounter` instrument from an `ObservableUpDownCounterOptions` object
++
++        This is the forward compatible alternative to
++        :meth:`create_observable_up_down_counter`. See
++        :meth:`create_counter_with_options` for details.
++
++        Args:
++            name: The name of the instrument to be created
++            options: The options used to create the instrument
++        """
++        if options is None:
++            options = ObservableUpDownCounterOptions()
++        return self.create_observable_up_down_counter(
++            name,
++            options.callbacks,
++            options.unit,
++            options.description,
++        )
++
+ 
+ class _ProxyMeter(Meter):
+     def __init__(
+diff --git a/opentelemetry-api/src/opentelemetry/metrics/_internal/instrument.py b/opentelemetry-api/src/opentelemetry/metrics/_internal/instrument.py
+index 5ebe05e..7263726 100644
+--- a/opentelemetry-api/src/opentelemetry/metrics/_internal/instrument.py
++++ b/opentelemetry-api/src/opentelemetry/metrics/_internal/instrument.py
+@@ -50,6 +50,148 @@ InstrumentT = TypeVar("InstrumentT", bound="Instrument")
+ CallbackT = Callable[[CallbackOptions], Iterable[Observation]] | Generator[Iterable[Observation], CallbackOptions, None]
+ 
+ 
++@dataclass(frozen=True)
++class CounterOptions:
++    """Options used to create a :class:`~opentelemetry.metrics.Counter`.
++
++    Instrument creation parameters introduced after the initial release of the
++    metrics API are added as fields of this class. This keeps
++    :meth:`~opentelemetry.metrics.Meter.create_counter_with_options` and the
++    other instrument creation methods forward compatible, because their
++    signatures never need to change for new creation parameters.
++
++    Args:
++        unit: The unit for observations this instrument reports. For
++            example, ``By`` for bytes. UCUM units are recommended.
++        description: A description for this instrument and what it measures.
++        attributes_advisory: Advisory list of the attributes this instrument is
++            expected to report. Implementations that do not support it ignore
++            it.
++    """
++
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++
++
++@dataclass(frozen=True)
++class UpDownCounterOptions:
++    """Options used to create a :class:`~opentelemetry.metrics.UpDownCounter`.
++
++    See :class:`~opentelemetry.metrics.CounterOptions` for details.
++
++    Args:
++        unit: The unit for observations this instrument reports. For
++            example, ``By`` for bytes. UCUM units are recommended.
++        description: A description for this instrument and what it measures.
++        attributes_advisory: Advisory list of the attributes this instrument is
++            expected to report. Implementations that do not support it ignore
++            it.
++    """
++
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++
++
++@dataclass(frozen=True)
++class GaugeOptions:
++    """Options used to create a :class:`~opentelemetry.metrics.Gauge`.
++
++    See :class:`~opentelemetry.metrics.CounterOptions` for details.
++
++    Args:
++        unit: The unit for observations this instrument reports. For
++            example, ``By`` for bytes. UCUM units are recommended.
++        description: A description for this instrument and what it measures.
++        attributes_advisory: Advisory list of the attributes this instrument is
++            expected to report. Implementations that do not support it ignore
++            it.
++    """
++
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++
++
++@dataclass(frozen=True)
++class HistogramOptions:
++    """Options used to create a :class:`~opentelemetry.metrics.Histogram`.
++
++    See :class:`~opentelemetry.metrics.CounterOptions` for details.
++
++    Args:
++        unit: The unit for observations this instrument reports. For
++            example, ``By`` for bytes. UCUM units are recommended.
++        description: A description for this instrument and what it measures.
++        attributes_advisory: Advisory list of the attributes this instrument is
++            expected to report. Implementations that do not support it ignore
++            it.
++        explicit_bucket_boundaries_advisory: Advisory list of bucket boundaries
++            to use for this instrument. Implementations that do not support it
++            ignore it.
++    """
++
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++    explicit_bucket_boundaries_advisory: Sequence[float] | None = None
++
++
++@dataclass(frozen=True)
++class ObservableCounterOptions:
++    """Options used to create an
++    :class:`~opentelemetry.metrics.ObservableCounter`.
++
++    See :class:`~opentelemetry.metrics.CounterOptions` for details.
++
++    Args:
++        callbacks: A sequence of callbacks that return an iterable of
++            :class:`~opentelemetry.metrics.Observation`. Alternatively, can be a
++            sequence of generators that each yields iterables of
++            :class:`~opentelemetry.metrics.Observation`.
++        unit: The unit for observations this instrument reports. For
++            example, ``By`` for bytes. UCUM units are recommended.
++        description: A description for this instrument and what it measures.
++        attributes_advisory: Advisory list of the attributes this instrument is
++            expected to report. Implementations that do not support it ignore
++            it.
++    """
++
++    callbacks: Sequence[CallbackT] | None = None
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++
++
++@dataclass(frozen=True)
++class ObservableGaugeOptions:
++    """Options used to create an
++    :class:`~opentelemetry.metrics.ObservableGauge`.
++
++    See :class:`~opentelemetry.metrics.ObservableCounterOptions` for details.
++    """
++
++    callbacks: Sequence[CallbackT] | None = None
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++
++
++@dataclass(frozen=True)
++class ObservableUpDownCounterOptions:
++    """Options used to create an
++    :class:`~opentelemetry.metrics.ObservableUpDownCounter`.
++
++    See :class:`~opentelemetry.metrics.ObservableCounterOptions` for details.
++    """
++
++    callbacks: Sequence[CallbackT] | None = None
++    unit: str = ""
++    description: str = ""
++    attributes_advisory: Sequence[str] | None = None
++
++
+ class Instrument(ABC):
+     """Abstract class that serves as base for all instruments."""
+ 

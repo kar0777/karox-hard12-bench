@@ -1,0 +1,166 @@
+diff --git a/api/routes.py b/api/routes.py
+index ed0c36b..2e62702 100644
+--- a/api/routes.py
++++ b/api/routes.py
+@@ -201,6 +201,16 @@ def _persist_generated_session_title(
+ def _queue_generated_title_for_imported_session(session, cli_meta: dict | None) -> None:
+     try:
+         cli_meta = dict(cli_meta or {})
++        loaded_from = getattr(session, "_sidecar_names_other_session", None)
++        if loaded_from:
++            # #8852: the background thread reloads the session the object's id
++            # names; the id came from a file whose body names another session.
++            logger.debug(
++                "Skipping imported session title generation: the sidecar was "
++                "loaded from %s.json, whose body names a different session",
++                loaded_from,
++            )
++            return
+         if not session or cli_meta.get("read_only") or not _looks_like_default_cli_title(cli_meta):
+             return
+         sid = str(getattr(session, "session_id", "") or "")
+diff --git a/api/streaming.py b/api/streaming.py
+index e189405..9a7bf9b 100644
+--- a/api/streaming.py
++++ b/api/streaming.py
+@@ -3570,6 +3570,18 @@ def _merge_process_wakeup_pause_into_current_session(
+     skipped (fail closed) — it is never written through the worker-held
+     snapshot.
+     """
++    loaded_from = getattr(session, "_sidecar_names_other_session", None)
++    if loaded_from:
++        # #8852: this helper re-resolves the session the object's id names and
++        # saves the pause there; the id came from a file whose body names
++        # another session.
++        logger.info(
++            "Skipping process-wakeup pause for session %s: it was loaded from "
++            "%s.json, whose body names a different session (#8852)",
++            getattr(session, "session_id", None),
++            loaded_from,
++        )
++        return None
+     current = _resolve_current_session_for_write(session)
+     if current is None:
+         logger.info(
+@@ -7534,6 +7546,17 @@ def _preserve_pre_compression_snapshot(
+     agent's new continuation id. The old JSON must remain on disk for lineage
+     traversal, but it should not continue to appear as an active sidebar row.
+     """
++    loaded_from = getattr(s, "_sidecar_names_other_session", None)
++    if loaded_from:
++        # #8852: this helper re-loads old_sid and stamps the snapshot fields on
++        # it; the id came from a file whose body names another session.
++        logger.info(
++            "Refusing to preserve pre-compression snapshot for session %s: it "
++            "was loaded from %s.json, whose body names a different session (#8852)",
++            old_sid,
++            loaded_from,
++        )
++        return False
+     old_path = SESSION_DIR / f'{old_sid}.json'
+     if not old_path.exists():
+         return False
+diff --git a/tests/test_issue8852_body_id_write_target.py b/tests/test_issue8852_body_id_write_target.py
+index 3277d4e..d193c9d 100644
+--- a/tests/test_issue8852_body_id_write_target.py
++++ b/tests/test_issue8852_body_id_write_target.py
+@@ -445,6 +445,99 @@ def test_the_title_writer_refuses_a_session_loaded_from_a_copy(store):
+     assert json.loads(before[f"{VICTIM}.json"])["title"] == "Victim"
+ 
+ 
++def test_the_import_title_queue_refuses_a_session_loaded_from_a_copy(store, monkeypatch):
++    """``_queue_generated_title_for_imported_session`` re-loads the session its id names in a
++    background thread. A copy object would therefore retitle the session its body names. Over
++    HTTP the import passes the session it just saved under its own id; this covers a direct
++    caller."""
++    from api import models, routes
++
++    _victim(store)
++    victim_path = store / f"{VICTIM}.json"
++    victim_raw = json.loads(victim_path.read_text(encoding="utf-8"))
++    victim_raw["title"] = "CLI Session"
++    victim_path.write_text(json.dumps(victim_raw, indent=2), encoding="utf-8")
++    _copy(store, partials=False)
++    before = _files(store)
++    started = []
++    generated = []
++
++    class InlineThread:
++        def __init__(self, *, target, daemon, name):
++            self._target = target
++
++        def start(self):
++            started.append(self)
++            self._target()
++
++    monkeypatch.setattr(routes.threading, "Thread", InlineThread)
++    monkeypatch.setattr(
++        routes,
++        "generate_session_title_for_session",
++        lambda current: generated.append(current.session_id) or ("Hijacked by copy", "llm", "raw"),
++    )
++    monkeypatch.setattr(routes, "_sync_session_title_to_insights", lambda session: None)
++    monkeypatch.setattr(routes, "_publish_session_list_changed", lambda *args, **kwargs: None)
++
++    routes._queue_generated_title_for_imported_session(
++        models.Session.load(COPY),
++        {"title": "CLI Session", "source_tag": "cli"},
++    )
++
++    assert started == []
++    assert generated == []
++    assert _files(store) == before
++    assert f"{VICTIM}.json.bak" not in _files(store)
++    assert json.loads(before[f"{VICTIM}.json"])["title"] == "CLI Session"
++
++
++def test_the_wakeup_pause_merge_refuses_a_session_loaded_from_a_copy(store):
++    """``_merge_process_wakeup_pause_into_current_session`` re-resolves the session its id names
++    and saves the pause there. A copy object would stamp the session its body names. Turn
++    admission 404s a copy before either production caller; this covers a direct caller."""
++    from api import models, streaming
++
++    _victim(store)
++    _copy(store, partials=False)
++    before = _files(store)
++
++    recorded = streaming._merge_process_wakeup_pause_into_current_session(
++        models.Session.load(COPY),
++        classification="credential_pool_empty",
++        model="test-model",
++        provider="test-provider",
++    )
++
++    assert recorded is None
++    _unchanged_victim(store, before)
++    assert _files(store) == before
++
++
++def test_the_compression_snapshot_refuses_a_session_loaded_from_a_copy(store, monkeypatch):
++    """``_preserve_pre_compression_snapshot`` re-loads ``old_sid`` and stamps the snapshot fields
++    on it. A copy object whose body id is passed as ``old_sid`` would stamp the session its body
++    names. Compression ownership migration blocks a copy before this helper in production; this
++    covers a direct caller."""
++    from api import models, streaming
++
++    monkeypatch.setattr(streaming, "SESSION_DIR", store)
++    _victim(store)
++    _copy(store, partials=False)
++    before = _files(store)
++    copy_session = models.Session.load(COPY)
++
++    preserved = streaming._preserve_pre_compression_snapshot(
++        copy_session,
++        copy_session.session_id,
++        continuation_sid="continuation-8852",
++    )
++
++    assert preserved is False
++    _unchanged_victim(store, before)
++    assert _files(store) == before
++    assert json.loads(before[f"{VICTIM}.json"]).get("pre_compression_snapshot") is not True
++
++
+ def test_gateway_reattach_at_startup_skips_a_copy(store, monkeypatch):
+     """At startup every sidecar with an active stream and a saved Gateway run is reattached under
+     its session's id. A copy's id is the other session's, so its stale run would be resumed, and

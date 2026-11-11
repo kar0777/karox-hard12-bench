@@ -1,0 +1,573 @@
+diff --git a/cyclopts/__init__.py b/cyclopts/__init__.py
+index 41bf1de..cb1a33f 100644
+--- a/cyclopts/__init__.py
++++ b/cyclopts/__init__.py
+@@ -10,6 +10,7 @@ __all__ = [
+     "App",
+     "Argument",
+     "ArgumentCollection",
++    "ArgumentFileError",
+     "ArgumentOrderError",
+     "Token",
+     "CoercionError",
+@@ -43,6 +44,8 @@ __all__ = [
+     "default_name_transform",
+     "edit",
+     "env_var_split",
++    "expand_args_from_files",
++    "read_args_from_files",
+     "types",
+     "validators",
+     "run",
+@@ -50,11 +53,13 @@ __all__ = [
+ 
+ from cyclopts._convert import convert
+ from cyclopts._env_var import env_var_split
++from cyclopts._fromfile import expand_args_from_files, read_args_from_files
+ from cyclopts._result_action import ResultAction, resolve_returncode
+ from cyclopts._run import run
+ from cyclopts.argument import Argument, ArgumentCollection
+ from cyclopts.core import App
+ from cyclopts.exceptions import (
++    ArgumentFileError,
+     ArgumentOrderError,
+     CoercionError,
+     CombinedShortOptionError,
+diff --git a/cyclopts/__init__.pyi b/cyclopts/__init__.pyi
+index 49f30a7..75a0689 100644
+--- a/cyclopts/__init__.pyi
++++ b/cyclopts/__init__.pyi
+@@ -8,12 +8,15 @@ from cyclopts._edit import EditorError as EditorError
+ from cyclopts._edit import EditorNotFoundError as EditorNotFoundError
+ from cyclopts._edit import edit as edit
+ from cyclopts._env_var import env_var_split as env_var_split
++from cyclopts._fromfile import expand_args_from_files as expand_args_from_files
++from cyclopts._fromfile import read_args_from_files as read_args_from_files
+ from cyclopts._result_action import ResultAction as ResultAction
+ from cyclopts._result_action import resolve_returncode as resolve_returncode
+ from cyclopts._run import run as run
+ from cyclopts.argument import Argument as Argument
+ from cyclopts.argument import ArgumentCollection as ArgumentCollection
+ from cyclopts.core import App as App
++from cyclopts.exceptions import ArgumentFileError as ArgumentFileError
+ from cyclopts.exceptions import ArgumentOrderError as ArgumentOrderError
+ from cyclopts.exceptions import CoercionError as CoercionError
+ from cyclopts.exceptions import CombinedShortOptionError as CombinedShortOptionError
+diff --git a/cyclopts/_fromfile.py b/cyclopts/_fromfile.py
+new file mode 100644
+index 0000000..0436edf
+--- /dev/null
++++ b/cyclopts/_fromfile.py
+@@ -0,0 +1,108 @@
++"""Expand command-line arguments from ``@file``-style argument files."""
++
++from collections.abc import Callable, Iterable
++from pathlib import Path
++
++from cyclopts.exceptions import ArgumentFileError
++
++
++def _convert_arg_line_to_args(arg_line: str) -> list[str]:
++    return [arg_line]
++
++
++def _normalize_prefix_chars(prefix_chars: str | Iterable[str] | None) -> str:
++    if not prefix_chars:
++        return ""
++    if isinstance(prefix_chars, str):
++        return prefix_chars
++    return "".join(prefix_chars)
++
++
++def expand_args_from_files(
++    args: Iterable[str],
++    prefix_chars: str | Iterable[str] | None = "@",
++    convert_arg_line_to_args: Callable[[str], Iterable[str]] | None = None,
++    *,
++    encoding: str = "utf-8",
++    _parents: tuple[Path, ...] = (),
++) -> list[str]:
++    """Expand references to argument files in ``args``.
++
++    A token whose first character is one of ``prefix_chars`` is replaced by the
++    arguments read from the file named by the remainder of the token.  By
++    default, each line in the file becomes one argument.  References to files
++    inside argument files are expanded recursively.
++
++    Parameters
++    ----------
++    args: Iterable[str]
++        Arguments to expand.
++    prefix_chars: str | Iterable[str] | None
++        Characters that mark an argument as a file reference.  Set to an empty
++        string or :obj:`None` to disable expansion.
++    convert_arg_line_to_args: Callable[[str], Iterable[str]] | None
++        Hook for converting a line from an argument file into zero or more
++        arguments.  By default, each line is returned unchanged as one
++        argument.
++    encoding: str
++        Encoding used to read argument files.
++    """
++    prefix_chars = _normalize_prefix_chars(prefix_chars)
++    if not prefix_chars:
++        return list(args)
++
++    converter = convert_arg_line_to_args or _convert_arg_line_to_args
++    expanded: list[str] = []
++    for arg in args:
++        if not arg or arg[0] not in prefix_chars:
++            expanded.append(arg)
++            continue
++
++        path = Path(arg[1:]).expanduser()
++        if not path.is_absolute() and _parents:
++            # Match argparse's working-directory behavior, but also make
++            # nested references relative to the file that contains them when
++            # no working-directory match exists.
++            sibling = _parents[-1].parent / path
++            if not path.exists() and sibling.exists():
++                path = sibling
++        try:
++            resolved_path = path.resolve()
++        except OSError:  # pragma: no cover - Path.resolve is very permissive.
++            resolved_path = path.absolute()
++
++        if resolved_path in _parents:
++            chain = " -> ".join(str(x) for x in (*_parents, resolved_path))
++            raise ArgumentFileError(msg=f"Recursive argument file reference detected: {chain}")
++
++        try:
++            contents = path.read_text(encoding=encoding)
++        except (OSError, UnicodeError) as e:
++            raise ArgumentFileError(msg=f'Unable to read argument file "{path}": {e}') from e
++
++        file_args: list[str] = []
++        for line in contents.splitlines():
++            converted = converter(line)
++            if converted is None:
++                continue
++            if isinstance(converted, str):
++                converted = [converted]
++            file_args.extend(converted)
++
++        expanded.extend(
++            expand_args_from_files(
++                file_args,
++                prefix_chars,
++                converter,
++                encoding=encoding,
++                _parents=(*_parents, resolved_path),
++            )
++        )
++
++    return expanded
++
++
++read_args_from_files = expand_args_from_files
++_read_args_from_files = expand_args_from_files
++
++
+diff --git a/cyclopts/bind.py b/cyclopts/bind.py
+index ebbd42f..a102c59 100644
+--- a/cyclopts/bind.py
++++ b/cyclopts/bind.py
+@@ -9,6 +9,7 @@ from functools import partial
+ from typing import TYPE_CHECKING, Any, NamedTuple, get_args
+ 
+ from cyclopts._convert import _bool, _none, create_empty_instance
++from cyclopts._fromfile import expand_args_from_files
+ from cyclopts.annotations import is_nonetype, is_union
+ from cyclopts.argument import Argument, ArgumentCollection
+ from cyclopts.argument._collection import earlier_source_filter, expand_json_objects
+@@ -34,6 +35,14 @@ if TYPE_CHECKING:
+ CliToken = partial(Token, source="cli")
+ 
+ 
++class _ExpandedTokens(list[str]):
++    """Tokens that have already been expanded from argument files."""
++
++    def __init__(self, tokens: Iterable[str] = (), prefix_chars: str | None = None):
++        super().__init__(tokens)
++        self.prefix_chars = prefix_chars
++
++
+ class _KeywordMatch(NamedTuple):
+     """Represents a matched CLI token with its corresponding argument."""
+ 
+@@ -50,7 +59,12 @@ class _KeywordMatch(NamedTuple):
+     """Implicit value if this is a flag, otherwise UNSET."""
+ 
+ 
+-def normalize_tokens(tokens: None | str | Iterable[str]) -> list[str]:
++def normalize_tokens(
++    tokens: None | str | Iterable[str],
++    *,
++    fromfile_prefix_chars: str | Iterable[str] | None = None,
++    convert_arg_line_to_args: Callable[[str], Iterable[str]] | None = None,
++) -> list[str]:
+     if tokens is None:
+         tokens = sys.argv[1:]  # Remove the executable
+     elif isinstance(tokens, str):
+@@ -58,8 +72,24 @@ def normalize_tokens(tokens: None | str | Iterable[str]) -> list[str]:
+             tokens = shlex.split(tokens)
+         except ValueError as e:
+             raise TokenizationError(msg=f"{e}: {tokens!r}") from e
++    elif isinstance(tokens, _ExpandedTokens):
++        # Preserve the marker so argument files aren't expanded more than once
++        # as tokens flow through nested parse calls.
++        if not fromfile_prefix_chars or tokens.prefix_chars == fromfile_prefix_chars:
++            return tokens
+     else:
+         tokens = list(tokens)
++
++    if fromfile_prefix_chars:
++        prefix_chars = (
++            fromfile_prefix_chars
++            if isinstance(fromfile_prefix_chars, str)
++            else "".join(fromfile_prefix_chars)
++        )
++        tokens = _ExpandedTokens(
++            expand_args_from_files(tokens, prefix_chars, convert_arg_line_to_args),
++            prefix_chars,
++        )
+     return tokens
+ 
+ 
+diff --git a/cyclopts/core.py b/cyclopts/core.py
+index 5d12ec4..6c17c0a 100644
+--- a/cyclopts/core.py
++++ b/cyclopts/core.py
+@@ -31,6 +31,7 @@ from cyclopts.app_stack import AppStack
+ from cyclopts.argument import ArgumentCollection
+ from cyclopts.argument.utils import is_short_flag
+ from cyclopts.bind import (
++    _ExpandedTokens,
+     _parse_kw_and_flags,
+     _scope_tokens_for_meta,
+     create_bound_arguments,
+@@ -71,6 +72,7 @@ if TYPE_CHECKING:
+     from cyclopts.help import HelpPanel
+     from cyclopts.help.protocols import HelpFormatter
+ 
++from cyclopts._fromfile import expand_args_from_files
+ from cyclopts._result_action import ResultAction, ResultActionSingle, validate_result_action
+ from cyclopts._run import _run_maybe_async_command
+ 
+@@ -112,6 +114,12 @@ def _result_action_converter(
+     return result
+ 
+ 
++def _fromfile_prefix_chars_converter(value: str | Iterable[str] | None) -> str | None:
++    if value is None or isinstance(value, str):
++        return value
++    return "".join(value)
++
++
+ class _CannotDeriveCallingModuleNameError(Exception):
+     pass
+ 
+@@ -506,6 +514,25 @@ class App:
+ 
+     end_of_options_delimiter: str | None = field(default=None, kw_only=True)
+ 
++    fromfile_prefix_chars: str | None = field(
++        default=None,
++        converter=_fromfile_prefix_chars_converter,
++        kw_only=True,
++    )
++    """Characters that prefix argument-file references (e.g. ``"@"``).
++
++    If not set, attempts to inherit from parenting :class:`.App`.
++    Set to an empty string to disable argument-file expansion.
++    """
++
++    _convert_arg_line_to_args: Callable[[str], Iterable[str]] | None = field(
++        default=None,
++        alias="convert_arg_line_to_args",
++        kw_only=True,
++        repr=False,
++    )
++    """Optional callable that converts a line from an argument file into arguments."""
++
+     parse_mode: Literal["fallthrough", "strict"] | None = field(
+         default=None,
+         kw_only=True,
+@@ -753,6 +780,45 @@ class App:
+     def sort_key(self, value):
+         self._sort_key = sort_key_converter(value)
+ 
++    @property
++    def convert_arg_line_to_args(self) -> Callable[[str], Iterable[str]]:
++        """Callable that converts a line from an argument file into arguments.
++
++        By default, each line is treated as a single argument.  Subclasses may
++        override this method (matching :mod:`argparse`'s hook), or an
++        alternative callable may be supplied to the :class:`App` constructor.
++        """
++        if self._convert_arg_line_to_args is not None:
++            return self._convert_arg_line_to_args
++        return self._default_convert_arg_line_to_args
++
++    @convert_arg_line_to_args.setter
++    def convert_arg_line_to_args(self, value: Callable[[str], Iterable[str]] | None):
++        self._convert_arg_line_to_args = value
++
++    @staticmethod
++    def _default_convert_arg_line_to_args(arg_line: str) -> list[str]:
++        return [arg_line]
++
++    def _read_args_from_files(self, tokens: Iterable[str], prefix_chars: str | None = None) -> list[str]:
++        """Expand argument-file references using this app's configuration."""
++        if prefix_chars is None:
++            prefix_chars = self.app_stack.resolve("fromfile_prefix_chars")
++        if isinstance(tokens, _ExpandedTokens):
++            if tokens.prefix_chars == "" or not prefix_chars or tokens.prefix_chars == prefix_chars:
++                return tokens
++        if not prefix_chars:
++            return list(tokens)
++        expanded = expand_args_from_files(
++            tokens,
++            prefix_chars,
++            self.convert_arg_line_to_args,
++        )
++        return _ExpandedTokens(expanded, prefix_chars)
++
++    def _expand_fromfile_args(self, tokens: Iterable[str]) -> list[str]:
++        return self._read_args_from_files(tokens)
++
+     @property
+     def _registered_commands(self) -> dict[str, "App"]:
+         """Commands that are not help or version commands.
+@@ -1136,6 +1202,7 @@ class App:
+         list[App]
+             The resolved app for each command token (parallel to the chain).
+         """
++        tokens = self._expand_fromfile_args(tokens)
+         command_chain = []
+         app = self
+         apps: list[App] = []
+@@ -1211,6 +1278,7 @@ class App:
+         tokens: None | str | Iterable[str] = None,
+         *,
+         include_parent_meta=True,
++        fromfile_prefix_chars: str | None = None,
+     ) -> tuple[tuple[str, ...], tuple["App", ...], list[str]]:
+         """Extract out the command tokens from a command.
+ 
+@@ -1234,6 +1302,9 @@ class App:
+             - Used for getting the execution hierarchy.
+ 
+             This parameter is primarily for internal use.
++        fromfile_prefix_chars: str | None
++            Characters that prefix argument files.
++            If :obj:`None`, inherits from :attr:`App.fromfile_prefix_chars`.
+ 
+         Returns
+         -------
+@@ -1244,8 +1315,15 @@ class App:
+         list[str]
+             The remaining non-command tokens.
+         """
++        tokens = normalize_tokens(tokens)
++        if fromfile_prefix_chars is not None:
++            tokens = self._read_args_from_files(tokens, fromfile_prefix_chars)
++            if not fromfile_prefix_chars:
++                tokens = _ExpandedTokens(tokens, "")
++        else:
++            tokens = self._expand_fromfile_args(tokens)
+         command_chain, apps, unused_tokens, _, _ = self._parse_commands(
+-            normalize_tokens(tokens),
++            tokens,
+             include_parent_meta=include_parent_meta,
+         )
+         return command_chain, apps, unused_tokens
+@@ -1672,6 +1750,7 @@ class App:
+         console: Optional["Console"] = None,
+         error_console: Optional["Console"] = None,
+         end_of_options_delimiter: str | None = None,
++        fromfile_prefix_chars: str | None = None,
+     ) -> tuple[Callable[..., Any], inspect.BoundArguments, list[str], dict[str, Any]]:
+         """Interpret arguments into a registered function, :class:`~inspect.BoundArguments`, and any remaining unknown tokens.
+ 
+@@ -1690,6 +1769,9 @@ class App:
+             All tokens after this delimiter will be force-interpreted as positional arguments.
+             If None, inherits from :attr:`App.end_of_options_delimiter`, eventually defaulting to POSIX-standard ``"--"``.
+             Set to an empty string to disable.
++        fromfile_prefix_chars: str | None
++            Characters that prefix argument files.
++            If :obj:`None`, inherits from :attr:`App.fromfile_prefix_chars`.
+ 
+         Returns
+         -------
+@@ -1712,6 +1794,7 @@ class App:
+             "_console": console,
+             "_error_console": error_console,
+             "end_of_options_delimiter": end_of_options_delimiter,
++            "fromfile_prefix_chars": fromfile_prefix_chars,
+         }
+         with self.app_stack([], overrides=overrides):
+             command, bound, unused_tokens, ignored, _ = self._parse_known_args(tokens)
+@@ -1723,11 +1806,18 @@ class App:
+         tokens: None | str | Iterable[str] = None,
+         *,
+         raise_on_unused_tokens: bool = False,
++        fromfile_prefix_chars: str | None = None,
+     ) -> tuple[Callable[..., Any], inspect.BoundArguments, list[str], dict[str, Any], ArgumentCollection]:
+         if tokens is None:
+             _log_framework_warning(_detect_test_framework())
+ 
+         tokens = normalize_tokens(tokens)
++        if fromfile_prefix_chars is not None:
++            tokens = self._read_args_from_files(tokens, fromfile_prefix_chars)
++            if not fromfile_prefix_chars:
++                tokens = _ExpandedTokens(tokens, "")
++        else:
++            tokens = self._expand_fromfile_args(tokens)
+ 
+         # Reserved command: the generated shell-completion script calls back into
+         # the application as ``<prog> __complete <words...>`` to obtain dynamic
+@@ -2010,6 +2100,7 @@ class App:
+         help_on_error: bool | None = None,
+         verbose: bool | None = None,
+         end_of_options_delimiter: str | None = None,
++        fromfile_prefix_chars: str | None = None,
+         error_formatter: Callable[["CycloptsError"], Any] | None = None,
+     ) -> tuple[Callable[..., Any], inspect.BoundArguments, dict[str, Any]]:
+         """Interpret arguments into a function and :class:`~inspect.BoundArguments`.
+@@ -2047,6 +2138,9 @@ class App:
+             All tokens after this delimiter will be force-interpreted as positional arguments.
+             If :obj:`None`, inherits from :attr:`App.end_of_options_delimiter`, eventually defaulting to POSIX-standard ``"--"``.
+             Set to an empty string to disable.
++        fromfile_prefix_chars: str | None
++            Characters that prefix argument files.
++            If :obj:`None`, inherits from :attr:`App.fromfile_prefix_chars`.
+ 
+         Returns
+         -------
+@@ -2075,6 +2169,7 @@ class App:
+                 "help_on_error": help_on_error,
+                 "verbose": verbose,
+                 "end_of_options_delimiter": end_of_options_delimiter,
++                "fromfile_prefix_chars": fromfile_prefix_chars,
+                 "error_formatter": error_formatter,
+             }.items()
+             if v is not None
+@@ -2103,7 +2198,7 @@ class App:
+         Must be called inside an :attr:`app_stack` context so error settings resolve.
+         """
+         try:
+-            return normalize_tokens(tokens)
++            return self._expand_fromfile_args(normalize_tokens(tokens))
+         except CycloptsError as e:
+             self._handle_parse_error(e, [])
+ 
+@@ -2147,6 +2242,7 @@ class App:
+         help_on_error: bool | None = None,
+         verbose: bool | None = None,
+         end_of_options_delimiter: str | None = None,
++        fromfile_prefix_chars: str | None = None,
+         backend: Literal["asyncio", "trio"] | None = None,
+         result_action: ResultAction | None = None,
+         error_formatter: Callable[["CycloptsError"], Any] | None = None,
+@@ -2181,6 +2277,9 @@ class App:
+             All tokens after this delimiter will be force-interpreted as positional arguments.
+             If :obj:`None`, inherits from :attr:`App.end_of_options_delimiter`, eventually defaulting to POSIX-standard ``"--"``.
+             Set to an empty string to disable.
++        fromfile_prefix_chars: str | None
++            Characters that prefix argument files.
++            If :obj:`None`, inherits from :attr:`App.fromfile_prefix_chars`.
+         backend: Literal["asyncio", "trio"] | None
+             Override the async backend to use (if an async command is invoked).
+             If :obj:`None`, inherits from :attr:`App.backend`, eventually defaulting to "asyncio".
+@@ -2208,6 +2307,7 @@ class App:
+                 "exit_on_error": exit_on_error,
+                 "help_on_error": help_on_error,
+                 "verbose": verbose,
++                "fromfile_prefix_chars": fromfile_prefix_chars,
+                 "backend": backend,
+                 "result_action": _result_action_converter(result_action),
+                 "error_formatter": error_formatter,
+@@ -2249,6 +2349,7 @@ class App:
+         help_on_error: bool | None = None,
+         verbose: bool | None = None,
+         end_of_options_delimiter: str | None = None,
++        fromfile_prefix_chars: str | None = None,
+         backend: Literal["asyncio", "trio"] | None = None,
+         result_action: ResultAction | None = None,
+         error_formatter: Callable[["CycloptsError"], Any] | None = None,
+@@ -2287,6 +2388,9 @@ class App:
+             All tokens after this delimiter will be force-interpreted as positional arguments.
+             If :obj:`None`, inherits from :attr:`App.end_of_options_delimiter`, eventually defaulting to POSIX-standard ``"--"``.
+             Set to an empty string to disable.
++        fromfile_prefix_chars: str | None
++            Characters that prefix argument files.
++            If :obj:`None`, inherits from :attr:`App.fromfile_prefix_chars`.
+         backend: Literal["asyncio", "trio"] | None
+             Override the async backend to use (if an async command is invoked).
+             If :obj:`None`, inherits from :attr:`App.backend`, eventually defaulting to "asyncio".
+@@ -2338,6 +2442,7 @@ class App:
+                 "exit_on_error": exit_on_error,
+                 "help_on_error": help_on_error,
+                 "verbose": verbose,
++                "fromfile_prefix_chars": fromfile_prefix_chars,
+                 "backend": backend,
+                 "result_action": _result_action_converter(result_action),
+                 "error_formatter": error_formatter,
+@@ -2391,7 +2496,7 @@ class App:
+         from cyclopts.help import format_doc, format_usage
+         from cyclopts.help.formatters import DefaultFormatter
+ 
+-        tokens = normalize_tokens(tokens)
++        tokens = self._expand_fromfile_args(normalize_tokens(tokens))
+ 
+         command_chain, apps, _ = self.parse_commands(tokens)
+         executing_app = apps[-1]
+diff --git a/cyclopts/exceptions.py b/cyclopts/exceptions.py
+index bae6d41..65c5c27 100644
+--- a/cyclopts/exceptions.py
++++ b/cyclopts/exceptions.py
+@@ -47,6 +47,7 @@ __all__ = [
+     "UnknownOptionError",
+     "UnusedCliTokensError",
+     "TokenizationError",
++    "ArgumentFileError",
+     "ValidationError",
+     "CombinedShortOptionError",
+     "STYLE_OFFENDING_VALUE",
+@@ -545,6 +546,11 @@ class TokenizationError(CycloptsError):
+     """A string of CLI tokens could not be split (e.g. unbalanced quotes)."""
+ 
+ 
++@define(kw_only=True)
++class ArgumentFileError(CycloptsError):
++    """An argument file could not be read or contains a recursive reference."""
++
++
+ @define(kw_only=True)
+ class UnusedCliTokensError(CycloptsError):
+     """Not all CLI tokens were used as expected."""
+diff --git a/docs/source/api.rst b/docs/source/api.rst
+index 1c4a6c1..440c17c 100644
+--- a/docs/source/api.rst
++++ b/docs/source/api.rst
+@@ -581,6 +581,20 @@ API
+       If not set, attempts to inherit from parenting :class:`.App`, eventually defaulting to POSIX-standard ``"--"``.
+       Set to an empty string to disable.
+ 
++   .. attribute:: fromfile_prefix_chars
++      :type: Optional[str]
++      :value: None
++
++      Characters that prefix argument files, following :mod:`argparse`'s
++      ``fromfile_prefix_chars`` behavior.  For example, with
++      ``App(fromfile_prefix_chars="@")``, a token like ``@run.args`` is replaced
++      by the arguments read from ``run.args``.  Each line is one argument by
++      default, and file references may be nested.
++
++      Override :meth:`App.convert_arg_line_to_args` (or pass a callable with the
++      same name to the :class:`App` constructor) to customize how lines are
++      converted into arguments.  Set to an empty string to disable.
++
+    .. attribute:: parse_mode
+       :type: Optional[Literal["fallthrough", "strict"]]
+       :value: None

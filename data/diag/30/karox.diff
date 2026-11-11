@@ -1,0 +1,29 @@
+diff --git a/virtualizarr/manifests/store.py b/virtualizarr/manifests/store.py
+index dbbcc4f..9d6fe86 100644
+--- a/virtualizarr/manifests/store.py
++++ b/virtualizarr/manifests/store.py
+@@ -404,15 +404,15 @@ def _warn_about_oversized_virtual_chunks(vds: "xr.Dataset") -> None:
+     loaded (no longer backed by a ManifestArray) are unaffected and not warned
+     about.
+     """
+-    oversized = [
+-        name
+-        for name, var in vds.variables.items()
+-        if isinstance(var.data, ManifestArray)
+-        and any(
+-            c > s
+-            for c, s in zip(manifest_chunk_shape(var.data.metadata), var.data.shape)
+-        )
+-    ]
++    oversized = []
++    for name, var in vds.variables.items():
++        # access the underlying array directly instead of via `var.data`, as the
++        # latter would eagerly load any lazily-loaded (loadable) variable
++        data = var._data
++        if isinstance(data, ManifestArray) and any(
++            c > s for c, s in zip(manifest_chunk_shape(data.metadata), data.shape)
++        ):
++            oversized.append(name)
+     if oversized:
+         warnings.warn(
+             f"Variable(s) {oversized} have a chunk shape larger than their array "

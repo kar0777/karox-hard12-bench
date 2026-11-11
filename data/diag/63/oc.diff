@@ -1,0 +1,208 @@
+diff --git a/test/grid/geometry/test_small_angle_accuracy.py b/test/grid/geometry/test_small_angle_accuracy.py
+new file mode 100644
+index 0000000..f0c075e
+--- /dev/null
++++ b/test/grid/geometry/test_small_angle_accuracy.py
+@@ -0,0 +1,107 @@
++"""Accuracy tests for ``uxarray.grid.utils._small_angle_of_2_vectors``.
++
++The function must return the unsigned angle in ``[0, pi]`` and remain accurate
++for nearly parallel vectors, where forming the vector difference in Kahan's
++formula from separately rounded products loses all significant bits.
++"""
++
++import math
++from fractions import Fraction
++
++import numpy as np
++import pytest
++
++from uxarray.grid.utils import _small_angle_of_2_vectors
++
++
++def _exact_angle(u, v):
++    """Angle between the float64 inputs ``u`` and ``v``, via exact rationals."""
++    ux, uy, uz = (Fraction(float(c)) for c in u)
++    vx, vy, vz = (Fraction(float(c)) for c in v)
++    cx = uy * vz - uz * vy
++    cy = uz * vx - ux * vz
++    cz = ux * vy - uy * vx
++    dot = ux * vx + uy * vy + uz * vz
++    cross_sq = cx * cx + cy * cy + cz * cz
++    return math.atan2(math.sqrt(float(cross_sq)), float(dot))
++
++
++def _unit(v):
++    return v / np.linalg.norm(v)
++
++
++def _random_pair(rng, theta):
++    """Two nearly parallel vectors of different lengths, separated by ~theta."""
++    a = _unit(rng.standard_normal(3))
++    axis = _unit(rng.standard_normal(3))
++    axis -= np.dot(axis, a) * a
++    axis = _unit(axis)
++    b = math.cos(theta) * a + math.sin(theta) * axis
++    u = 10.0 ** rng.uniform(-2.0, 2.0) * a
++    v = 10.0 ** rng.uniform(-2.0, 2.0) * b
++    return u, v
++
++
++def test_small_angle_mcve():
++    """The reported case: two nearly parallel vectors of different lengths."""
++    theta = 1e-9
++    u = np.array([3.7 * math.cos(0.4), 3.7 * math.sin(0.4), 0.0])
++    v = np.array(
++        [0.21 * math.cos(0.4 + theta), 0.21 * math.sin(0.4 + theta), 0.0]
++    )
++
++    exact = _exact_angle(u, v)
++    got = _small_angle_of_2_vectors(u, v)
++
++    assert abs(got - exact) / exact < 1e-15
++
++
++@pytest.mark.parametrize(
++    "theta, mean_tol",
++    [
++        (1e-5, 1e-15),
++        (1e-7, 1e-15),
++        (1e-9, 1e-13),
++    ],
++)
++def test_small_angle_accuracy(theta, mean_tol):
++    """Mean relative error must stay at the level claimed in the issue.
++
++    The naive difference of products gives ~eps/theta (2.5e-12, 2.4e-10 and
++    2.1e-8 at these angles); the compensated evaluation stays near machine
++    precision down to 1e-7 rad.
++    """
++    rng = np.random.default_rng(20261111)
++    errors = []
++    for _ in range(200):
++        u, v = _random_pair(rng, theta)
++        exact = _exact_angle(u, v)
++        if exact == 0.0:
++            continue
++        errors.append(abs(_small_angle_of_2_vectors(u, v) - exact) / exact)
++
++    assert errors
++    assert np.mean(errors) < mean_tol
++
++
++@pytest.mark.parametrize(
++    "u, v, expected",
++    [
++        ((1.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.0),
++        ((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), 0.0),
++        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), np.pi / 2),
++        ((1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), np.pi),
++        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.0),
++        ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0),
++    ],
++)
++def test_small_angle_edge_cases(u, v, expected):
++    assert np.isclose(_small_angle_of_2_vectors(u, v), expected, rtol=0, atol=1e-15)
++
++
++def test_small_angle_symmetric():
++    rng = np.random.default_rng(7)
++    for _ in range(100):
++        u = rng.standard_normal(3)
++        v = rng.standard_normal(3)
++        assert _small_angle_of_2_vectors(u, v) == _small_angle_of_2_vectors(v, u)
+diff --git a/uxarray/grid/utils.py b/uxarray/grid/utils.py
+index ce50d98..0e55afd 100644
+--- a/uxarray/grid/utils.py
++++ b/uxarray/grid/utils.py
+@@ -3,13 +3,16 @@ import xarray as xr
+ from numba import njit, prange
+ 
+ from uxarray.constants import EDGE_NODE_SORT_THRESHOLD, INT_DTYPE, INT_FILL_VALUE
++from uxarray.utils.computing import (
++    _cdp4,
++    _sum_non_neg,
++    _sum_of_squares_c,
++    accucross,
++)
+ from uxarray.utils.numba_math import (
+-    _numba_add3,
+     _numba_cross3,
+     _numba_dot3,
+-    _numba_mul3_scalar,
+     _numba_norm3,
+-    _numba_sub3,
+ )
+ from uxarray.utils.parallel import parallel_njit
+ 
+@@ -17,7 +20,26 @@ from uxarray.utils.parallel import parallel_njit
+ @njit(cache=True)
+ def _small_angle_of_2_vectors(u, v):
+     """
+-    Compute the smallest angle between two vectors using the new _angle_of_2_vectors.
++    Compute the smallest angle between two vectors.
++
++    This is the numerically stable counterpart of ``_angle_of_2_vectors``: it
++    always returns the unsigned angle in ``[0, pi]`` and retains full relative
++    accuracy for nearly parallel vectors.
++
++    Kahan's formula,
++
++        angle = 2 * atan2(| |u| v - |v| u |, | |u| v + |v| u |),
++
++    is accurate in exact arithmetic but forming ``|u| v - |v| u`` from
++    separately rounded products loses all significant bits when ``u`` and
++    ``v`` are nearly parallel. The algebraically equivalent form
++
++        angle = atan2(|u x v|, u . v)
++
++    avoids that cancellation: both the cross and dot products are computed
++    with compensated (``diff_of_products``-based) arithmetic, so a small
++    cross product is still accurate to a few ulps relative to its own
++    magnitude.
+ 
+     Parameters
+     ----------
+@@ -29,14 +51,35 @@ def _small_angle_of_2_vectors(u, v):
+     Returns
+     -------
+     float
+-        The smallest angle between `u` and `v` in radians.
++        The smallest angle between `u` and `v` in radians, in ``[0, pi]``.
+     """
+-    u_times_v_norm = _numba_mul3_scalar(v, _numba_norm3(u))
+-    v_times_u_norm = _numba_mul3_scalar(u, _numba_norm3(v))
+-    vec_minus = _numba_sub3(u_times_v_norm, v_times_u_norm)
+-    vec_sum = _numba_add3(u_times_v_norm, v_times_u_norm)
+-    angle_u_v_rad = 2 * np.arctan2(_numba_norm3(vec_minus), _numba_norm3(vec_sum))
+-    return angle_u_v_rad
++    # Promote to float64 so integer/float32 inputs share the same code path and
++    # the compensated primitives get homogeneous float tuples.
++    u0, u1, u2 = float(u[0]), float(u[1]), float(u[2])
++    v0, v1, v2 = float(v[0]), float(v[1]), float(v[2])
++
++    # Each cross-product component is a difference of two products, evaluated
++    # with Kahan's error-free transformation to avoid cancellation.
++    x_hi, y_hi, z_hi, x_lo, y_lo, z_lo = accucross(u0, u1, u2, v0, v1, v2)
++
++    # Compensated |u x v|^2. The low parts must be kept: for nearly parallel
++    # vectors they are large relative to the high parts. _sum_of_squares_c
++    # evaluates the expansion hi^2 + 2*hi*lo and treats lo^2 as negligible;
++    # that is not the case here, so add sum(lo^2) explicitly.
++    cross_sq_hi, cross_sq_lo = _sum_of_squares_c(
++        (x_hi, y_hi, z_hi), (x_lo, y_lo, z_lo)
++    )
++    lo_sq_hi, lo_sq_lo = _sum_of_squares_c((x_lo, y_lo, z_lo), (0.0, 0.0, 0.0))
++    cross_sq_hi, cross_sq_lo = _sum_non_neg(
++        cross_sq_hi, cross_sq_lo, lo_sq_hi, lo_sq_lo
++    )
++    cross_norm = np.sqrt(max(cross_sq_hi + cross_sq_lo, 0.0))
++
++    # Compensated u . v, using the 4-term dot-product primitive with a
++    # zero-valued fourth term.
++    dot_hi, dot_lo = _cdp4(u0, v0, u1, v1, u2, v2, 0.0, 0.0)
++
++    return np.arctan2(cross_norm, dot_hi + dot_lo)
+ 
+ 
+ @njit(cache=True)

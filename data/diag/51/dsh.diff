@@ -1,0 +1,126 @@
+diff --git a/scrapy/utils/curl.py b/scrapy/utils/curl.py
+index bc98fbe..7d367ba 100644
+--- a/scrapy/utils/curl.py
++++ b/scrapy/utils/curl.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ import argparse
+ import warnings
+ from http.cookies import SimpleCookie
+-from shlex import split
++from shlex import quote, split
+ from typing import TYPE_CHECKING, Any, NoReturn
+ from urllib.parse import urlparse
+ 
+@@ -94,8 +94,93 @@ def _parse_headers_and_cookies(
+     return headers, cookies
+ 
+ 
++_ANSI_C_ESCAPES = {
++    "a": "\a",
++    "b": "\b",
++    "e": "\x1b",
++    "E": "\x1b",
++    "f": "\f",
++    "n": "\n",
++    "r": "\r",
++    "t": "\t",
++    "v": "\v",
++    "\\": "\\",
++    "'": "'",
++    '"': '"',
++    "?": "?",
++}
++
++_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
++_OCTAL_DIGITS = frozenset("01234567")
++
++
++def _decode_ansi_c_escape(value: str, index: int) -> tuple[str, int]:
++    """Decode one escape sequence and return it with the next index."""
++    escape = value[index]
++    if escape in _ANSI_C_ESCAPES:
++        return _ANSI_C_ESCAPES[escape], index + 1
++    if escape in _OCTAL_DIGITS:
++        end = index + 1
++        while end < len(value) and end < index + 3 and value[end] in _OCTAL_DIGITS:
++            end += 1
++        return chr(int(value[index:end], 8) & 0xFF), end
++    if escape in ("x", "u", "U"):
++        max_digits = {"x": 2, "u": 4, "U": 8}[escape]
++        end = index + 1
++        while (
++            end < len(value)
++            and end < index + 1 + max_digits
++            and value[end] in _HEX_DIGITS
++        ):
++            end += 1
++        if end == index + 1:
++            return f"\\{escape}", index + 1
++        return chr(int(value[index + 1 : end], 16)), end
++    if escape == "c":
++        index += 1
++        if index == len(value):
++            return "\\c", index
++        control = value[index]
++        if control == "?":
++            return "\x7f", index + 1
++        return chr(ord(control.upper()) & 0x1F), index + 1
++    return "\\" + escape, index + 1
++
++
++def _decode_ansi_c_string(value: str) -> str:
++    """Decode the contents of a Bash ANSI-C quoted string."""
++    result: list[str] = []
++    i = 0
++    while i < len(value):
++        if value[i] != "\\":
++            result.append(value[i])
++            i += 1
++            continue
++
++        i += 1
++        if i == len(value):
++            result.append("\\")
++            break
++        decoded, i = _decode_ansi_c_escape(value, i)
++        result.append(decoded)
++    return "".join(result)
++
++
++def _find_ansi_c_quote_end(curl_command: str, start: int) -> int | None:
++    """Return the index of the closing quote of a Bash ANSI-C string."""
++    i = start
++    while i < len(curl_command):
++        if curl_command[i] == "\\":
++            i += 2
++        elif curl_command[i] == "'":
++            return i
++        else:
++            i += 1
++    return None
++
++
+ def _normalize_curl_command(curl_command: str) -> str:
+-    """Normalize Bash ANSI-C quote prefixes for shlex."""
++    """Normalize Bash ANSI-C quoted strings for shlex."""
+     result: list[str] = []
+     in_single_quote = False
+     in_double_quote = False
+@@ -124,9 +209,14 @@ def _normalize_curl_command(curl_command: str) -> str:
+             and not in_single_quote
+             and not in_double_quote
+         ):
+-            result.append("'")
+-            in_single_quote = True
+-            i += 1
++            end = _find_ansi_c_quote_end(curl_command, i + 2)
++            if end is None:
++                result.append("'")
++                in_single_quote = True
++                i += 1
++            else:
++                result.append(quote(_decode_ansi_c_string(curl_command[i + 2 : end])))
++                i = end
+         else:
+             result.append(char)
+ 

@@ -1,0 +1,28 @@
+diff --git a/ninja/params/models.py b/ninja/params/models.py
+index 6f70203..eb62cdd 100644
+--- a/ninja/params/models.py
++++ b/ninja/params/models.py
+@@ -70,9 +70,22 @@ class ParamModel(BaseModel, ABC):
+ 
+         mapped_data: DictStrAny = {}
+         for key, path in flatten_map.items():
+-            cls._map_data_path(mapped_data, data.get(key), path)
++            value = data.get(key)
++            if value is None and not cls._is_required_param(path[0]):
++                # nothing was sent for this param - keep it out of the data
++                # so that the declared default (e.g. None) is used
++                continue
++            cls._map_data_path(mapped_data, value, path)
+         return mapped_data
+ 
++    @classmethod
++    def _is_required_param(cls, name: str) -> bool:
++        "Whether the param has no default and so has to be provided by the request"
++        for field_name, field in cls.model_fields.items():
++            if name in (field_name, field.alias):
++                return field.is_required()
++        return False  # pragma: no cover
++
+     @classmethod
+     def _map_data_path(
+         cls, data: DictStrAny, value: Any, path: Tuple[str, ...]

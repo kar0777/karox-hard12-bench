@@ -1,0 +1,42 @@
+diff --git a/ninja/params/models.py b/ninja/params/models.py
+index 6f70203..e1836cb 100644
+--- a/ninja/params/models.py
++++ b/ninja/params/models.py
+@@ -70,18 +70,34 @@ class ParamModel(BaseModel, ABC):
+ 
+         mapped_data: DictStrAny = {}
+         for key, path in flatten_map.items():
+-            cls._map_data_path(mapped_data, data.get(key), path)
++            value = data.get(key)
++            if value is None:
++                # Do not create an empty dict for an optional schema parameter -
++                # otherwise its default (e.g. None) would be replaced by an
++                # instance built from the schema's field defaults.
++                if len(path) > 1 and cls._is_required_field(path[0]):
++                    mapped_data.setdefault(path[0], {})
++                continue
++            cls._map_data_path(mapped_data, value, path)
+         return mapped_data
+ 
++    @classmethod
++    def _is_required_field(cls, key: str) -> bool:
++        for name, field in cls.model_fields.items():
++            if key in (name, field.alias):
++                return field.is_required()
++        return False  # pragma: no cover
++
+     @classmethod
+     def _map_data_path(
+         cls, data: DictStrAny, value: Any, path: Tuple[str, ...]
+     ) -> None:
++        if value is None:
++            return
+         current = data
+         for key in path[:-1]:
+             current = current.setdefault(key, {})
+-        if value is not None:
+-            current[path[-1]] = value
++        current[path[-1]] = value
+ 
+ 
+ class QueryModel(ParamModel):

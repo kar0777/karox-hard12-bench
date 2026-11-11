@@ -1,0 +1,334 @@
+diff --git a/cyclopts/_fromfile.py b/cyclopts/_fromfile.py
+new file mode 100644
+index 0000000..5be5b15
+--- /dev/null
++++ b/cyclopts/_fromfile.py
+@@ -0,0 +1,85 @@
++"""Support for expanding ``@file`` arguments, inspired by :mod:`argparse`."""
++
++from collections.abc import Callable, Iterable
++from pathlib import Path
++
++from cyclopts.exceptions import CycloptsError
++
++
++def default_convert_arg_line_to_args(arg_line: str) -> list[str]:
++    """Convert a single line from an argument file into CLI tokens.
++
++    The default mirrors :meth:`argparse.ArgumentParser.convert_arg_line_to_args`:
++    every line is treated as exactly one argument.
++    """
++    return [arg_line]
++
++
++def expand_args_from_files(
++    args: Iterable[str],
++    prefix_chars: str | None,
++    convert_arg_line_to_args: Callable[[str], Iterable[str]] | None = None,
++) -> list[str]:
++    """Recursively expand arguments that reference files.
++
++    Parameters
++    ----------
++    args:
++        CLI tokens to expand.
++    prefix_chars:
++        Characters that mark the following token as an argument-file path.
++        If empty or :obj:`None`, no expansion is performed.
++    convert_arg_line_to_args:
++        Callable that converts one line from an argument file into zero or
++        more CLI tokens.
++
++    Returns
++    -------
++    list[str]
++        The expanded CLI tokens.
++    """
++    if not prefix_chars:
++        return list(args)
++
++    if convert_arg_line_to_args is None:
++        convert_arg_line_to_args = default_convert_arg_line_to_args
++
++    return _expand_args_from_files(args, prefix_chars, convert_arg_line_to_args)
++
++
++def _expand_args_from_files(
++    args: Iterable[str],
++    prefix_chars: str,
++    convert_arg_line_to_args: Callable[[str], Iterable[str]],
++    seen_paths: tuple[Path, ...] = (),
++) -> list[str]:
++    expanded: list[str] = []
++    for arg in args:
++        if not arg or arg[0] not in prefix_chars:
++            expanded.append(arg)
++            continue
++
++        path = Path(arg[1:])
++        try:
++            resolved_path = path.resolve()
++        except (OSError, RuntimeError):
++            resolved_path = path.absolute()
++
++        if resolved_path in seen_paths:
++            chain = " -> ".join(str(p) for p in (*seen_paths, resolved_path))
++            raise CycloptsError(msg=f"Recursive argument file reference detected: {chain}")
++
++        file_args: list[str] = []
++        for line in path.read_text(encoding="utf-8").splitlines():
++            file_args.extend(convert_arg_line_to_args(line))
++
++        expanded.extend(
++            _expand_args_from_files(
++                file_args,
++                prefix_chars,
++                convert_arg_line_to_args,
++                (*seen_paths, resolved_path),
++            )
++        )
++
++    return expanded
+diff --git a/cyclopts/core.py b/cyclopts/core.py
+index 5d12ec4..1916b8b 100644
+--- a/cyclopts/core.py
++++ b/cyclopts/core.py
+@@ -71,6 +71,7 @@ if TYPE_CHECKING:
+     from cyclopts.help import HelpPanel
+     from cyclopts.help.protocols import HelpFormatter
+ 
++from cyclopts._fromfile import default_convert_arg_line_to_args, expand_args_from_files
+ from cyclopts._result_action import ResultAction, ResultActionSingle, validate_result_action
+ from cyclopts._run import _run_maybe_async_command
+ 
+@@ -163,6 +164,10 @@ def _apply_parent_defaults_to_app(app: "App", parent_app: "App") -> None:
+         app.version = parent_app.version
+     if app.parse_mode is None and parent_app.parse_mode is not None:
+         app.parse_mode = parent_app.parse_mode
++    if app.fromfile_prefix_chars is None and parent_app.fromfile_prefix_chars is not None:
++        app.fromfile_prefix_chars = parent_app.fromfile_prefix_chars
++    if app._convert_arg_line_to_args is None and parent_app._convert_arg_line_to_args is not None:
++        app._convert_arg_line_to_args = parent_app._convert_arg_line_to_args
+ 
+ 
+ def _apply_parent_groups_to_kwargs(kwargs: dict[str, Any], parent_app: "App") -> None:
+@@ -506,6 +511,21 @@ class App:
+ 
+     end_of_options_delimiter: str | None = field(default=None, kw_only=True)
+ 
++    fromfile_prefix_chars: str | None = field(default=None, kw_only=True)
++    """Characters that indicate the following token is an argument-file path.
++
++    When set, tokens beginning with one of these characters are replaced by
++    the contents of the referenced file. For example, ``fromfile_prefix_chars="@"``
++    enables ``@run.args``. Each file line is treated as one argument by default;
++    see :attr:`convert_arg_line_to_args` to customize line conversion.
++    """
++
++    _convert_arg_line_to_args: Callable[[str], Iterable[str]] | None = field(
++        default=None,
++        alias="convert_arg_line_to_args",
++        kw_only=True,
++    )
++
+     parse_mode: Literal["fallthrough", "strict"] | None = field(
+         default=None,
+         kw_only=True,
+@@ -1245,7 +1265,7 @@ class App:
+             The remaining non-command tokens.
+         """
+         command_chain, apps, unused_tokens, _, _ = self._parse_commands(
+-            normalize_tokens(tokens),
++            self._expand_args_from_files(normalize_tokens(tokens)),
+             include_parent_meta=include_parent_meta,
+         )
+         return command_chain, apps, unused_tokens
+@@ -1727,7 +1747,7 @@ class App:
+         if tokens is None:
+             _log_framework_warning(_detect_test_framework())
+ 
+-        tokens = normalize_tokens(tokens)
++        tokens = self._expand_args_from_files(normalize_tokens(tokens))
+ 
+         # Reserved command: the generated shell-completion script calls back into
+         # the application as ``<prog> __complete <words...>`` to obtain dynamic
+@@ -2097,13 +2117,58 @@ class App:
+ 
+         return command, bound, ignored
+ 
++    @property
++    def convert_arg_line_to_args(self) -> Callable[[str], Iterable[str]]:
++        """Convert one line from an argument file into CLI tokens.
++
++        This defaults to treating each line as exactly one argument, matching
++        :meth:`argparse.ArgumentParser.convert_arg_line_to_args`. Pass a callable
++        via the ``convert_arg_line_to_args`` constructor argument, assign one to
++        this attribute, or override this method in an :class:`App` subclass.
++        """
++        if self._convert_arg_line_to_args is None:
++            return default_convert_arg_line_to_args
++        return self._convert_arg_line_to_args
++
++    @convert_arg_line_to_args.setter
++    def convert_arg_line_to_args(self, value: Callable[[str], Iterable[str]] | None) -> None:
++        self._convert_arg_line_to_args = value
++
++    def _get_convert_arg_line_to_args(self) -> Callable[[str], Iterable[str]]:
++        """Resolve the argument-line converter from the current app hierarchy."""
++
++        def is_default(converter: Callable[[str], Iterable[str]]) -> bool:
++            return converter is default_convert_arg_line_to_args or (
++                getattr(converter, "__func__", None) is default_convert_arg_line_to_args
++            )
++
++        for app in reversed(self.app_stack.current_frame):
++            converter = app.convert_arg_line_to_args
++            if not is_default(converter):
++                return converter
++
++            meta_app = app
++            while (meta_app := meta_app._meta_parent) is not None:
++                converter = meta_app.convert_arg_line_to_args
++                if not is_default(converter):
++                    return converter
++
++        return default_convert_arg_line_to_args
++
++    def _expand_args_from_files(self, tokens: Iterable[str]) -> list[str]:
++        """Expand argument-file references using the current app hierarchy."""
++        prefix_chars = self.app_stack.resolve("fromfile_prefix_chars")
++        if not prefix_chars:
++            return list(tokens)
++        return expand_args_from_files(tokens, prefix_chars, self._get_convert_arg_line_to_args())
++
+     def _normalize_tokens(self, tokens: None | str | Iterable[str]) -> list[str]:
+         """Tokenize ``tokens``, reporting a failure like any other parse error.
+ 
+         Must be called inside an :attr:`app_stack` context so error settings resolve.
+         """
+         try:
+-            return normalize_tokens(tokens)
++            return self._expand_args_from_files(normalize_tokens(tokens))
+         except CycloptsError as e:
+             self._handle_parse_error(e, [])
+ 
+diff --git a/docs/source/api.rst b/docs/source/api.rst
+index 1c4a6c1..f2ef1c3 100644
+--- a/docs/source/api.rst
++++ b/docs/source/api.rst
+@@ -581,6 +581,29 @@ API
+       If not set, attempts to inherit from parenting :class:`.App`, eventually defaulting to POSIX-standard ``"--"``.
+       Set to an empty string to disable.
+ 
++   .. attribute:: fromfile_prefix_chars
++      :type: Optional[str]
++      :value: None
++
++      Characters that indicate the following token is an argument-file path.
++      When set, tokens beginning with one of these characters are replaced by
++      the contents of the referenced file. For example,
++      ``fromfile_prefix_chars="@"`` enables ``@run.args``.
++      Argument files may reference other argument files recursively.
++      If not set, argument-file expansion is disabled.
++      See :ref:`Argument Files` for more details.
++
++   .. attribute:: convert_arg_line_to_args
++      :type: Optional[Callable[[str], Iterable[str]]]
++      :value: None
++
++      A callable that converts one line from an argument file into CLI tokens.
++      If not set, each line is treated as exactly one argument, matching
++      :meth:`argparse.ArgumentParser.convert_arg_line_to_args`.
++      This callable may also be customized by assigning to the
++      :attr:`App.convert_arg_line_to_args` attribute or by overriding it in an
++      :class:`App` subclass.
++
+    .. attribute:: parse_mode
+       :type: Optional[Literal["fallthrough", "strict"]]
+       :value: None
+diff --git a/docs/source/argument_files.rst b/docs/source/argument_files.rst
+new file mode 100644
+index 0000000..5e91933
+--- /dev/null
++++ b/docs/source/argument_files.rst
+@@ -0,0 +1,68 @@
++.. _Argument Files:
++
++==============
++Argument Files
++==============
++
++Cyclopts can expand arguments from files, similar to :mod:`argparse`'s
++``fromfile_prefix_chars``, GCC's ``@file``, and Java's ``@argfile``.
++Enable the feature by specifying one or more prefix characters:
++
++.. code-block:: python
++
++   from cyclopts import App
++
++   app = App(fromfile_prefix_chars="@")
++
++
++   @app.command
++   def run(*, workers: int = 1):
++       print(f"Running with {workers} workers.")
++
++
++   app()
++
++A token beginning with a configured prefix character is replaced, in place, by
++the arguments read from the file named after the prefix. For example, the
++following file:
++
++.. code-block:: text
++
++   run
++   --workers
++   16
++
++can be used from the command line as:
++
++.. code-block:: console
++
++   $ my-script @run.args
++   Running with 16 workers.
++
++By default, each line of the file is treated as exactly one argument. Argument
++files may reference other argument files, and those references are expanded
++recursively. Lines are read using UTF-8 encoding.
++
++Custom line conversion
++----------------------
++Pass a ``convert_arg_line_to_args`` callable to split lines or otherwise
++transform them before parsing. The callable receives one line and must return
++an iterable of argument strings.
++
++.. code-block:: python
++
++   import shlex
++
++   app = App(
++       fromfile_prefix_chars="@",
++       convert_arg_line_to_args=shlex.split,
++   )
++
++You can also assign a converter after construction, or override the
++:meth:`App.convert_arg_line_to_args` method in an :class:`App` subclass. The
++default implementation is equivalent to:
++
++.. code-block:: python
++
++   def convert_arg_line_to_args(line: str) -> list[str]:
++       return [line]
+diff --git a/docs/source/index.rst b/docs/source/index.rst
+index 423976a..44523b7 100644
+--- a/docs/source/index.rst
++++ b/docs/source/index.rst
+@@ -38,6 +38,7 @@ For extensive documentation on all the features Cyclopts has to offer, checkout
+    help_customization.rst
+    user_classes.rst
+    args_and_kwargs.rst
++   argument_files.rst
+    config_file.rst
+    sphinx_integration.rst
+    mkdocs_integration.rst

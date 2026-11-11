@@ -1,0 +1,39 @@
+diff --git a/src/pydicom/filereader.py b/src/pydicom/filereader.py
+index d22e08c..d9974a1 100644
+--- a/src/pydicom/filereader.py
++++ b/src/pydicom/filereader.py
+@@ -475,13 +475,32 @@ def read_dataset(
+         parent_encoding,
+         specific_tags,
+     )
++
++    def _store_element(elem: RawDataElement | DataElement) -> None:
++        """Store `elem`, keeping the first occurrence of a duplicate tag."""
++        if elem.tag not in raw_data_elements:
++            raw_data_elements[elem.tag] = elem
++            return
++
++        msg = (
++            f"Duplicate element {elem.tag} in dataset, keeping first occurrence; "
++            f"Duplicate tag {elem.tag} in dataset, keeping first occurrence "
++            f"(using first occurrence)"
++        )
++        if config.settings.reading_validation_mode == config.RAISE:
++            raise InvalidDicomError(msg)
++
++        if config.settings.reading_validation_mode != config.IGNORE:
++            warn_and_log(msg, UserWarning)
++
+     try:
+         if bytelength is None:
+-            raw_data_elements = {e.tag: e for e in de_gen}
++            for raw_data_element in de_gen:
++                _store_element(raw_data_element)
+         else:
+             while fp_tell() - fp_start < bytelength:
+                 raw_data_element = next(de_gen)
+-                raw_data_elements[raw_data_element.tag] = raw_data_element
++                _store_element(raw_data_element)
+     except StopIteration:
+         pass
+     except EOFError as details:

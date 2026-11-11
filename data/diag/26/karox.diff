@@ -1,0 +1,321 @@
+diff --git a/.github/pull_request_template.md b/.github/pull_request_template.md
+index 0aa4b88..b41fa01 100644
+--- a/.github/pull_request_template.md
++++ b/.github/pull_request_template.md
+@@ -38,7 +38,7 @@ Please ensure that you have done the following:
+ 
+ 1. [ ] PR in from a fork off your branch. Do not PR from `<your_username>`:`dev`, but rather from `<your_username>`:`<feature-branch_name>`.
+ <!-- Doing this helps us keep the commit history much cleaner than it would otherwise be. -->
+-2. [ ] Add a line to `CHANGELOG.md` under the latest version header (i.e. the one that is "on deck") describing the contribution.
++2. [ ] Add a line to `CHANGELOG.md` under the `## [Unreleased]` heading describing the contribution.
+     - Do use some discretion here; if there are multiple PRs that are related, keep them in a single line.
+ <!-- Contributor recognition is automatic: the `update-contributors` workflow scans
+      commit authors and updates the all-contributors table in README.md, so you
+diff --git a/.github/workflows/changelog.yml b/.github/workflows/changelog.yml
+new file mode 100644
+index 0000000..59683f4
+--- /dev/null
++++ b/.github/workflows/changelog.yml
+@@ -0,0 +1,59 @@
++name: Changelog placement
++
++on:
++  # Pull requests must only add entries under the "## [Unreleased]" heading.
++  pull_request:
++    branches:
++      - dev
++    paths:
++      - "CHANGELOG.md"
++  # A release can rotate the pending entries while a PR is still open.
++  # The merge commit then files that PR entry under the new version, so the
++  # same check runs against the previous dev commit after the merge.
++  push:
++    branches:
++      - dev
++    paths:
++      - "CHANGELOG.md"
++
++permissions:
++  contents: read
++
++concurrency:
++  group: ${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  check-changelog:
++    name: Guard changelog placement
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v7
++        with:
++          fetch-depth: 0
++
++      - name: Setup Python
++        uses: actions/setup-python@v7
++        with:
++          python-version: 3.13
++
++      - name: Compare changelog with the base revision
++        env:
++          EVENT_NAME: ${{ github.event_name }}
++          BASE_REF: ${{ github.event.pull_request.base.ref }}
++          BEFORE_SHA: ${{ github.event.before }}
++        run: |
++          set -euo pipefail
++          if [[ "$EVENT_NAME" == "pull_request" ]]; then
++            git fetch --no-tags origin "$BASE_REF"
++            compare_ref="origin/$BASE_REF"
++          else
++            compare_ref="$BEFORE_SHA"
++            if [[ -z "$compare_ref" || "$compare_ref" =~ ^0+$ ]]; then
++              echo "No previous dev commit to compare against."
++              exit 0
++            fi
++          fi
++          python scripts/update_changelog.py --check --base-ref "$compare_ref"
+diff --git a/AGENTS.md b/AGENTS.md
+index 692b52a..9bc5b99 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -801,6 +801,20 @@ must preserve the existing changelog spacing conventions.
+ entries, use the repository's three-space list marker style, and keep a blank
+ line between comparison-link definitions.
+ 
++### [2026-10-26] Changelog placement checks compare entry text
++
++**Context**: Guarding against entries that a clean merge files under a
++released version heading instead of `## [Unreleased]`.
++**Learning**: The guard in `scripts/update_changelog.py --check` compares the
++set of entry texts between the base revision and the head revision instead of
++diffing line positions. Entries that already existed in the base revision are
++accepted, so release rotation, rebases, merge commits, and link updates do not
++cause false positives.
++**Recommendation**: Keep the check content-based. Exempt release-generated
++content (the empty-release placeholder and comparison links) explicitly rather
++than skipping whole version sections, and run the check both on pull requests
++and on pushes to `dev`.
++
+ ## Version History
+ 
+ - **2025-12-19**: Initial comprehensive AGENTS.md with self-improvement protocol
+diff --git a/mkdocs/development/auto_releases.md b/mkdocs/development/auto_releases.md
+index 8a02ed6..9716ea5 100644
+--- a/mkdocs/development/auto_releases.md
++++ b/mkdocs/development/auto_releases.md
+@@ -52,6 +52,32 @@ When code is merged to the `dev` branch, the following sequence occurs:
+ The entire process is hands-off after merging.
+ Maintainers don't need to do anything for patch releases.
+ 
++## Guarding changelog placement
++
++A release can rotate the pending `## [Unreleased]` entries into a version
++section while a pull request is still open.
++When that pull request merges, Git can apply its changelog hunk cleanly
++and file the new entry under the freshly released version
++instead of under `## [Unreleased]`.
++
++The `Changelog placement` workflow prevents that by running
++`scripts/update_changelog.py --check` on every pull request that touches
++`CHANGELOG.md`, and again on `dev` after each merge.
++The check compares entries by their text rather than by line position:
++
++- An entry is reported when it does not appear in the base revision
++  and is not filed under `## [Unreleased]`.
++- Entries that already existed in the base revision are accepted,
++  so the release rotation that moves them under a version heading passes.
++- Comparison link updates and the empty-release placeholder are ignored.
++- Because the comparison is content-based, rebases, merge commits,
++  and reordered entries do not produce false positives.
++
++To fix a failure, move the reported entry lines under `## [Unreleased]`
++and push again.
++If an entry was genuinely released in the version it is filed under,
++no change is needed once the base revision contains that entry.
++
+ ## Manual releases for minor and major versions
+ 
+ When a change warrants a minor or major version bump,
+diff --git a/scripts/update_changelog.py b/scripts/update_changelog.py
+index e03db3b..6ee39aa 100644
+--- a/scripts/update_changelog.py
++++ b/scripts/update_changelog.py
+@@ -4,12 +4,20 @@ from __future__ import annotations
+ 
+ import argparse
+ import re
++import subprocess
++from collections.abc import Iterator
+ from datetime import date
+ from pathlib import Path
+ 
+ _UNRELEASED = re.compile(r"^## \[Unreleased\]\s*$", re.MULTILINE)
+ _SECTION = re.compile(r"^## \[.+?\].*$", re.MULTILINE)
+ _UNRELEASED_LINK = re.compile(r"^\[Unreleased\]: (?P<url>\S+)[ \t]*$", re.MULTILINE)
++_ENTRY = re.compile(r"^[-*+][ \t]+(?P<text>\S.*)$")
++_CONTINUATION = re.compile(r"^[ \t]+\S")
++
++EMPTY_RELEASE_PLACEHOLDER = (
++    "-   No user-facing changes; see the generated release notes."
++)
+ 
+ 
+ def rotate_changelog(
+@@ -42,7 +50,7 @@ def rotate_changelog(
+     body_end = next_section.start() if next_section else len(text)
+     body = text[unreleased.end() : body_end].strip("\n")
+     if not body.strip():
+-        body = "-   No user-facing changes; see the generated release notes."
++        body = EMPTY_RELEASE_PLACEHOLDER
+ 
+     replacement = f"## [Unreleased]\n\n{version_heading}\n"
+     replacement += f"\n{body}\n\n"
+@@ -80,15 +88,145 @@ def _latest_version_from_url(url: str) -> str:
+     return match.group(1)
+ 
+ 
++def _iter_entries(text: str) -> Iterator[tuple[str | None, str]]:
++    """Yield the section heading and text of every changelog entry."""
++
++    section = None
++    lines = text.splitlines()
++    index = 0
++    while index < len(lines):
++        line = lines[index]
++        index += 1
++        heading = _SECTION.match(line)
++        if heading is not None:
++            section = heading.group(0).strip()
++            continue
++        entry = _ENTRY.match(line)
++        if entry is None:
++            continue
++        parts = [entry["text"].strip()]
++        while index < len(lines) and _CONTINUATION.match(lines[index]):
++            parts.append(lines[index].strip())
++            index += 1
++        yield section, " ".join(parts)
++
++
++def _normalize(text: str) -> str:
++    """Collapse whitespace so reflowed entries still compare equal."""
++
++    return " ".join(text.split())
++
++
++def _entry_text(line: str) -> str:
++    """Return the entry text of a bullet line, without the bullet marker."""
++
++    match = _ENTRY.match(line)
++    return match["text"].strip() if match is not None else line.strip()
++
++
++def _is_unreleased(section: str | None) -> bool:
++    """Report whether a section heading is the ``[Unreleased]`` heading."""
++
++    return section is not None and section.startswith("## [Unreleased]")
++
++
++def find_misfiled_entries(base_text: str, head_text: str) -> list[str]:
++    """Find entries that were added outside the ``[Unreleased]`` section.
++
++    Comparing entry text against the base revision keeps the check stable
++    across rebases, merge commits, and reordering. Entries that already
++    existed in the base revision are not new, so a release rotation that
++    moves them under a version heading is not reported. Link definitions
++    and the empty-release placeholder are ignored as well.
++
++    Args:
++        base_text: Contents of the changelog at the base revision.
++        head_text: Contents of the changelog at the head revision.
++
++    Returns:
++        The text of each newly added entry that is not filed under
++        ``## [Unreleased]``, in changelog order.
++    """
++
++    known = {_normalize(text) for _, text in _iter_entries(base_text)}
++    known.add(_normalize(_entry_text(EMPTY_RELEASE_PLACEHOLDER)))
++
++    misfiled = []
++    for section, text in _iter_entries(head_text):
++        normalized = _normalize(text)
++        if _is_unreleased(section) or normalized in known:
++            continue
++        known.add(normalized)
++        misfiled.append(text)
++    return misfiled
++
++
++def check_changelog_update(base_text: str, head_text: str) -> None:
++    """Reject changelog entries that were added outside ``[Unreleased]``.
++
++    Args:
++        base_text: Contents of the changelog at the base revision.
++        head_text: Contents of the changelog at the head revision.
++
++    Raises:
++        ValueError: If any new entry is filed under a released version.
++    """
++
++    misfiled = find_misfiled_entries(base_text, head_text)
++    if not misfiled:
++        return
++    entries = "\n".join(f"  {entry}" for entry in misfiled)
++    raise ValueError(
++        "changelog entries must be added under '## [Unreleased]', but these "
++        f"entries were added elsewhere:\n{entries}"
++    )
++
++
++def _read_git_file(path: Path, ref: str) -> str:
++    """Read ``path`` as it exists at ``ref`` in the git repository."""
++
++    spec = f"{ref}:{path.as_posix()}"
++    result = subprocess.run(
++        ["git", "show", spec],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    if result.returncode != 0:
++        raise ValueError(
++            f"could not read {spec} for the changelog check: "
++            f"{result.stderr.strip()}"
++        )
++    return result.stdout
++
++
+ def main() -> None:
+     """Parse command-line arguments and rotate the requested changelog."""
+ 
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--path", type=Path, default=Path("CHANGELOG.md"))
+-    parser.add_argument("--version", required=True)
++    parser.add_argument("--version")
+     parser.add_argument("--date", default=date.today().isoformat())
+     parser.add_argument("--previous-version")
++    parser.add_argument(
++        "--check",
++        action="store_true",
++        help="verify that new entries are filed under '## [Unreleased]'",
++    )
++    parser.add_argument(
++        "--base-ref",
++        default="origin/dev",
++        help="git ref to compare against when running with --check",
++    )
+     args = parser.parse_args()
++    if args.check:
++        check_changelog_update(
++            _read_git_file(args.path, args.base_ref),
++            args.path.read_text(encoding="utf-8"),
++        )
++        return
++    if args.version is None:
++        parser.error("--version is required unless --check is passed")
+     rotate_changelog(
+         args.path,
+         args.version,

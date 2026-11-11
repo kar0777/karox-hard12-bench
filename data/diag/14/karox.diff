@@ -1,0 +1,315 @@
+diff --git a/src/a2a/server/agent_execution/active_task.py b/src/a2a/server/agent_execution/active_task.py
+index c5dcbb9..bd77056 100644
+--- a/src/a2a/server/agent_execution/active_task.py
++++ b/src/a2a/server/agent_execution/active_task.py
+@@ -461,7 +461,7 @@ class ActiveTask:
+       permanently ceased execution and closed its queues.
+     """
+ 
+-    def __init__(  # noqa: PLR0913
++    def __init__(  # noqa: PLR0913, PLR0917
+         self,
+         agent_executor: AgentExecutor,
+         task_id: str,
+diff --git a/src/a2a/server/cluster/database_event_stream.py b/src/a2a/server/cluster/database_event_stream.py
+index d77db19..44a2aec 100644
+--- a/src/a2a/server/cluster/database_event_stream.py
++++ b/src/a2a/server/cluster/database_event_stream.py
+@@ -25,6 +25,7 @@ except ImportError as e:
+ 
+ from a2a.server.cluster.event_stream import TaskEventStream, VersionedEvent
+ from a2a.server.cluster.version import TaskVersion
++from a2a.server.context import ServerCallContext
+ from a2a.server.events.event_queue import Event
+ from a2a.server.models import Base, TaskEventModel, create_task_event_model
+ from a2a.types.a2a_pb2 import StreamResponse
+@@ -99,9 +100,14 @@ class DatabaseTaskEventStream(TaskEventStream):
+         if not self._initialized:
+             await self.initialize()
+ 
+-    async def publish(self, task_id: str, event: VersionedEvent) -> None:
++    async def publish(
++        self,
++        task_id: str,
++        event: VersionedEvent,
++        context: ServerCallContext | None = None,
++    ) -> None:
+         """No-op: events are persisted transactionally by the task store."""
+-        del task_id, event
++        del task_id, event, context
+ 
+     async def _seq_at_or_before_version(
+         self, session: AsyncSession, task_id: str, after: TaskVersion
+@@ -124,9 +130,19 @@ class DatabaseTaskEventStream(TaskEventStream):
+         return result or 0
+ 
+     async def subscribe(  # type: ignore[override]
+-        self, task_id: str, *, after: TaskVersion
++        self,
++        task_id: str,
++        *,
++        after: TaskVersion,
++        context: ServerCallContext | None = None,
+     ) -> AsyncGenerator[VersionedEvent, None]:
+-        """Polls the log for events of `task_id` newer than `after`."""
++        """Polls the log for events of `task_id` newer than `after`.
++
++        `context` is accepted for parity with `TaskEventStream` but is not
++        used: the log is read by task id and sequence, and authorization is
++        enforced by the task store before subscribing.
++        """
++        del context
+         await self._ensure_initialized()
+         async with self._session_maker() as session:
+             cursor = await self._seq_at_or_before_version(
+@@ -176,6 +192,8 @@ class DatabaseTaskEventStream(TaskEventStream):
+             if not rows:
+                 await asyncio.sleep(self._poll_interval_s)
+ 
+-    async def destroy(self, task_id: str) -> None:
++    async def destroy(
++        self, task_id: str, context: ServerCallContext | None = None
++    ) -> None:
+         """No-op: the append-only log is retained; subscribers stop on their own."""
+-        del task_id
++        del task_id, context
+diff --git a/src/a2a/server/cluster/event_stream.py b/src/a2a/server/cluster/event_stream.py
+index d65838a..8ebbec7 100644
+--- a/src/a2a/server/cluster/event_stream.py
++++ b/src/a2a/server/cluster/event_stream.py
+@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
+ from dataclasses import dataclass
+ 
+ from a2a.server.cluster.version import TaskVersion
++from a2a.server.context import ServerCallContext
+ from a2a.server.events.event_queue import Event
+ 
+ 
+@@ -15,18 +16,36 @@ class VersionedEvent:
+ 
+ 
+ class TaskEventStream(ABC):
+-    """Delivers task events across replicas."""
++    """Delivers task events across replicas.
++
++    Every method accepts the caller's `ServerCallContext` when one is
++    available. The parameter is optional for source compatibility, but
++    implementations should accept it and may use it to select a backing
++    resource per caller, refresh credentials at a request boundary,
++    propagate auth downstream or start request-scoped tracing.
++    """
+ 
+     @abstractmethod
+-    async def publish(self, task_id: str, event: VersionedEvent) -> None:
++    async def publish(
++        self,
++        task_id: str,
++        event: VersionedEvent,
++        context: ServerCallContext | None = None,
++    ) -> None:
+         """Publishes one event for `task_id` to all replicas."""
+ 
+     @abstractmethod
+     def subscribe(
+-        self, task_id: str, *, after: TaskVersion
++        self,
++        task_id: str,
++        *,
++        after: TaskVersion,
++        context: ServerCallContext | None = None,
+     ) -> AsyncGenerator[VersionedEvent, None]:
+         """Yields events for `task_id` newer than `after`."""
+ 
+     @abstractmethod
+-    async def destroy(self, task_id: str) -> None:
++    async def destroy(
++        self, task_id: str, context: ServerCallContext | None = None
++    ) -> None:
+         """Releases resources for a task that has reached a terminal state."""
+diff --git a/src/a2a/server/request_handlers/default_request_handler_v2.py b/src/a2a/server/request_handlers/default_request_handler_v2.py
+index 9b24c79..5f56b89 100644
+--- a/src/a2a/server/request_handlers/default_request_handler_v2.py
++++ b/src/a2a/server/request_handlers/default_request_handler_v2.py
+@@ -116,7 +116,7 @@ class DefaultRequestHandlerV2(RequestHandler):
+ 
+     _background_tasks: set[asyncio.Task]
+ 
+-    def __init__(  # noqa: PLR0913
++    def __init__(  # noqa: PLR0913, PLR0917
+         self,
+         agent_executor: AgentExecutor,
+         task_store: TaskStore | VersionedTaskStore,
+diff --git a/src/a2a/server/tasks/base_push_notification_sender.py b/src/a2a/server/tasks/base_push_notification_sender.py
+index bade957..bafb133 100644
+--- a/src/a2a/server/tasks/base_push_notification_sender.py
++++ b/src/a2a/server/tasks/base_push_notification_sender.py
+@@ -43,12 +43,14 @@ class BasePushNotificationSender(PushNotificationSender):
+             httpx_client: An async HTTP client instance to send notifications.
+             config_store: A PushNotificationConfigStore instance to
+               retrieve configurations.
+-            context: Deprecated and ignored. Accepted only for
+-              backward compatibility with 1.0 callers that constructed
+-              the sender with a (typically dummy) ServerCallContext.
+-              Pass None (the default) in new code. A non-None
+-              value logs a deprecation warning and is otherwise
+-              ignored.
++            context: The `ServerCallContext` stored for the dispatch
++              path. Dispatch runs after the request that produced the
++              event has completed, so it cannot receive a live request
++              context; a value passed here is kept and handed to
++              `PushNotificationConfigStore.get_info_for_dispatch` so
++              implementations can select a backing resource per caller,
++              refresh credentials or propagate auth downstream. Defaults
++              to None (dispatch reads configs without a context).
+             push_url_validator: Async callable that returns True to
+               accept a push URL, or False to reject it. Defaults to
+               None (no library screening). The spec lists these checks
+@@ -60,17 +62,13 @@ class BasePushNotificationSender(PushNotificationSender):
+               independent of the manager passed to the request handler.
+         """
+         if context is not None:
+-            logger.warning(
+-                'BasePushNotificationSender no longer uses the context '
+-                'parameter; it is accepted only for backward compatibility '
+-                'with 1.0 and will be removed in a future major version. '
+-                'Push notifications now fan out across all owners via '
+-                'PushNotificationConfigStore.get_info_for_dispatch; the '
+-                'caller identity is not carried into dispatch. Drop the '
+-                'context argument from the constructor call.'
++            logger.debug(
++                'BasePushNotificationSender will use the provided '
++                'ServerCallContext for dispatch-path config reads.'
+             )
+         self._client = httpx_client
+         self._config_store = config_store
++        self._context = context
+         self._push_url_validator = push_url_validator
+         self._plugins = plugins if plugins is not None else get_global()
+ 
+@@ -83,9 +81,14 @@ class BasePushNotificationSender(PushNotificationSender):
+         to deliver a notification are logged and do not raise.
+         """
+         try:
+-            push_configs = await self._config_store.get_info_for_dispatch(
+-                task_id
+-            )
++            if self._context is not None:
++                push_configs = await self._config_store.get_info_for_dispatch(
++                    task_id, self._context
++                )
++            else:
++                push_configs = await self._config_store.get_info_for_dispatch(
++                    task_id
++                )
+         except Exception:
+             # Push delivery is best-effort: an infrastructure failure while
+             # reading the config store must not propagate into the task
+diff --git a/src/a2a/server/tasks/database_push_notification_config_store.py b/src/a2a/server/tasks/database_push_notification_config_store.py
+index ce59790..23d4a00 100644
+--- a/src/a2a/server/tasks/database_push_notification_config_store.py
++++ b/src/a2a/server/tasks/database_push_notification_config_store.py
+@@ -74,7 +74,7 @@ class DatabasePushNotificationConfigStore(PushNotificationConfigStore):
+         | None
+     )
+ 
+-    def __init__(  # noqa: PLR0913
++    def __init__(  # noqa: PLR0913, PLR0917
+         self,
+         engine: AsyncEngine,
+         create_table: bool = True,
+@@ -346,11 +346,15 @@ class DatabasePushNotificationConfigStore(PushNotificationConfigStore):
+     async def get_info_for_dispatch(
+         self,
+         task_id: str,
++        context: ServerCallContext | None = None,
+     ) -> list[TaskPushNotificationConfig]:
+         """Retrieves all push notification configurations for a task, across all owners.
+ 
+-        Used by the push-notification dispatch path.
++        Used by the push-notification dispatch path. `context` is accepted
++        for parity with the other store methods but does not scope the
++        query: dispatch fans out to every registered webhook.
+         """
++        del context
+         return await self._select_configs(
+             self.config_model.task_id == task_id,
+         )
+diff --git a/src/a2a/server/tasks/inmemory_push_notification_config_store.py b/src/a2a/server/tasks/inmemory_push_notification_config_store.py
+index 29cbcfc..a65b0e1 100644
+--- a/src/a2a/server/tasks/inmemory_push_notification_config_store.py
++++ b/src/a2a/server/tasks/inmemory_push_notification_config_store.py
+@@ -88,11 +88,15 @@ class InMemoryPushNotificationConfigStore(PushNotificationConfigStore):
+     async def get_info_for_dispatch(
+         self,
+         task_id: str,
++        context: ServerCallContext | None = None,
+     ) -> list[TaskPushNotificationConfig]:
+         """Retrieves all push notification configurations for a task across all owners.
+ 
+-        Used by the push-notification dispatch path.
++        Used by the push-notification dispatch path. `context` is accepted
++        for parity with the other store methods but does not scope the
++        result: dispatch fans out to every registered webhook.
+         """
++        del context
+         with self.lock:
+             results: list[TaskPushNotificationConfig] = []
+             for all_configs in self._push_notification_infos.values():
+diff --git a/src/a2a/server/tasks/push_notification_config_store.py b/src/a2a/server/tasks/push_notification_config_store.py
+index 06a2726..d8a06de 100644
+--- a/src/a2a/server/tasks/push_notification_config_store.py
++++ b/src/a2a/server/tasks/push_notification_config_store.py
+@@ -55,6 +55,7 @@ class PushNotificationConfigStore(ABC):
+     async def get_info_for_dispatch(
+         self,
+         task_id: str,
++        context: ServerCallContext | None = None,
+     ) -> list[TaskPushNotificationConfig]:
+         """Retrieves all push notification configurations for a task, across all owners.
+ 
+@@ -65,26 +66,35 @@ class PushNotificationConfigStore(ABC):
+         registration time and the dispatch path fires every registered
+         webhook for the task.
+ 
++        `context` is the caller's `ServerCallContext` when the dispatch
++        path has one available (for example a context stored at the
++        request boundary, since dispatch runs after the request
++        completes). It is optional for source compatibility and MUST NOT
++        be used to narrow the result: a context-scoped read silently
++        drops every other owner's webhook.
++
+         The default implementation falls back to calling get_info with
+-        a synthetic empty ServerCallContext. This preserves 1.0
+-        behavior for subclasses that have not implemented the override
+-        but is INCORRECT for any deployment with multiple owners: the
+-        empty context resolves to the empty-string owner partition and
+-        returns no configs (silently dropping every notification). A
+-        warning is logged on every call to flag the misconfiguration.
+-        Custom subclasses MUST override this method to deliver
+-        notifications correctly in multi-owner deployments.
++        the given context, or a synthetic empty ServerCallContext. This
++        preserves 1.0 behavior for subclasses that have not implemented
++        the override but is INCORRECT for any deployment with multiple
++        owners: the empty context resolves to the empty-string owner
++        partition and returns no configs (silently dropping every
++        notification). A warning is logged on every call to flag the
++        misconfiguration. Custom subclasses MUST override this method to
++        deliver notifications correctly in multi-owner deployments.
+         """
+         logger.warning(
+             '%s does not override '
+             'PushNotificationConfigStore.get_info_for_dispatch; falling back '
+-            'to a context-less get_info call which silently drops '
++            'to a context-scoped get_info call which silently drops '
+             'notifications in any deployment with multiple owners. Override '
+             'get_info_for_dispatch to return all configs for task_id across '
+             'every owner.',
+             type(self).__name__,
+         )
+-        return await self.get_info(task_id, ServerCallContext())
++        return await self.get_info(
++            task_id, context if context is not None else ServerCallContext()
++        )
+ 
+     @abstractmethod
+     async def delete_info(

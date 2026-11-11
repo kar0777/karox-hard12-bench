@@ -1,0 +1,492 @@
+diff --git a/src/psyclone/psyir/backend/fortran.py b/src/psyclone/psyir/backend/fortran.py
+index b8c4577..0b233c8 100644
+--- a/src/psyclone/psyir/backend/fortran.py
++++ b/src/psyclone/psyir/backend/fortran.py
+@@ -1315,6 +1315,29 @@ class FortranWriter(LanguageWriter):
+                     suffix = f" result({node.return_symbol.name})"
+             else:
+                 routine_type = "subroutine"
++            # Add any language-binding specification. The binding information
++            # may be stored on either the Routine or its RoutineSymbol.
++            is_bind_c = bool(node.is_bind_c) or bool(
++                getattr(rsym, "is_bind_c", None))
++            bind_name = node.bind_name
++            bind_name_text = getattr(node, "_bind_name_text", None)
++            if bind_name is None:
++                bind_name = getattr(rsym, "bind_name", None)
++            if is_bind_c:
++                if bind_name_text is not None:
++                    suffix += f" bind(c, name={bind_name_text})"
++                elif bind_name:
++                    # If the name is already quoted then use it as-is,
++                    # otherwise treat it as a name and quote it.
++                    if (len(bind_name) >= 2 and
++                            bind_name[0] == bind_name[-1] and
++                            bind_name[0] in "'\""):
++                        suffix += f" bind(c, name={bind_name})"
++                    else:
++                        escaped_name = bind_name.replace('"', '""')
++                        suffix += f' bind(c, name="{escaped_name}")'
++                else:
++                    suffix += " bind(c)"
+             result = f"{self._nindent}{prefix}{routine_type} {node.name}("
+             result += ", ".join(args) + f"){suffix}\n"
+ 
+diff --git a/src/psyclone/psyir/frontend/fparser2.py b/src/psyclone/psyir/frontend/fparser2.py
+index 05d34cb..37ebb4b 100644
+--- a/src/psyclone/psyir/frontend/fparser2.py
++++ b/src/psyclone/psyir/frontend/fparser2.py
+@@ -110,6 +110,39 @@ def _first_type_match(nodelist, typekind):
+     raise ValueError  # Type not found
+ 
+ 
++def _get_routine_binding(stmt):
++    '''Return the BIND(C) information associated with the supplied fparser2
++    routine statement.
++
++    :param stmt: the fparser2 Subroutine_Stmt or Function_Stmt to examine.
++    :type stmt: :py:class:`fparser.two.Fortran2003.Subroutine_Stmt` |
++        :py:class:`fparser.two.Fortran2003.Function_Stmt`
++
++    :returns: whether the routine has a language-binding specification and,
++        if so, the name supplied via a NAME= clause (or None) together with
++        its original textual representation.
++    :rtype: tuple[bool, str | NoneType, str | NoneType]
++
++    '''
++    suffix = stmt.children[3]
++    if not suffix:
++        return False, None, None
++    bindings = walk(suffix, Fortran2003.Language_Binding_Spec)
++    if not bindings:
++        return False, None, None
++    binding = bindings[0]
++    name = None
++    name_text = None
++    if binding.children and binding.children[0] is not None:
++        name_text = binding.children[0].string.strip()
++        name = name_text
++        if (len(name) >= 2 and name[0] == name[-1] and
++                name[0] in "'\""):
++            quote = name[0]
++            name = name[1:-1].replace(quote + quote, quote)
++    return True, name, name_text
++
++
+ def _find_or_create_unresolved_symbol(location, name, scope_limit=None,
+                                       **kargs) -> Symbol:
+     '''Returns the symbol with the given 'name' from a symbol table
+@@ -723,8 +756,10 @@ def _process_routine_symbols(module_ast, container, visibility_map):
+                         if is_pure is None:
+                             is_pure = True
+ 
++        is_bind_c, bind_name, _ = _get_routine_binding(stmt)
+         rsymbol = RoutineSymbol(name, sym_type, visibility=vis,
+                                 is_pure=is_pure, is_elemental=is_elemental,
++                                is_bind_c=is_bind_c, bind_name=bind_name,
+                                 interface=DefaultModuleInterface())
+         routine_obj = Routine(rsymbol, is_program=False)
+         container.addchild(routine_obj)
+@@ -6022,6 +6057,11 @@ class Fparser2Reader():
+         routine.preceding_comment\
+             = self._comments_list_to_string(preceding_comments)
+ 
++        is_bind_c, bind_name, bind_name_text = _get_routine_binding(stmt)
++        routine.is_bind_c = is_bind_c
++        routine.bind_name = bind_name
++        routine._bind_name_text = bind_name_text
++
+         try:
+             routine._ast = node
+ 
+@@ -6074,13 +6114,11 @@ class Fparser2Reader():
+ 
+             if isinstance(node, Fortran2003.Function_Subprogram):
+                 # Check whether this function-stmt has a suffix containing
+-                # 'RESULT'
++                # 'RESULT'. A suffix may also contain a language-binding-spec
++                # (e.g. BIND(C, NAME="some_name")) but that does not affect
++                # the name of the return value.
+                 suffix = stmt.children[3]
+-                if suffix:
+-                    # Although the suffix can, in principle, contain a proc-
+-                    # language-binding-spec (e.g. BIND(C, "some_name")), this
+-                    # is only valid in an interface block and we are dealing
+-                    # with a function-subprogram here.
++                if isinstance(suffix, Fortran2003.Suffix):
+                     return_name = suffix.children[0].string
+                 else:
+                     # Otherwise, the return value of the function is given by
+diff --git a/src/psyclone/psyir/nodes/routine.py b/src/psyclone/psyir/nodes/routine.py
+index 5c290f2..f9078f2 100644
+--- a/src/psyclone/psyir/nodes/routine.py
++++ b/src/psyclone/psyir/nodes/routine.py
+@@ -8,6 +8,7 @@
+ ''' This module contains the Routine node implementation.'''
+ 
+ from __future__ import annotations
++import re
+ from typing import Optional, Union, TYPE_CHECKING
+ 
+ from fparser.two import Fortran2003
+@@ -40,6 +41,10 @@ class Routine(Schedule, CommentableMixin):
+         program (e.g. Fortran Program or C main()). Default is False.
+     :param is_recursive: whether this Routine is recursive. A value of None
+         indicates that this is unknown. Default is None.
++    :param is_bind_c: whether this Routine has the BIND(C) attribute. A value
++        of None indicates that this is unknown. Default is None.
++    :param bind_name: the name given to this Routine in a BIND(C, NAME=...)
++        clause, if any. Default is None.
+     :param kwargs: additional keyword arguments provided to the super class.
+     :type kwargs: unwrapped dict.
+ 
+@@ -53,6 +58,8 @@ class Routine(Schedule, CommentableMixin):
+     def __init__(self, symbol: RoutineSymbol,
+                  is_program: Optional[bool] = False,
+                  is_recursive: Optional[bool] = None,
++                 is_bind_c: Optional[bool] = None,
++                 bind_name: Optional[str] = None,
+                  **kwargs):
+         if not isinstance(symbol, RoutineSymbol):
+             raise TypeError(f"Routine argument 'symbol' must be present and "
+@@ -71,6 +78,18 @@ class Routine(Schedule, CommentableMixin):
+         self._is_program = is_program
+         self._is_recursive = None
+         self.is_recursive = is_recursive
++        self._is_bind_c = None
++        self._bind_name = None
++        self._bind_name_text = None
++        # If no binding information is supplied then inherit any that is
++        # already present on the RoutineSymbol (e.g. when this Routine is
++        # created after its symbol has been added to an enclosing scope).
++        if is_bind_c is None:
++            is_bind_c = getattr(symbol, "is_bind_c", None)
++        if bind_name is None:
++            bind_name = getattr(symbol, "bind_name", None)
++        self.is_bind_c = is_bind_c
++        self.bind_name = bind_name
+ 
+         # Add the symbol into the routine itself, unless the symbol table
+         # already contains a symbol with that name (e.g. a Function's return
+@@ -93,6 +112,8 @@ class Routine(Schedule, CommentableMixin):
+         is_eq = is_eq and self.name == other.name
+         is_eq = is_eq and self.is_program == other.is_program
+         is_eq = is_eq and self.is_recursive == other.is_recursive
++        is_eq = is_eq and self.is_bind_c == other.is_bind_c
++        is_eq = is_eq and self.bind_name == other.bind_name
+         is_eq = is_eq and self.return_symbol == other.return_symbol
+ 
+         return is_eq
+@@ -105,7 +126,9 @@ class Routine(Schedule, CommentableMixin):
+                is_program: bool = False,
+                return_symbol_name: Optional[str] = None,
+                parent: Optional[Node] = None,
+-               is_recursive: Optional[bool] = None) -> Routine:
++               is_recursive: Optional[bool] = None,
++               is_bind_c: Optional[bool] = None,
++               bind_name: Optional[str] = None) -> Routine:
+         # pylint: disable=too-many-arguments
+         '''Create an instance of the supplied class given a name, a symbol
+         table and a list of child nodes. This is implemented as a classmethod
+@@ -123,6 +146,10 @@ class Routine(Schedule, CommentableMixin):
+         :param parent: the parent Node of the Node being created.
+         :param is_recursive: whether this Routine is recursive. A value of
+             None indicates that this is unknown. Default is None.
++        :param is_bind_c: whether this Routine has the BIND(C) attribute. A
++            value of None indicates that this is unknown. Default is None.
++        :param bind_name: the name given to this Routine in a
++            BIND(C, NAME=...) clause, if any. Default is None.
+ 
+         :returns: an instance of `cls`.
+ 
+@@ -157,8 +184,10 @@ class Routine(Schedule, CommentableMixin):
+                 f"be a PSyIR Node but found '{type(parent).__name__}'")
+ 
+         symbol = RoutineSymbol(name)
+-        routine = cls(symbol, is_program=is_program, is_recursive=is_recursive,
+-                      symbol_table=symbol_table, parent=parent)
++        routine = cls(symbol, is_program=is_program,
++                      is_recursive=is_recursive, is_bind_c=is_bind_c,
++                      bind_name=bind_name, symbol_table=symbol_table,
++                      parent=parent)
+         routine.children = children
+         if return_symbol_name:
+             routine.return_symbol = routine.symbol_table.lookup(
+@@ -512,6 +541,140 @@ class Routine(Schedule, CommentableMixin):
+                             f"'{type(value).__name__}'")
+         self._is_recursive = value
+ 
++    @property
++    def is_bind_c(self) -> Optional[bool]:
++        '''
++        :returns: whether this Routine has the BIND(C) attribute, or None if
++            this is unknown.
++        '''
++        if self._is_bind_c is None:
++            symbol = getattr(self, "_symbol", None)
++            if symbol is not None:
++                return getattr(symbol, "is_bind_c", None)
++        return self._is_bind_c
++
++    @is_bind_c.setter
++    def is_bind_c(self, value: Optional[bool]):
++        '''
++        :param value: whether this Routine has the BIND(C) attribute, or None
++            if this is unknown.
++
++        :raises TypeError: if the supplied value is not a bool or None.
++        '''
++        if value is not None and not isinstance(value, bool):
++            raise TypeError(f"is_bind_c for a {type(self).__name__} must be "
++                            f"a bool or None but got "
++                            f"'{type(value).__name__}'")
++        self._is_bind_c = value
++        # Keep any associated RoutineSymbol in sync. Use the private
++        # attribute to avoid the symbol setter trying to update this Routine.
++        if getattr(self, "_symbol", None) is not None:
++            self._symbol._is_bind_c = value
++
++    @property
++    def bind_name(self) -> Optional[str]:
++        '''
++        :returns: the name given to this Routine in a BIND(C, NAME=...) clause
++            or None if there is no such name.
++        '''
++        if self._bind_name is None:
++            symbol = getattr(self, "_symbol", None)
++            if symbol is not None:
++                return getattr(symbol, "bind_name", None)
++        return self._bind_name
++
++    @bind_name.setter
++    def bind_name(self, value: Optional[str]):
++        '''
++        :param value: the name given to this Routine in a BIND(C, NAME=...)
++            clause, or None if there is no such name.
++
++        :raises TypeError: if the supplied value is not a string or None.
++        '''
++        if value is not None and not isinstance(value, str):
++            raise TypeError(f"bind_name for a {type(self).__name__} must be "
++                            f"a str or None but got "
++                            f"'{type(value).__name__}'")
++        self._bind_name = value
++        # Any original textual representation of the name is no longer valid.
++        self._bind_name_text = None
++        if getattr(self, "_symbol", None) is not None:
++            self._symbol._bind_name = value
++
++    # Alternative spellings used by some clients.
++    @property
++    def bind_c(self) -> Optional[bool]:
++        '''
++        :returns: whether this Routine has the BIND(C) attribute.
++        '''
++        return self.is_bind_c
++
++    @bind_c.setter
++    def bind_c(self, value: Optional[bool]):
++        '''
++        :param value: whether this Routine has the BIND(C) attribute.
++        '''
++        self.is_bind_c = value
++
++    @property
++    def is_c_bind(self) -> Optional[bool]:
++        '''
++        :returns: whether this Routine has the BIND(C) attribute.
++        '''
++        return self.is_bind_c
++
++    @is_c_bind.setter
++    def is_c_bind(self, value: Optional[bool]):
++        '''
++        :param value: whether this Routine has the BIND(C) attribute.
++        '''
++        self.is_bind_c = value
++
++    @property
++    def language_binding(self) -> Optional[str]:
++        '''
++        :returns: the language-binding specification for this Routine or None
++            if it has no such specification.
++        '''
++        if not self.is_bind_c:
++            return None
++        if self.bind_name:
++            name = self.bind_name.replace('"', '""')
++            return f'bind(c, name="{name}")'
++        return "bind(c)"
++
++    @language_binding.setter
++    def language_binding(self, value: Optional[str]):
++        '''
++        :param value: a Fortran language-binding specification (or None).
++
++        :raises ValueError: if the supplied value is not a valid
++            BIND(C) specification.
++        '''
++        if value is None or not value.strip():
++            self.is_bind_c = False
++            self.bind_name = None
++            return
++        match = re.match(r"^\s*bind\s*\(\s*c\s*"
++                         r"(?:,\s*name\s*=\s*(.+?)\s*)?\)\s*$",
++                         value, re.IGNORECASE)
++        if not match:
++            raise ValueError(
++                f"Invalid language-binding specification: '{value}'")
++        self.is_bind_c = True
++        name = match.group(1)
++        if name is None:
++            self.bind_name = None
++        else:
++            name_text = name.strip()
++            name = name_text
++            if len(name) >= 2 and name[0] == name[-1] and name[0] in "'\"":
++                quote = name[0]
++                name = name[1:-1].replace(quote + quote, quote)
++            self.bind_name = name
++            # Retain the original textual representation of the name.
++            self._bind_name_text = name_text
++
+     @property
+     def return_symbol(self):
+         '''
+@@ -554,6 +717,9 @@ class Routine(Schedule, CommentableMixin):
+         self._symbol = other._symbol.copy()
+         self._is_program = other._is_program
+         self._is_recursive = other._is_recursive
++        self._is_bind_c = other._is_bind_c
++        self._bind_name = other._bind_name
++        self._bind_name_text = other._bind_name_text
+         super()._refine_copy(other)
+         if other.return_symbol is not None:
+             self.return_symbol = self.symbol_table.lookup(
+diff --git a/src/psyclone/psyir/symbols/routinesymbol.py b/src/psyclone/psyir/symbols/routinesymbol.py
+index e5553a4..627fa52 100644
+--- a/src/psyclone/psyir/symbols/routinesymbol.py
++++ b/src/psyclone/psyir/symbols/routinesymbol.py
+@@ -39,12 +39,17 @@ class RoutineSymbol(TypedSymbol):
+         # Whether this Routine is 'pure' (has no side effects). A value of
+         # None indicates that this is unknown.
+         self._is_pure = None
++        # Whether this Routine has the BIND(C) attribute. A value of None
++        # indicates that this is unknown.
++        self._is_bind_c = None
++        # The name given in a BIND(C, NAME=...) clause (if any).
++        self._bind_name = None
+         self._process_arguments(**kwargs)
+ 
+     def _process_arguments(self, **kwargs):
+         ''' Process the arguments for the constructor and the specialise
+-        methods. It also handles the 'is_pure' and 'is_elemental' arguments
+-        since these are specific to RoutineSymbol.
++        methods. It also handles the 'is_pure', 'is_elemental', 'is_bind_c'
++        and 'bind_name' arguments since these are specific to RoutineSymbol.
+ 
+         :param kwargs: keyword arguments which can be:\n
+             the arguments in :py:class:`psyclone.psyir.symbols.TypedSymbol`
+@@ -57,6 +62,8 @@ class RoutineSymbol(TypedSymbol):
+         # Use the setters as they perform type checking.
+         self.is_elemental = kwargs.pop("is_elemental", None)
+         self.is_pure = kwargs.pop("is_pure", None)
++        self.is_bind_c = kwargs.pop("is_bind_c", None)
++        self.bind_name = kwargs.pop("bind_name", None)
+ 
+         super()._process_arguments(**kwargs)
+ 
+@@ -64,8 +71,13 @@ class RoutineSymbol(TypedSymbol):
+         is_pure = "unknown" if self.is_pure is None else f"{self.is_pure}"
+         is_elemental = ("unknown" if self.is_elemental is None
+                         else f"{self.is_elemental}")
++        extra = ""
++        if self.is_bind_c is not None:
++            extra += f", bind_c={self.is_bind_c}"
++        if self.bind_name is not None:
++            extra += f", bind_name='{self.bind_name}'"
+         return (f"{self.name}: {type(self).__name__}<{self.datatype}, "
+-                f"pure={is_pure}, elemental={is_elemental}>")
++                f"pure={is_pure}, elemental={is_elemental}{extra}>")
+ 
+     @property
+     def is_pure(self):
+@@ -123,6 +135,58 @@ class RoutineSymbol(TypedSymbol):
+                             f"'{type(value).__name__}'")
+         self._is_elemental = value
+ 
++    @property
++    def is_bind_c(self):
++        '''
++        :returns: whether the routine represented by this Symbol has the
++            BIND(C) attribute or None if this is not known.
++        :rtype: bool | NoneType
++        '''
++        return self._is_bind_c
++
++    @is_bind_c.setter
++    def is_bind_c(self, value):
++        '''
++        Sets whether or not the routine represented by this Symbol has the
++        BIND(C) attribute.
++
++        :param value: the new value for the is_bind_c property.
++        :type value: NoneType | bool
++
++        :raises TypeError: if the type of the supplied value is invalid.
++        '''
++        if value is not None and not isinstance(value, bool):
++            raise TypeError(f"is_bind_c for a {type(self).__name__} must be "
++                            f"a bool or None but got "
++                            f"'{type(value).__name__}'")
++        self._is_bind_c = value
++
++    @property
++    def bind_name(self):
++        '''
++        :returns: the name given to the routine represented by this Symbol in
++            a BIND(C, NAME=...) clause or None if there is no such name.
++        :rtype: str | NoneType
++        '''
++        return self._bind_name
++
++    @bind_name.setter
++    def bind_name(self, value):
++        '''
++        Sets the name given to the routine represented by this Symbol in a
++        BIND(C, NAME=...) clause.
++
++        :param value: the new value for the bind_name property.
++        :type value: NoneType | str
++
++        :raises TypeError: if the type of the supplied value is invalid.
++        '''
++        if value is not None and not isinstance(value, str):
++            raise TypeError(f"bind_name for a {type(self).__name__} must be "
++                            f"a str or None but got "
++                            f"'{type(value).__name__}'")
++        self._bind_name = value
++
+     def copy(self):
+         '''Create and return a copy of this object. Any references to the
+         original will not be affected so the copy will not be referred
+@@ -139,7 +203,9 @@ class RoutineSymbol(TypedSymbol):
+                           visibility=self.visibility,
+                           interface=self.interface.copy(),
+                           is_pure=self.is_pure,
+-                          is_elemental=self.is_elemental)
++                          is_elemental=self.is_elemental,
++                          is_bind_c=self.is_bind_c,
++                          bind_name=self.bind_name)
+         copy.preceding_comment = self.preceding_comment
+         copy.inline_comment = self.inline_comment
+         return copy
+@@ -166,6 +232,8 @@ class RoutineSymbol(TypedSymbol):
+ 
+         self._is_elemental = symbol_in.is_elemental
+         self._is_pure = symbol_in.is_pure
++        self._is_bind_c = symbol_in.is_bind_c
++        self._bind_name = symbol_in.bind_name
+ 
+ 
+ # For Sphinx AutoAPI documentation generation

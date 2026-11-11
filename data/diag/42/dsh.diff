@@ -1,0 +1,156 @@
+diff --git a/src/qwenpaw/plugins/dependency_maintenance.py b/src/qwenpaw/plugins/dependency_maintenance.py
+index cd4d63a..2db3aaa 100644
+--- a/src/qwenpaw/plugins/dependency_maintenance.py
++++ b/src/qwenpaw/plugins/dependency_maintenance.py
+@@ -188,6 +188,23 @@ def contains_environment_path(root, path):
+     return canonical(path).parts[: len(parent)] == parent
+ 
+ 
++def _state_root_unavailable(detail):
++    return RuntimeError(
++        "DEPENDENCY_STATE_ROOT_UNAVAILABLE: "
++        f"{detail} Set {_STATE_ENV} to an absolute writable directory "
++        "shared by every QwenPaw process for this installation.",
++    )
++
++
++def _canonical_state_root(path):
++    try:
++        return canonical(path)
++    except OSError as exc:
++        raise _state_root_unavailable(
++            f"cannot access dependency state directory {path}: {exc}.",
++        ) from exc
++
++
+ def state_root():
+     """Select once at trusted startup, before user configuration or leases."""
+     global _STATE_ROOT
+@@ -195,31 +212,44 @@ def state_root():
+         override = os.environ.get(_STATE_ENV)
+         if override:
+             if not Path(override).is_absolute():
+-                raise RuntimeError(
+-                    "DEPENDENCY_STATE_ROOT_UNAVAILABLE: "
+-                    "QWENPAW_DEPENDENCY_STATE_DIR must be absolute.",
++                raise _state_root_unavailable(
++                    f"{_STATE_ENV} must be an absolute path.",
+                 )
+-            root = canonical(override)
++            root = _canonical_state_root(override)
+         else:
+             if os.name == "nt":
+-                home = Path(os.environ["USERPROFILE"])
+-            else:
+-                import pwd
+-
+-                try:
+-                    value = getattr(pwd.getpwuid(os.getuid()), "pw_dir", None)
+-                except KeyError:
+-                    value = None
++                value = os.environ.get("USERPROFILE")
+                 if not value or not Path(value).is_absolute():
+                     value = os.environ.get("HOME")
++            else:
++                # Managed environments often have a stale or unwritable passwd
++                # home. Respect the launcher's HOME first, as most tools do.
++                value = os.environ.get("HOME")
+                 if not value or not Path(value).is_absolute():
+-                    raise RuntimeError(
+-                        "DEPENDENCY_STATE_ROOT_UNAVAILABLE: provide a stable "
+-                        "absolute startup HOME or an absolute shared "
+-                        "QWENPAW_DEPENDENCY_STATE_DIR.",
+-                    )
+-                home = Path(value)
+-            root = canonical(home / ".qwenpaw" / "dependency-environments")
++                    import pwd
++
++                    try:
++                        value = getattr(
++                            pwd.getpwuid(os.getuid()),
++                            "pw_dir",
++                            None,
++                        )
++                    except (KeyError, OSError):
++                        value = None
++            if not value or not Path(value).is_absolute():
++                checked = (
++                    "USERPROFILE and HOME"
++                    if os.name == "nt"
++                    else "HOME and the passwd database"
++                )
++                raise _state_root_unavailable(
++                    "provide a stable absolute startup HOME or an absolute "
++                    f"shared dependency state directory (checked {checked}).",
++                )
++            home = Path(value)
++            root = _canonical_state_root(
++                home / ".qwenpaw" / "dependency-environments",
++            )
+         _STATE_ROOT = root
+         os.environ[_STATE_ENV] = str(root)
+     return _STATE_ROOT
+@@ -307,8 +337,13 @@ def _try_lock(descriptor):
+ 
+ 
+ def _open_lock(path):
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    return os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
++    try:
++        path.parent.mkdir(parents=True, exist_ok=True)
++        return os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
++    except OSError as exc:
++        raise _state_root_unavailable(
++            f"cannot create dependency maintenance lock {path}: {exc}.",
++        ) from exc
+ 
+ 
+ def open_coordination_lock(path):
+diff --git a/website/public/docs/cli.en.md b/website/public/docs/cli.en.md
+index 907ef6a..a08bd00 100644
+--- a/website/public/docs/cli.en.md
++++ b/website/public/docs/cli.en.md
+@@ -800,6 +800,7 @@ All config and data live in `~/.qwenpaw` by default:
+ | --------------------- | ----------------------------------- |
+ | `QWENPAW_WORKING_DIR` | Override the working directory path |
+ | `QWENPAW_CONFIG_FILE` | Override the config file path       |
++| `QWENPAW_DEPENDENCY_STATE_DIR` | Override the dependency-maintenance lock/state directory (absolute, writable) |
+ 
+ See [Config & Working Directory](./config) and [Multi-Agent](./multi-agent) for full details.
+ 
+diff --git a/website/public/docs/cli.zh.md b/website/public/docs/cli.zh.md
+index ab0fd16..b17979c 100644
+--- a/website/public/docs/cli.zh.md
++++ b/website/public/docs/cli.zh.md
+@@ -779,6 +779,7 @@ qwenpaw --host 0.0.0.0 --port 9090 cron list
+ | --------------------- | ---------------- |
+ | `QWENPAW_WORKING_DIR` | 覆盖工作目录路径 |
+ | `QWENPAW_CONFIG_FILE` | 覆盖配置文件路径 |
++| `QWENPAW_DEPENDENCY_STATE_DIR` | 覆盖依赖维护锁/状态目录（绝对路径，且运行用户可写） |
+ 
+ 详见 [配置与工作目录](./config) 和 [多智能体](./multi-agent)。
+ 
+diff --git a/website/public/docs/config.en.md b/website/public/docs/config.en.md
+index f20aa5b..abe8518 100644
+--- a/website/public/docs/config.en.md
++++ b/website/public/docs/config.en.md
+@@ -104,6 +104,7 @@ You can customize paths and behavior via environment variables:
+ | -------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+ | `QWENPAW_WORKING_DIR`      | `~/.qwenpaw`        | Working directory root path                                                                                                                                                                                                                                                              |
+ | `QWENPAW_SECRET_DIR`       | `~/.qwenpaw.secret` | Sensitive data directory (stores `providers.json` and `envs.json`). Docker default is `/app/working.secret`                                                                                                                                                                              |
++| `QWENPAW_DEPENDENCY_STATE_DIR` | `~/.qwenpaw/dependency-environments` | Shared directory for dependency-maintenance locks and state. Must be an absolute path writable by the runtime user and shared by every QwenPaw process for the installation. When unset, `$HOME` is preferred on POSIX (falling back to the passwd home only if `$HOME` is missing or not absolute); on Windows `%USERPROFILE%` is used. Set this when the home directory is missing or unwritable, such as in a restricted application sandbox. |
+ | `QWENPAW_KEYRING_ACCOUNT`  | _(auto)_            | OS keychain account name for the master key. Defaults to `master_key`; when `QWENPAW_WORKING_DIR`/`QWENPAW_SECRET_DIR` are set (e.g. a dev checkout) it auto-derives a per-install account so a dev install never overwrites the stable install's key. Set explicitly to name a profile. |
+ | `QWENPAW_CONFIG_FILE`      | `config.json`       | Config file name (relative to `QWENPAW_WORKING_DIR`)                                                                                                                                                                                                                                     |
+ | `QWENPAW_HEARTBEAT_FILE`   | `HEARTBEAT.md`      | Heartbeat file name (relative to agent workspace)                                                                                                                                                                                                                                        |
+diff --git a/website/public/docs/config.zh.md b/website/public/docs/config.zh.md
+index 4c13005..0dc7180 100644
+--- a/website/public/docs/config.zh.md
++++ b/website/public/docs/config.zh.md
+@@ -67,6 +67,7 @@ $QWENPAW_SECRET_DIR/                       # 默认 ~/.qwenpaw.secret
+ | -------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+ | `QWENPAW_WORKING_DIR`      | `~/.qwenpaw`        | 工作目录根路径                                                                                                                                                                                                                 |
+ | `QWENPAW_SECRET_DIR`       | `~/.qwenpaw.secret` | 敏感数据目录（存放 `providers.json` 和 `envs.json`）。Docker 中默认为 `/app/working.secret`                                                                                                                                    |
++| `QWENPAW_DEPENDENCY_STATE_DIR` | `~/.qwenpaw/dependency-environments` | 依赖维护锁与状态目录。必须是由运行用户可写的绝对路径，并且同一安装的所有 QwenPaw 进程共享。未设置时，POSIX 系统优先使用 `$HOME`（仅在 `$HOME` 缺失或不是绝对路径时回退到 passwd 中的 home），Windows 使用 `%USERPROFILE%`。当 home 目录不存在或不可写（例如受限的应用沙箱）时，请设置此变量。 |
+ | `QWENPAW_KEYRING_ACCOUNT`  | _(自动)_            | 主密钥在操作系统钥匙串中的账户名。默认为 `master_key`；当设置了 `QWENPAW_WORKING_DIR`/`QWENPAW_SECRET_DIR`（例如开发检出）时会自动派生为每个安装独立的账户名，使开发安装不会覆盖稳定安装的密钥。可显式设置以命名某个配置档案。 |
+ | `QWENPAW_CONFIG_FILE`      | `config.json`       | 配置文件名（相对于 `QWENPAW_WORKING_DIR`）                                                                                                                                                                                     |
+ | `QWENPAW_HEARTBEAT_FILE`   | `HEARTBEAT.md`      | 心跳文件名（相对于智能体工作区）                                                                                                                                                                                               |

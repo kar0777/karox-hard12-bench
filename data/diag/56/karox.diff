@@ -1,0 +1,52 @@
+diff --git a/src/fabric_cicd/_common/_exceptions.py b/src/fabric_cicd/_common/_exceptions.py
+index 02f210d..a873b64 100644
+--- a/src/fabric_cicd/_common/_exceptions.py
++++ b/src/fabric_cicd/_common/_exceptions.py
+@@ -59,13 +59,19 @@ class PublishError(BaseCustomError):
+ 
+     Attributes:
+         errors: List of (item_name, exception) tuples for all failed items.
++        post_publish_error: The error raised by the post-publish step, if any.
+     """
+ 
+-    def __init__(self, errors: list[tuple[str, Exception]], logger: Logger) -> None:
++    def __init__(
++        self, errors: list[tuple[str, Exception]], logger: Logger, post_publish_error: Optional[Exception] = None
++    ) -> None:
+         """Initialize with a list of (item_name, exception) tuples."""
+         self.errors = errors
++        self.post_publish_error = post_publish_error
+         failed_names = [name for name, _ in errors]
+         message = f"Failed to publish {len(errors)} item(s): {failed_names}"
++        if post_publish_error is not None:
++            message += f". The post-publish step also failed: {post_publish_error}"
+ 
+         additional_info_parts = []
+         for item_name, exc in errors:
+diff --git a/src/fabric_cicd/_items/_base_publisher.py b/src/fabric_cicd/_items/_base_publisher.py
+index 74d8b4b..936d4e5 100644
+--- a/src/fabric_cicd/_items/_base_publisher.py
++++ b/src/fabric_cicd/_items/_base_publisher.py
+@@ -10,7 +10,7 @@ from dataclasses import dataclass
+ from typing import Callable, Optional
+ 
+ from fabric_cicd import constants
+-from fabric_cicd._common._exceptions import PublishError
++from fabric_cicd._common._exceptions import BaseCustomError, PublishError
+ from fabric_cicd._common._item import Item
+ from fabric_cicd.constants import PARALLEL_MAX_WORKERS, ItemType
+ from fabric_cicd.fabric_workspace import FabricWorkspace
+@@ -465,7 +465,12 @@ class ItemPublisher(Publisher):
+         else:
+             errors = self._publish_items_sequential(items)
+ 
+-        self.post_publish_all()
++        try:
++            self.post_publish_all()
++        except BaseCustomError as e:
++            if errors:
++                raise PublishError(errors, logger, post_publish_error=e) from e
++            raise
+ 
+         if errors:
+             raise PublishError(errors, logger)

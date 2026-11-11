@@ -1,0 +1,268 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4b7b1ea..627c264 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -14,6 +14,7 @@ but cannot always guarantee backwards compatibility. Changes that may **break co
+ - Improvements to `TimeSeries` :
+   - `__pow__` now supports raising to negative powers (as series, arrays or scalars). E.g. `series ** (-2)`. [#3298](https://github.com/unit8co/darts/pull/3298) by [Gabriel Demetrios Lafis](https://github.com/galafis).
+   - `__truediv__` now supports dividing by zeros (as series, arrays or scalars). E.g. `series / 0.` [#3298](https://github.com/unit8co/darts/pull/3298) by [Gabriel Demetrios Lafis](https://github.com/galafis).
++  - `values()`, `univariate_values()` and `to_dataframe()` now accept an `agg` parameter to aggregate the samples of a stochastic series (`"mean"`, `"median"`, or a quantile as a float between 0 and 1) instead of silently extracting a single sample. Calling `values()` or `univariate_values()` on a stochastic series without specifying `sample` or `agg` now logs a warning, since only the first sample is returned.
+ 
+ **Fixed**
+ 
+diff --git a/darts/timeseries.py b/darts/timeseries.py
+index 7d56161..24c838b 100644
+--- a/darts/timeseries.py
++++ b/darts/timeseries.py
+@@ -1787,6 +1787,7 @@ class TimeSeries:
+         suppress_warnings: bool = False,
+         add_static_covariates: bool | str | list[str] = False,
+         add_metadata: bool | str | list[str] = False,
++        agg: str | float | None = None,
+     ):
+         """Return a DataFrame representation of the series in a given `backend`.
+ 
+@@ -1816,6 +1817,10 @@ class TimeSeries:
+             Whether to add the series' metadata to the resulting DataFrame (one column per metadata entry). If a bool,
+             controls whether to add all metadata entries or none. If a string, or list of strings, specifies the subset
+             of metadata keys / names to add.
++        agg
++            For stochastic series, an aggregation to apply over the samples, resulting in a single column per
++            component. Can be `"mean"`, `"median"`, or a float between 0 and 1 interpreted as a quantile (e.g. `0.5`
++            for the median). By default (`None`), all samples are returned as separate columns.
+ 
+         Returns
+         -------
+@@ -1832,14 +1837,20 @@ class TimeSeries:
+             time_as_index = False
+ 
+         values = self._values
+-        if not self.is_deterministic:
++        if agg is not None:
++            columns = self.components
++            data = self._aggregate_samples(agg)
++        elif self.is_deterministic:
++            columns = self.components
++            data = values[:, :, 0]
++        else:
+             if not suppress_warnings:
+                 logger.warning(
+                     "You are transforming a stochastic TimeSeries (it contains several samples). "
+                     "The resulting DataFrame is a 2D object with all samples on the columns. "
+                     "If this is not the expected behavior, extract statistics from the TimeSeries "
+                     "before calling `to_dataframe()` (e.g. with `TimeSeries.quantile()`, `mean()`, "
+-                    "...)."
++                    "...), or pass `agg` to aggregate the samples (e.g. `agg=\"median\"` or `agg=0.5`)."
+                 )
+ 
+             comp_name = list(self.components)
+@@ -1849,9 +1860,6 @@ class TimeSeries:
+                 for comp_name, sample_id in itertools.product(comp_name, samples)
+             ]
+             data = values.reshape(values.shape[0], len(columns))
+-        else:
+-            columns = self.components
+-            data = values[:, :, 0]
+         data = {col: data[:, idx] for idx, col in enumerate(columns)}
+ 
+         # handle static covariates
+@@ -2050,8 +2058,17 @@ class TimeSeries:
+         self._assert_deterministic()
+         return self._values[-1, :, 0].copy()
+ 
+-    def values(self, copy: bool = True, sample: int = 0) -> np.ndarray:
+-        """Return a 2-D array of shape (time, component), containing the series' values for one `sample`.
++    def values(
++        self,
++        copy: bool = True,
++        sample: int | None = None,
++        agg: str | float | None = None,
++    ) -> np.ndarray:
++        """Return a 2-D array of shape (time, component), containing the series' values.
++
++        For stochastic series (with more than one sample), the values of a single `sample` are returned, or the
++        samples are aggregated into a single (deterministic) set of values with `agg`. If neither `sample` nor `agg`
++        is specified, a warning is raised and the first sample (`sample=0`) is returned.
+ 
+         Parameters
+         ----------
+@@ -2059,21 +2076,18 @@ class TimeSeries:
+             Whether to return a copy of the values, otherwise returns a view.
+             Leave it to True unless you know what you are doing.
+         sample
+-            For stochastic series, the sample for which to return values. Default: 0 (first sample).
++            For stochastic series, the sample for which to return values. Default: `0` (first sample).
++        agg
++            For stochastic series, an aggregation to apply over the samples instead of selecting a single one.
++            Can be `"mean"`, `"median"`, or a float between 0 and 1 interpreted as a quantile (e.g. `0.5` for the
++            median). Cannot be used together with `sample`.
+ 
+         Returns
+         -------
+         numpy.ndarray
+             The values composing the time series.
+         """
+-        if self.is_deterministic and sample != 0:
+-            raise_log(
+-                ValueError(
+-                    "This series contains one sample only (deterministic),"
+-                    "so only sample=0 is accepted.",
+-                ),
+-            )
+-        values = self._values[:, :, sample]
++        values = self._values_for_sample(sample=sample, agg=agg, caller="values")
+         if copy:
+             values = values.copy()
+         return values
+@@ -2118,15 +2132,28 @@ class TimeSeries:
+             values = values.copy()
+         return values
+ 
+-    def univariate_values(self, copy: bool = True, sample: int = 0) -> np.ndarray:
+-        """Return a 1-D Numpy array of shape (time,) containing the univariate series' values for one `sample`.
++    def univariate_values(
++        self,
++        copy: bool = True,
++        sample: int | None = None,
++        agg: str | float | None = None,
++    ) -> np.ndarray:
++        """Return a 1-D Numpy array of shape (time,) containing the univariate series' values.
++
++        For stochastic series (with more than one sample), the values of a single `sample` are returned, or the
++        samples are aggregated into a single (deterministic) set of values with `agg`. If neither `sample` nor `agg`
++        is specified, a warning is raised and the first sample (`sample=0`) is returned.
+ 
+         Parameters
+         ----------
+         copy
+             Whether to return a copy of the values. Leave it to True unless you know what you are doing.
+         sample
+-            For stochastic series, the sample for which to return values. Default: 0 (first sample).
++            For stochastic series, the sample for which to return values. Default: `0` (first sample).
++        agg
++            For stochastic series, an aggregation to apply over the samples instead of selecting a single one.
++            Can be `"mean"`, `"median"`, or a float between 0 and 1 interpreted as a quantile (e.g. `0.5` for the
++            median). Cannot be used together with `sample`.
+ 
+         Returns
+         -------
+@@ -2135,7 +2162,9 @@ class TimeSeries:
+         """
+ 
+         self._assert_univariate()
+-        values = self._values[:, 0, sample]
++        values = self._values_for_sample(
++            sample=sample, agg=agg, caller="univariate_values"
++        )[:, 0]
+         if copy:
+             values = values.copy()
+         return values
+@@ -5257,6 +5286,81 @@ class TimeSeries:
+                 )
+             return DIMS.index(axis)
+ 
++    def _values_for_sample(
++        self,
++        sample: int | None = None,
++        agg: str | float | None = None,
++        caller: str = "values",
++    ) -> np.ndarray:
++        """Return the values of one `sample` or the `agg`-aggregated values of a stochastic series.
++
++        If the series is stochastic and neither `sample` nor `agg` is given, a warning is logged and the values of
++        the first sample are returned.
++        """
++        if sample is not None and agg is not None:
++            raise_log(
++                ValueError(
++                    f"Only one of `sample` and `agg` can be specified in `{caller}()`, received both."
++                ),
++            )
++        if agg is not None:
++            return self._aggregate_samples(agg)
++
++        if sample is None:
++            if not self.is_deterministic:
++                logger.warning(
++                    f"You are calling `{caller}()` on a stochastic TimeSeries (it contains several samples) "
++                    "without specifying a `sample` or an `agg`. Only the first sample (`sample=0`) is "
++                    "returned, which is a single random Monte Carlo draw and not a point forecast. If this "
++                    "is not the expected behavior, pass an explicit `sample=...`, aggregate the samples with "
++                    "`agg=\"mean\"`, `agg=\"median\"` or a quantile (e.g. `agg=0.5`), or extract the statistic "
++                    "from the TimeSeries before calling it (e.g. with `TimeSeries.quantile(0.5)`, "
++                    "`TimeSeries.mean()`, `TimeSeries.median()`)."
++                )
++            sample = 0
++        elif self.is_deterministic and sample != 0:
++            raise_log(
++                ValueError(
++                    "This series contains one sample only (deterministic),"
++                    "so only sample=0 is accepted.",
++                ),
++            )
++        return self._values[:, :, sample]
++
++    def _aggregate_samples(self, agg: str | float) -> np.ndarray:
++        """Aggregate the samples of the series into a 2-D array of shape (time, component).
++
++        Parameters
++        ----------
++        agg
++            The aggregation to apply over the samples. Either `"mean"`, `"median"`, or a float between 0 and 1
++            interpreted as a quantile.
++        """
++        valid_aggs = {"mean": np.mean, "median": np.median}
++        if isinstance(agg, str):
++            if agg.lower() not in valid_aggs:
++                raise_log(
++                    ValueError(
++                        f"Invalid `agg` value `{agg}`. Supported values are 'mean', 'median', or a float "
++                        "between 0 and 1 (quantile)."
++                    ),
++                )
++            return valid_aggs[agg.lower()](self._values, axis=SMPL_AX)
++        if isinstance(agg, bool) or not isinstance(agg, (int, float)):
++            raise_log(
++                ValueError(
++                    f"Invalid `agg` value `{agg}`. Supported values are 'mean', 'median', or a float "
++                    "between 0 and 1 (quantile)."
++                ),
++            )
++        if not 0 <= agg <= 1:
++            raise_log(
++                ValueError(
++                    f"The `agg` quantile must be between 0 and 1 (inclusive), received `{agg}`."
++                ),
++            )
++        return np.quantile(self._values, q=agg, axis=SMPL_AX)
++
+     def _get_agg_dims(self, new_cname: str, axis: int) -> tuple[TimeIndex, pd.Index]:
+         """Get output time index and components based on a aggregation `axis` and potential new column name
+         `new_cname`.
+@@ -6155,6 +6259,7 @@ def to_group_dataframe(
+     add_static_covariates: bool | str | list[str] = True,
+     add_metadata: bool | str | list[str] = False,
+     add_group_col: bool | str = False,
++    agg: str | float | None = None,
+ ):
+     """Converts a sequence of `TimeSeries` into a long DataFrame representation.
+ 
+@@ -6191,6 +6296,10 @@ def to_group_dataframe(
+         Whether to add a integer group column to the resulting DataFrame that serves as a mapping between DataFrame
+         rows and their corresponding time series. If a bool, indicates whether to add a group column with the name
+         "group". If a string, adds a group column with the name being that string value.
++    agg
++        For stochastic series, an aggregation to apply over the samples, resulting in a single column per component.
++        Can be `"mean"`, `"median"`, or a float between 0 and 1 interpreted as a quantile (e.g. `0.5` for the
++        median). By default (`None`), all samples are returned as separate columns.
+ 
+     Returns
+     -------
+@@ -6213,6 +6322,7 @@ def to_group_dataframe(
+             suppress_warnings=suppress_warnings,
+             add_static_covariates=add_static_covariates,
+             add_metadata=add_metadata,
++            agg=agg,
+         )
+         df_ = nw.from_native(df_)
+         if add_group_col:

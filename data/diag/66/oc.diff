@@ -1,0 +1,77 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c6e7c2e..0011e98 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,8 @@
+ 
+ ## [Unreleased]
+ 
++-   [BUG] Treat missing values as distinct values in `drop_constant_columns`, keeping columns that mix one value with missing values and dropping all-missing columns.
++
+ ## [v0.32.58] - 2026-10-25
+ 
+ -   No user-facing changes; see the generated release notes.
+diff --git a/janitor/functions/drop_constant_columns.py b/janitor/functions/drop_constant_columns.py
+index 8991ccb..1523d7f 100644
+--- a/janitor/functions/drop_constant_columns.py
++++ b/janitor/functions/drop_constant_columns.py
+@@ -8,6 +8,10 @@ import pandas_flavor as pf
+ def drop_constant_columns(df: pd.DataFrame) -> pd.DataFrame:
+     """Finds and drops the constant columns from a Pandas DataFrame.
+ 
++    Missing values count as a distinct value. A column that is entirely
++    missing is therefore considered constant and dropped, while a column that
++    mixes one non-missing value with missing values is kept.
++
+     Examples:
+         >>> import pandas as pd
+         >>> import janitor
+@@ -36,4 +40,4 @@ def drop_constant_columns(df: pd.DataFrame) -> pd.DataFrame:
+     Returns:
+         The Pandas DataFrame with the constant columns dropped.
+     """
+-    return df.loc[:, df.nunique().ne(1)]
++    return df.loc[:, df.nunique(dropna=False).ne(1)]
+diff --git a/tests/functions/test_drop_constant_columns.py b/tests/functions/test_drop_constant_columns.py
+index 5572686..b746425 100644
+--- a/tests/functions/test_drop_constant_columns.py
++++ b/tests/functions/test_drop_constant_columns.py
+@@ -1,5 +1,6 @@
+ """Tests for drop_constant_columns."""
+ 
++import numpy as np
+ import pandas as pd
+ import pytest
+ from pandas.testing import assert_frame_equal
+@@ -18,3 +19,31 @@ def test_drop_constant_columns(df_constant_columns):
+     }
+     expected_df = pd.DataFrame(data)
+     assert_frame_equal(processed_df, expected_df)
++
++
++@pytest.mark.functions
++def test_drop_constant_columns_keeps_value_with_missing():
++    """Test that a value mixed with missing values is not constant."""
++    df = pd.DataFrame(
++        {
++            "value_and_missing": [5.0, np.nan, np.nan],
++            "varying": [1, 2, 3],
++        }
++    )
++    result = df.drop_constant_columns()
++    assert result.columns.to_list() == ["value_and_missing", "varying"]
++    assert_frame_equal(result, df)
++
++
++@pytest.mark.functions
++def test_drop_constant_columns_drops_all_missing():
++    """Test that an all-missing column is constant and dropped."""
++    df = pd.DataFrame(
++        {
++            "all_missing": [np.nan, np.nan, np.nan],
++            "varying": [1, 2, 3],
++        }
++    )
++    result = df.drop_constant_columns()
++    expected = df[["varying"]]
++    assert_frame_equal(result, expected)

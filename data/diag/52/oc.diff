@@ -1,0 +1,229 @@
+diff --git a/sqllineage/core/parser/sqlfluff/extractors/base.py b/sqllineage/core/parser/sqlfluff/extractors/base.py
+index e736af9..fc9b65e 100644
+--- a/sqllineage/core/parser/sqlfluff/extractors/base.py
++++ b/sqllineage/core/parser/sqlfluff/extractors/base.py
+@@ -13,6 +13,7 @@ from sqllineage.core.parser.sqlfluff.models import (
+ )
+ from sqllineage.core.parser.sqlfluff.utils import (
+     find_from_expression_element,
++    find_stage_path,
+     find_table_identifier,
+     is_subquery,
+     list_child_segments,
+@@ -157,6 +158,11 @@ class BaseExtractor:
+                 read_sq = SqlFluffSubQuery.of(bracketed, alias)
+                 tables.append(read_sq)
+         else:
++            if table_expression := segment.get_child("table_expression"):
++                if stage_path := find_stage_path(table_expression):
++                    # Snowflake stage path, like SELECT * FROM @mystage/path/
++                    tables.append(Path(stage_path.raw))
++                    return tables
+             table_identifier = find_table_identifier(segment)
+             if table_identifier:
+                 subquery_flag = False
+diff --git a/sqllineage/core/parser/sqlfluff/extractors/copy.py b/sqllineage/core/parser/sqlfluff/extractors/copy.py
+index dc5dd2b..982f1ed 100644
+--- a/sqllineage/core/parser/sqlfluff/extractors/copy.py
++++ b/sqllineage/core/parser/sqlfluff/extractors/copy.py
+@@ -1,10 +1,11 @@
+ from sqlfluff.core.parser import BaseSegment
+ 
+-from sqllineage.core.holders import StatementLineageHolder
++from sqllineage.core.holders import StatementLineageHolder, SubQueryLineageHolder
+ from sqllineage.core.models import Path
+ from sqllineage.core.parser.sqlfluff.extractors.base import BaseExtractor
+ from sqllineage.core.parser.sqlfluff.utils import (
+     find_from_expression_element,
++    find_stage_path,
+     list_child_segments,
+ )
+ from sqllineage.utils.entities import AnalyzerContext
+@@ -19,6 +20,7 @@ class CopyExtractor(BaseExtractor):
+     SUPPORTED_STMT_TYPES = [
+         "copy_statement",
+         "copy_into_table_statement",
++        "copy_into_location_statement",
+     ]
+ 
+     def extract(
+@@ -28,14 +30,7 @@ class CopyExtractor(BaseExtractor):
+         src_flag = tgt_flag = False
+         for segment in list_child_segments(statement):
+             if segment.type == "from_clause":
+-                if from_expression_element := find_from_expression_element(segment):
+-                    for table_expression in from_expression_element.get_children(
+-                        "table_expression"
+-                    ):
+-                        if storage_location := table_expression.get_child(
+-                            "storage_location"
+-                        ):
+-                            holder.add_read(Path(storage_location.raw))
++                self._handle_from_clause(segment, holder)
+             elif segment.type == "keyword":
+                 if segment.raw_upper in ["COPY", "INTO"]:
+                     tgt_flag = True
+@@ -44,13 +39,72 @@ class CopyExtractor(BaseExtractor):
+                 continue
+ 
+             if tgt_flag:
+-                if table := self.find_table(segment):
+-                    holder.add_write(table)
++                if segment.type in ["table_reference", "object_reference"]:
++                    if stage_path := find_stage_path(segment):
++                        # COPY INTO @mystage/path/ FROM ...
++                        holder.add_write(Path(stage_path.raw))
++                    elif table := self.find_table(segment):
++                        holder.add_write(table)
++                elif segment.type in ["literal", "storage_location"]:
++                    holder.add_write(Path(escape_identifier_name(segment.raw)))
+                 tgt_flag = False
+             if src_flag:
+                 if segment.type in ["literal", "storage_location"]:
+                     path = Path(escape_identifier_name(segment.raw))
+                     holder.add_read(path)
++                elif segment.type in ["table_reference", "object_reference"]:
++                    if stage_path := find_stage_path(segment):
++                        # COPY INTO tab1 FROM @mystage/path/
++                        holder.add_read(Path(stage_path.raw))
++                    elif table := self.find_table(segment):
++                        holder.add_read(table)
++                elif segment.type in [
++                    "bracketed",
++                    "select_statement",
++                    "set_expression",
++                ]:
++                    # COPY INTO tab1 FROM (SELECT ... FROM @mystage/path/)
++                    self._handle_subquery(segment, holder)
+                 src_flag = False
+ 
+         return holder
++
++    def _handle_from_clause(
++        self, segment: BaseSegment, holder: SubQueryLineageHolder
++    ) -> None:
++        if from_expression_element := find_from_expression_element(segment):
++            for table_expression in from_expression_element.get_children(
++                "table_expression"
++            ):
++                if storage_location := table_expression.get_child("storage_location"):
++                    holder.add_read(Path(storage_location.raw))
++                elif stage_path := find_stage_path(table_expression):
++                    holder.add_read(Path(stage_path.raw))
++
++    def _handle_subquery(
++        self, segment: BaseSegment, holder: SubQueryLineageHolder
++    ) -> None:
++        from .cte import CteExtractor
++        from .select import SelectExtractor
++
++        subquery = segment
++        if segment.type == "bracketed":
++            subquery = segment.get_child(
++                "select_statement", "set_expression", "with_compound_statement"
++            )
++        if subquery is None:
++            return
++        extractor_cls = (
++            CteExtractor
++            if subquery.type == "with_compound_statement"
++            else SelectExtractor
++        )
++        holder |= self.delegate_to(
++            extractor_cls,
++            subquery,
++            AnalyzerContext(
++                cte=holder.cte,
++                write=holder.write,
++                write_columns=holder.write_columns,
++            ),
++        )
+diff --git a/sqllineage/core/parser/sqlfluff/utils.py b/sqllineage/core/parser/sqlfluff/utils.py
+index ca8b802..fa74b8f 100644
+--- a/sqllineage/core/parser/sqlfluff/utils.py
++++ b/sqllineage/core/parser/sqlfluff/utils.py
+@@ -100,6 +100,20 @@ def find_table_identifier(segment: BaseSegment) -> BaseSegment | None:
+     return table_identifier
+ 
+ 
++def find_stage_path(segment: BaseSegment) -> BaseSegment | None:
++    """
++    recursively find a Snowflake stage path, like @mystage/path/.
++    A stage path is parsed as an identifier segment with get_type() returning
++    stage_path.
++    """
++    if segment.type == "stage_path" or segment.get_type() == "stage_path":
++        return segment
++    for sub_segment in segment.segments:
++        if stage_path := find_stage_path(sub_segment):
++            return stage_path
++    return None
++
++
+ def list_join_clause(segment: BaseSegment) -> list[BaseSegment]:
+     """
+     traverse from_clause, recursively goes into bracket by default
+diff --git a/sqllineagejs/package-lock.json b/sqllineagejs/package-lock.json
+index ba3beff..012a7cd 100644
+--- a/sqllineagejs/package-lock.json
++++ b/sqllineagejs/package-lock.json
+@@ -1283,9 +1283,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1303,9 +1300,6 @@
+         "arm64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1323,9 +1317,6 @@
+         "ppc64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1343,9 +1334,6 @@
+         "s390x"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1363,9 +1351,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "glibc"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [
+@@ -1383,9 +1368,6 @@
+         "x64"
+       ],
+       "dev": true,
+-      "libc": [
+-        "musl"
+-      ],
+       "license": "MIT",
+       "optional": true,
+       "os": [

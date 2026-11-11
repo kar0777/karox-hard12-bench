@@ -1,0 +1,295 @@
+diff --git a/darts/timeseries.py b/darts/timeseries.py
+index 7d56161..a79c1e2 100644
+--- a/darts/timeseries.py
++++ b/darts/timeseries.py
+@@ -1787,12 +1787,15 @@ class TimeSeries:
+         suppress_warnings: bool = False,
+         add_static_covariates: bool | str | list[str] = False,
+         add_metadata: bool | str | list[str] = False,
++        sample: int | None = None,
++        agg: str | float | None = None,
++        quantile: float | None = None,
+     ):
+         """Return a DataFrame representation of the series in a given `backend`.
+ 
+         Each of the series components will appear as a column in the DataFrame.
+-        If the series is stochastic, the samples are returned as columns of the DataFrame with column names
+-        as 'component_s#' (e.g. with two components and two samples:
++        If the series is stochastic and neither `agg` nor `sample` is specified, the samples are returned as
++        columns of the DataFrame with column names as 'component_s#' (e.g. with two components and two samples:
+         'comp0_s0', 'comp0_s1' 'comp1_s0' 'comp1_s1').
+ 
+         Parameters
+@@ -1816,6 +1819,17 @@ class TimeSeries:
+             Whether to add the series' metadata to the resulting DataFrame (one column per metadata entry). If a bool,
+             controls whether to add all metadata entries or none. If a string, or list of strings, specifies the subset
+             of metadata keys / names to add.
++        sample
++            For stochastic series, the sample for which to return values. By default, all samples are returned as
++            separate columns.
++        agg
++            Aggregation to apply over the samples of a stochastic series before creating the DataFrame. Supported
++            values are ``"mean"``, ``"median"``, ``"min"``, ``"max"``, ``"sum"``, ``"std"``, ``"var"``,
++            ``"quantile"``, or a float in ``[0, 1]`` interpreted as a quantile. Cannot be used together with
++            `sample`.
++        quantile
++            Quantile value in ``[0, 1]`` to use when aggregating over samples. This is a shorthand for
++            ``agg=quantile``.
+ 
+         Returns
+         -------
+@@ -1831,8 +1845,25 @@ class TimeSeries:
+                 )
+             time_as_index = False
+ 
+-        values = self._values
+-        if not self.is_deterministic:
++        if agg is not None and sample is not None:
++            raise_log(
++                ValueError(
++                    "Only one of `agg` and `sample` can be specified when calling `to_dataframe()`."
++                ),
++            )
++        if agg is None and quantile is not None:
++            agg = quantile
++            quantile = None
++
++        if agg is not None:
++            values = self._aggregate_values(agg, quantile=quantile)
++            columns = self.components
++            data = values
++        elif sample is not None:
++            values = self._sample_values(sample)
++            columns = self.components
++            data = values
++        elif not self.is_deterministic:
+             if not suppress_warnings:
+                 logger.warning(
+                     "You are transforming a stochastic TimeSeries (it contains several samples). "
+@@ -1842,6 +1873,7 @@ class TimeSeries:
+                     "...)."
+                 )
+ 
++            values = self._values
+             comp_name = list(self.components)
+             samples = range(self.n_samples)
+             columns = [
+@@ -1851,7 +1883,7 @@ class TimeSeries:
+             data = values.reshape(values.shape[0], len(columns))
+         else:
+             columns = self.components
+-            data = values[:, :, 0]
++            data = self._values[:, :, 0]
+         data = {col: data[:, idx] for idx, col in enumerate(columns)}
+ 
+         # handle static covariates
+@@ -2050,30 +2082,139 @@ class TimeSeries:
+         self._assert_deterministic()
+         return self._values[-1, :, 0].copy()
+ 
+-    def values(self, copy: bool = True, sample: int = 0) -> np.ndarray:
++    def _sample_values(self, sample: int) -> np.ndarray:
++        """Return the values of a single sample, validating the sample index."""
++        if self.is_deterministic and sample != 0:
++            raise_log(
++                ValueError(
++                    "This series contains one sample only (deterministic),"
++                    "so only sample=0 is accepted.",
++                ),
++            )
++        return self._values[:, :, sample]
++
++    def _aggregate_values(
++        self, agg: str | float, quantile: float | None = None
++    ) -> np.ndarray:
++        """Aggregate the values over the samples according to `agg`."""
++        if quantile is not None and (
++            not isinstance(agg, str) or agg.lower() not in ("quantile", "q")
++        ):
++            raise_log(
++                ValueError(
++                    "`quantile` can only be used together with `agg='quantile'`, or on its own."
++                ),
++            )
++
++        if isinstance(agg, str):
++            agg_name = agg.lower()
++            if agg_name in ("quantile", "q"):
++                quantile = 0.5 if quantile is None else quantile
++                self._validate_quantile(quantile)
++                return np.quantile(self._values, q=quantile, axis=SMPL_AX)
++
++            agg_functions = {
++                "mean": np.mean,
++                "median": np.median,
++                "min": np.min,
++                "max": np.max,
++                "sum": np.sum,
++                "std": np.std,
++                "var": np.var,
++            }
++            if agg_name not in agg_functions:
++                raise_log(
++                    ValueError(
++                        f"Invalid value for `agg`: {agg!r}. Supported values are "
++                        f"{sorted([*agg_functions, 'quantile'])}, or a float in [0, 1]."
++                    ),
++                )
++            return agg_functions[agg_name](self._values, axis=SMPL_AX)
++
++        if isinstance(agg, bool) or not isinstance(
++            agg, (int, float, np.integer, np.floating)
++        ):
++            raise_log(
++                ValueError(
++                    f"Invalid value for `agg`: {agg!r}. Supported values are "
++                    "'mean', 'median', 'min', 'max', 'sum', 'std', 'var', 'quantile', "
++                    "or a float in [0, 1]."
++                ),
++            )
++        quantile = float(agg)
++        self._validate_quantile(quantile)
++        return np.quantile(self._values, q=quantile, axis=SMPL_AX)
++
++    @staticmethod
++    def _validate_quantile(quantile: float) -> None:
++        if not 0 <= quantile <= 1:
++            raise_log(
++                ValueError("The quantile value must be between 0 and 1 inclusive."),
++            )
++
++    def _warn_stochastic_values(self, method_name: str) -> None:
++        logger.warning(
++            f"You are transforming a stochastic TimeSeries (it contains several samples). "
++            "The resulting array is a 2D object with only the first sample. "
++            "By default, `sample=0` is used. "
++            "If this is not the expected behavior, extract statistics from the TimeSeries before "
++            f"calling `{method_name}` (e.g. with `TimeSeries.quantile(0.5).values()` or "
++            "`TimeSeries.mean().values()`), or use the `agg` parameter (e.g. `agg='median'`)."
++        )
++
++    def values(
++        self,
++        copy: bool = True,
++        sample: int | None = None,
++        agg: str | float | None = None,
++        quantile: float | None = None,
++    ) -> np.ndarray:
+         """Return a 2-D array of shape (time, component), containing the series' values for one `sample`.
+ 
++        For stochastic series, only the first sample is returned by default and a warning is logged. Use
++        `agg` (or `quantile`) to aggregate over the samples instead, for example ``agg="median"`` or
++        ``agg=0.5``.
++
+         Parameters
+         ----------
+         copy
+             Whether to return a copy of the values, otherwise returns a view.
+             Leave it to True unless you know what you are doing.
+         sample
+-            For stochastic series, the sample for which to return values. Default: 0 (first sample).
++            For stochastic series, the sample for which to return values. By default, the first sample is
++            returned. Cannot be used together with `agg`.
++        agg
++            Aggregation to apply over the samples of a stochastic series. Supported values are ``"mean"``,
++            ``"median"``, ``"min"``, ``"max"``, ``"sum"``, ``"std"``, ``"var"``, ``"quantile"``, or a
++            float in ``[0, 1]`` interpreted as a quantile. Cannot be used together with `sample`.
++        quantile
++            Quantile value in ``[0, 1]`` to use when aggregating over samples. This is a shorthand for
++            ``agg=quantile``.
+ 
+         Returns
+         -------
+         numpy.ndarray
+             The values composing the time series.
+         """
+-        if self.is_deterministic and sample != 0:
++        if agg is not None and sample is not None:
+             raise_log(
+                 ValueError(
+-                    "This series contains one sample only (deterministic),"
+-                    "so only sample=0 is accepted.",
++                    "Only one of `agg` and `sample` can be specified when calling `values()`."
+                 ),
+             )
+-        values = self._values[:, :, sample]
++        if agg is None and quantile is not None:
++            agg = quantile
++            quantile = None
++
++        if agg is not None:
++            values = self._aggregate_values(agg, quantile=quantile)
++        else:
++            if sample is None:
++                sample = 0
++                if not self.is_deterministic:
++                    self._warn_stochastic_values("values()")
++            values = self._sample_values(sample)
++
+         if copy:
+             values = values.copy()
+         return values
+@@ -2118,15 +2259,33 @@ class TimeSeries:
+             values = values.copy()
+         return values
+ 
+-    def univariate_values(self, copy: bool = True, sample: int = 0) -> np.ndarray:
++    def univariate_values(
++        self,
++        copy: bool = True,
++        sample: int | None = None,
++        agg: str | float | None = None,
++        quantile: float | None = None,
++    ) -> np.ndarray:
+         """Return a 1-D Numpy array of shape (time,) containing the univariate series' values for one `sample`.
+ 
++        For stochastic series, only the first sample is returned by default and a warning is logged. Use
++        `agg` (or `quantile`) to aggregate over the samples instead, for example ``agg="median"`` or
++        ``agg=0.5``.
++
+         Parameters
+         ----------
+         copy
+             Whether to return a copy of the values. Leave it to True unless you know what you are doing.
+         sample
+-            For stochastic series, the sample for which to return values. Default: 0 (first sample).
++            For stochastic series, the sample for which to return values. By default, the first sample is
++            returned. Cannot be used together with `agg`.
++        agg
++            Aggregation to apply over the samples of a stochastic series. Supported values are ``"mean"``,
++            ``"median"``, ``"min"``, ``"max"``, ``"sum"``, ``"std"``, ``"var"``, ``"quantile"``, or a
++            float in ``[0, 1]`` interpreted as a quantile. Cannot be used together with `sample`.
++        quantile
++            Quantile value in ``[0, 1]`` to use when aggregating over samples. This is a shorthand for
++            ``agg=quantile``.
+ 
+         Returns
+         -------
+@@ -2135,7 +2294,26 @@ class TimeSeries:
+         """
+ 
+         self._assert_univariate()
+-        values = self._values[:, 0, sample]
++        if agg is not None and sample is not None:
++            raise_log(
++                ValueError(
++                    "Only one of `agg` and `sample` can be specified when calling "
++                    "`univariate_values()`."
++                ),
++            )
++        if agg is None and quantile is not None:
++            agg = quantile
++            quantile = None
++
++        if agg is not None:
++            values = self._aggregate_values(agg, quantile=quantile)
++        else:
++            if sample is None:
++                sample = 0
++                if not self.is_deterministic:
++                    self._warn_stochastic_values("univariate_values()")
++            values = self._sample_values(sample)
++        values = values[:, 0]
+         if copy:
+             values = values.copy()
+         return values

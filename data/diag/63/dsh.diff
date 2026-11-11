@@ -1,0 +1,58 @@
+diff --git a/uxarray/grid/utils.py b/uxarray/grid/utils.py
+index ce50d98..9fd6bca 100644
+--- a/uxarray/grid/utils.py
++++ b/uxarray/grid/utils.py
+@@ -3,13 +3,13 @@ import xarray as xr
+ from numba import njit, prange
+ 
+ from uxarray.constants import EDGE_NODE_SORT_THRESHOLD, INT_DTYPE, INT_FILL_VALUE
++from uxarray.utils.computing import diff_of_products
+ from uxarray.utils.numba_math import (
+     _numba_add3,
+     _numba_cross3,
+     _numba_dot3,
+     _numba_mul3_scalar,
+     _numba_norm3,
+-    _numba_sub3,
+ )
+ from uxarray.utils.parallel import parallel_njit
+ 
+@@ -17,7 +17,13 @@ from uxarray.utils.parallel import parallel_njit
+ @njit(cache=True)
+ def _small_angle_of_2_vectors(u, v):
+     """
+-    Compute the smallest angle between two vectors using the new _angle_of_2_vectors.
++    Compute the smallest angle between two vectors using Kahan's formula.
++
++    Kahan's formula evaluates the angle from the magnitudes of
++    ``v * |u| - u * |v|`` and ``v * |u| + u * |v|``. For nearly parallel
++    vectors each component of the difference is a cancellation-prone
++    difference of nearly equal products, so it is evaluated with the
++    compensated ``diff_of_products`` primitive.
+ 
+     Parameters
+     ----------
+@@ -31,9 +37,20 @@ def _small_angle_of_2_vectors(u, v):
+     float
+         The smallest angle between `u` and `v` in radians.
+     """
+-    u_times_v_norm = _numba_mul3_scalar(v, _numba_norm3(u))
+-    v_times_u_norm = _numba_mul3_scalar(u, _numba_norm3(v))
+-    vec_minus = _numba_sub3(u_times_v_norm, v_times_u_norm)
++    u_norm = _numba_norm3(u)
++    v_norm = _numba_norm3(v)
++
++    minus_x_hi, minus_x_lo = diff_of_products(v[0], u_norm, u[0], v_norm)
++    minus_y_hi, minus_y_lo = diff_of_products(v[1], u_norm, u[1], v_norm)
++    minus_z_hi, minus_z_lo = diff_of_products(v[2], u_norm, u[2], v_norm)
++    vec_minus = (
++        minus_x_hi + minus_x_lo,
++        minus_y_hi + minus_y_lo,
++        minus_z_hi + minus_z_lo,
++    )
++
++    u_times_v_norm = _numba_mul3_scalar(v, u_norm)
++    v_times_u_norm = _numba_mul3_scalar(u, v_norm)
+     vec_sum = _numba_add3(u_times_v_norm, v_times_u_norm)
+     angle_u_v_rad = 2 * np.arctan2(_numba_norm3(vec_minus), _numba_norm3(vec_sum))
+     return angle_u_v_rad

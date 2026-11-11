@@ -1,0 +1,216 @@
+diff --git a/graphistry/plugins/cugraph.py b/graphistry/plugins/cugraph.py
+index 20409bc..c0d1e1c 100644
+--- a/graphistry/plugins/cugraph.py
++++ b/graphistry/plugins/cugraph.py
+@@ -1,4 +1,4 @@
+-from typing import Any, Dict, List, Optional, Union
++from typing import Any, Dict, List, Optional, Tuple, Union
+ import pandas as pd
+ import warnings
+ 
+@@ -20,6 +20,44 @@ DST_CUGRAPH = 'target'
+ NODE_CUGRAPH = NODE
+ 
+ 
++def _reserve_graph_return_endpoints(edges: Any) -> Tuple[str, str]:  # hygiene-ok: explicit-any -- pandas/cuDF/dask edge frame
++    """Pick temporary endpoint names that cannot shadow user edge columns."""
++    from graphistry.compute.util import generate_safe_column_name_from
++
++    occupied = list(edges.columns)
++    source = generate_safe_column_name_from('src', occupied, prefix='__cugraph_', suffix='__', start=0)
++    occupied.append(source)
++    destination = generate_safe_column_name_from('dst', occupied, prefix='__cugraph_', suffix='__', start=0)
++    return source, destination
++
++
++class _CugraphEndpointAlias:
++    """View a cuGraph graph through temporary endpoint column names."""
++
++    def __init__(self, G: Any, source: str, destination: str) -> None:  # hygiene-ok: explicit-any -- wraps a cugraph.Graph
++        self._G = G
++        self.source_columns = source
++        self.destination_columns = destination
++
++    def view_edge_list(self) -> Any:  # hygiene-ok: explicit-any -- pandas/cuDF edge list
++        edges = self._G.view_edge_list()
++        original_source = getattr(self._G, 'source_columns', None)
++        original_destination = getattr(self._G, 'destination_columns', None)
++        rename = {}
++        if isinstance(original_source, str) and original_source in edges.columns:
++            rename[original_source] = self.source_columns
++        elif 'src' in edges.columns:
++            rename['src'] = self.source_columns
++        if isinstance(original_destination, str) and original_destination in edges.columns:
++            rename[original_destination] = self.destination_columns
++        elif 'dst' in edges.columns:
++            rename['dst'] = self.destination_columns
++        return edges.rename(columns=rename) if rename else edges
++
++    def __getattr__(self, name: str) -> Any:  # hygiene-ok: explicit-any -- delegate arbitrary cugraph.Graph attributes
++        return getattr(self._G, name)
++
++
+ def df_to_gdf(df: Any):
+     import cudf
+     if isinstance(df, cudf.DataFrame):
+@@ -357,14 +395,21 @@ def compute_cugraph_core(
+             out = out[0]
+         if out_col is not None:
+             raise ValueError('Graph returned, but out_col was specified')
+-        self2 = self
+-        if self._source != out.source_columns:
+-            logger.debug('Switching g source column name to G source column name to work around cugraph inconsistency')
+-            if out.source_columns == 'src':
+-                self2 = self.edges(self._edges.rename(columns={self._source: 'src', self._destination: 'dst'}), 'src', 'dst')
+-        res = from_cugraph(self2, out, load_nodes=False)
+-        if not (self2 is self):
++        out_source = getattr(out, 'source_columns', None) or self._source
++        out_destination = getattr(out, 'destination_columns', None) or self._destination
++        if self._source != out_source or self._destination != out_destination:
++            logger.debug('Switching g endpoint column names to G endpoint column names to work around cugraph inconsistency')
++            tmp_source, tmp_destination = _reserve_graph_return_endpoints(self._edges)
++            self2 = self.edges(
++                self._edges.rename(columns={self._source: tmp_source, self._destination: tmp_destination}),
++                tmp_source,
++                tmp_destination
++            )
++            aliased_out = _CugraphEndpointAlias(out, tmp_source, tmp_destination)
++            res = from_cugraph(self2, aliased_out, load_nodes=False)
+             res = res.edges(self._edges, self._source, self._destination)
++        else:
++            res = from_cugraph(self, out, load_nodes=False)
+         return res
+ 
+     raise ValueError('Unsupported algorithm: %s', alg)
+diff --git a/graphistry/tests/plugins/test_cugraph_graph_return_names.py b/graphistry/tests/plugins/test_cugraph_graph_return_names.py
+new file mode 100644
+index 0000000..b75ee3e
+--- /dev/null
++++ b/graphistry/tests/plugins/test_cugraph_graph_return_names.py
+@@ -0,0 +1,126 @@
++import sys
++from types import ModuleType
++from typing import Any, Dict, List
++
++import pandas as pd
++import pytest
++
++import graphistry
++from graphistry.plugins import cugraph as cugraph_plugin
++from graphistry.plugins.cugraph import _reserve_graph_return_endpoints
++
++
++class _CudfLikeFrame(pd.DataFrame):
++    """Match cuDF's rejection of duplicate column names during rename."""
++
++    def rename(self, *args: Any, **kwargs: Any) -> "_CudfLikeFrame":
++        out = super().rename(*args, **kwargs)
++        if out.columns.duplicated().any():
++            raise ValueError("Duplicate column names are not allowed")
++        return out
++
++
++class _FakeCugraphOut:
++    def __init__(
++        self,
++        edges: pd.DataFrame,
++        source_columns: str = "src",
++        destination_columns: str = "dst",
++    ):
++        self._edges = edges
++        self.source_columns = source_columns
++        self.destination_columns = destination_columns
++
++    def view_edge_list(self) -> pd.DataFrame:
++        return self._edges.copy()
++
++
++@pytest.fixture
++def fake_rapids(monkeypatch: pytest.MonkeyPatch) -> None:
++    cudf = ModuleType("cudf")
++    cudf.DataFrame = _CudfLikeFrame
++    cudf.Series = pd.Series
++    cudf.from_pandas = _CudfLikeFrame
++    monkeypatch.setitem(sys.modules, "cudf", cudf)
++
++    cugraph = ModuleType("cugraph")
++    cugraph.k_core = lambda G, **params: G
++    monkeypatch.setitem(sys.modules, "cugraph", cugraph)
++
++
++def _edges_with(extra_columns: List[str]) -> _CudfLikeFrame:
++    data: Dict[str, Any] = {
++        "s": ["a", "b", "c"],
++        "d": ["b", "c", "a"],
++        "weight": [1.0, 2.0, 3.0],
++    }
++    for col in extra_columns:
++        data[col] = [f"{col}-{i}" for i in range(3)]
++    return _CudfLikeFrame(pd.DataFrame(data))
++
++
++def test_reserve_graph_return_endpoints_skips_user_columns() -> None:
++    columns = ["s", "d", "src", "dst", "__cugraph_src_0__", "__cugraph_dst_0__"]
++    source, destination = _reserve_graph_return_endpoints(pd.DataFrame(columns=columns))
++
++    assert source not in columns
++    assert destination not in columns
++    assert source != destination
++
++
++@pytest.mark.parametrize(
++    "extra_columns",
++    [
++        [],
++        ["src"],
++        ["dst"],
++        ["src", "dst"],
++        ["source"],
++        ["target"],
++        ["source", "target"],
++        ["__cugraph_src_0__", "__cugraph_dst_0__"],
++    ],
++)
++def test_graph_return_preserves_edges_with_reserved_endpoint_names(
++    fake_rapids: None,
++    monkeypatch: pytest.MonkeyPatch,
++    extra_columns: List[str],
++) -> None:
++    edges = _edges_with(extra_columns)
++    g = graphistry.edges(edges, "s", "d")
++    out = _FakeCugraphOut(pd.DataFrame({"src": edges["s"], "dst": edges["d"]}))
++    monkeypatch.setattr(cugraph_plugin, "to_cugraph", lambda *args, **kwargs: out)
++
++    first = cugraph_plugin.compute_cugraph_core(g, "k_core")
++    second = cugraph_plugin.compute_cugraph_core(first, "k_core")
++
++    for result in (first, second):
++        assert result._source == "s"
++        assert result._destination == "d"
++        assert list(result._edges.columns) == list(edges.columns)
++        assert result._edges.equals(edges)
++
++    assert list(g._edges.columns) == list(edges.columns)
++    assert g._source == "s"
++    assert g._destination == "d"
++    assert g._edges.equals(edges)
++
++
++def test_graph_return_reserves_names_for_differently_named_user_endpoints(
++    fake_rapids: None,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    edges = _edges_with(["src", "dst"])
++    g = graphistry.edges(edges, "src", "dst")
++    out = _FakeCugraphOut(
++        pd.DataFrame({"src": edges["src"], "dst": edges["dst"]}),
++        source_columns="source",
++        destination_columns="target",
++    )
++    monkeypatch.setattr(cugraph_plugin, "to_cugraph", lambda *args, **kwargs: out)
++
++    result = cugraph_plugin.compute_cugraph_core(g, "k_core")
++
++    assert result._source == "src"
++    assert result._destination == "dst"
++    assert result._edges.equals(edges)

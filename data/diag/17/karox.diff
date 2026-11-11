@@ -1,0 +1,132 @@
+diff --git a/mempalace/cli/cmd_mine.py b/mempalace/cli/cmd_mine.py
+index 0fc2267..00047f2 100644
+--- a/mempalace/cli/cmd_mine.py
++++ b/mempalace/cli/cmd_mine.py
+@@ -216,6 +216,18 @@ def cmd_mine(args):
+             file=sys.stderr,
+         )
+         sys.exit(1)
++    finally:
++        # A hook-spawned mine inherits MEMPALACE_MINE_PID_FILE. miner.mine()
++        # clears its own slot in its finally, but the convos and extract modes
++        # never did, so a clean `--mode convos` mine left its slot claimed
++        # until the stale check reclaimed it. Release it for every mode.
++        if os.environ.get("MEMPALACE_MINE_PID_FILE"):
++            try:
++                from ..miner import _cleanup_mine_pid_file
++            except ImportError:
++                _cleanup_mine_pid_file = None
++            if _cleanup_mine_pid_file is not None:
++                _cleanup_mine_pid_file()
+ 
+ 
+ class UnknownSourceAdapterError(ValueError):
+diff --git a/mempalace/cli/parser.py b/mempalace/cli/parser.py
+index 56af628..6d6aec7 100644
+--- a/mempalace/cli/parser.py
++++ b/mempalace/cli/parser.py
+@@ -19,6 +19,77 @@ def _reconfigure_stdio_utf8_on_windows():
+     reconfigure_stdio_utf8_on_windows(stdout_errors="replace", stderr_errors="replace")
+ 
+ 
++# Grace period a hook-spawned mine gets to shut down after its work is done.
++# Overridable for hosts whose backend needs longer to close and for tests that
++# cannot wait a minute.
++_HOOK_MINE_EXIT_GRACE_SECONDS = 60.0
++_HOOK_MINE_EXIT_GRACE_ENV = "MEMPALACE_MINE_EXIT_GRACE_SECONDS"
++
++
++def _hook_mine_exit_grace_seconds() -> float:
++    """Return how long a hook-spawned mine may take to shut down."""
++    raw = os.environ.get(_HOOK_MINE_EXIT_GRACE_ENV)
++    if raw is None or not raw.strip():
++        return _HOOK_MINE_EXIT_GRACE_SECONDS
++    try:
++        return max(0.0, float(raw))
++    except ValueError:
++        return _HOOK_MINE_EXIT_GRACE_SECONDS
++
++
++def _system_exit_status(exc: SystemExit) -> int:
++    """Return the process status a ``SystemExit`` will produce."""
++    code = exc.code
++    if code is None:
++        return 0
++    if isinstance(code, int):
++        return code
++    return 1
++
++
++def _arm_hook_mine_exit_watchdog(exit_code: int = 0) -> None:
++    """Force-exit a hook-spawned mine whose interpreter shutdown hangs.
++
++    A mine detached by the Stop hook can finish its work, print its ``Done.``
++    banner, and then never exit: chromadb/onnxruntime leave a non-daemon
++    thread or an atexit handler that blocks ``threading._shutdown()``, pegging
++    a core for hours and keeping the ``mine_pids/`` slot claimed. The daemon
++    timer keeps running while the interpreter joins non-daemon threads and
++    while atexit handlers run, so it covers both hang points. A normal exit is
++    never delayed: the timer dies with the process.
++
++    Only hook-spawned mines are bounded. ``_spawn_mine`` marks its child with
++    ``MEMPALACE_MINE_PID_FILE``, so a manual ``mempalace mine`` is never
++    force-exited.
++    """
++    if not os.environ.get("MEMPALACE_MINE_PID_FILE"):
++        return  # manual `mempalace mine` is never force-exited
++    import threading
++
++    from ..miner import _cleanup_mine_pid_file
++
++    def _force_exit():
++        # Capture what kept shutdown alive before leaving: every live thread's
++        # stack goes to stderr, which the hook redirected into hook.log.
++        try:
++            import faulthandler
++
++            faulthandler.dump_traceback()
++        except Exception:  # noqa: BLE001 - exiting is the point
++            pass
++        _cleanup_mine_pid_file()
++        try:
++            sys.stdout.flush()
++            sys.stderr.flush()
++        except Exception:  # noqa: BLE001 - exiting is the point
++            pass
++        os._exit(exit_code)
++
++    timer = threading.Timer(_hook_mine_exit_grace_seconds(), _force_exit)
++    timer.daemon = True
++    timer.start()
++
++
+ def main():
+     """CLI entry point for the ``mempalace`` console script.
+ 
+@@ -1209,4 +1280,25 @@ def main():
+         "status": cmd_status,
+         "update": cmd_update,
+     }
+-    dispatch[args.command](args)
++    if args.command != "mine":
++        dispatch[args.command](args)
++        return
++
++    mine_exit_code = 0
++    try:
++        dispatch[args.command](args)
++    except SystemExit as exc:
++        mine_exit_code = _system_exit_status(exc)
++        raise
++    except BaseException:
++        mine_exit_code = 1
++        raise
++    finally:
++        # Bound the shutdown of a hook-spawned mine so a finished mine cannot
++        # outlive its own Done banner, pegging a core and holding its
++        # mine_pids/ slot until someone kills it. A failed mine keeps its
++        # status instead of being force-exited as a success.
++        if mine_exit_code:
++            _arm_hook_mine_exit_watchdog(mine_exit_code)
++        else:
++            _arm_hook_mine_exit_watchdog()
