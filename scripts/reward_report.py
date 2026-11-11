@@ -36,4 +36,4 @@ for a in arms:
     v = rows[a]
     m = [x[1] for x in v if x[1] is not None]
     print(f"| {a} | {len(v)} | {sum(x[0] for x in v)} | {sum(x[0] for x in v) / len(v):.0%} | "
-          f"{sum(1 for x in v if x[2])} | {sum(m) / max(len(m), 1):.1f} |")
+          f"{sum(1 for x in v if x[2] and not x[0])} | {sum(m) / max(len(m), 1):.1f} |")
