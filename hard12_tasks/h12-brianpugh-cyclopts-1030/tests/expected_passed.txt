@@ -1,0 +1,17 @@
+tests/py312/test_type_alias_parameter.py::test_type_alias_star_parameter_without_default_raises[OptsStar-Opts]
+tests/py312/test_type_alias_parameter.py::test_type_alias_star_parameter_without_default_raises[OptsStarAlias-Opts]
+tests/py312/test_type_alias_parameter.py::test_type_alias_star_parameter_without_default_raises[StarOptsAlias-StarOpts]
+tests/py312/test_type_alias_parameter.py::test_parameter_from_annotation_type_alias
+tests/py312/test_type_alias_parameter.py::test_parameter_get_negatives_with_type_alias
+tests/py312/test_type_alias_parameter.py::test_resolve_functions_with_type_alias[resolve(Annotated[int])]
+tests/py312/test_type_alias_parameter.py::test_resolve_functions_with_type_alias[resolve(Optional[int])]
+tests/py312/test_type_alias_parameter.py::test_resolve_functions_with_type_alias[resolve_annotated(Annotated[int])]
+tests/py312/test_type_alias_parameter.py::test_resolve_functions_with_type_alias[resolve_optional(Optional[int])]
+tests/py312/test_type_alias_parameter.py::test_type_alias_in_help
+tests/py312/test_type_alias_parameter.py::test_type_alias_optional_with_parameter_alias[--foo
+tests/py312/test_type_alias_parameter.py::test_type_alias_optional_with_parameter_alias[-f
+tests/py312/test_type_alias_parameter.py::test_type_alias_over_cyclopts_type_bare
+tests/py312/test_type_alias_parameter.py::test_type_alias_over_cyclopts_type_optional
+tests/py312/test_type_alias_parameter.py::test_type_alias_star_parameter_with_default
+tests/py312/test_type_alias_parameter.py::test_type_alias_with_parameter_alias[--foo
+tests/py312/test_type_alias_parameter.py::test_type_alias_with_parameter_alias[-f

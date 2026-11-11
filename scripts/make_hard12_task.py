@@ -124,9 +124,7 @@ exit 0
     # CLIs get no verification hint at all; KaroX gets only "pytest / python".
     (out / "karo_options.json").write_text(json.dumps({
         "task_dir": "/testbed", "verify_command": [[PY, "-m", "pytest", "*"], [PY, "*"]],
-    }, indent=2) + "
-", encoding="utf-8", newline="
-")
+    }, indent=2) + "\n", encoding="utf-8", newline="\n")
     (out / "README.md").write_text(
         f"# HARD12 task `{name}`\n\n| item | value |\n|---|---|\n| source | {cand['url']} |\n"
         f"| issue | #{cand['issue']} (created {cand['issue_created'][:10]}) |\n| PR created / merged | "

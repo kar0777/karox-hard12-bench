@@ -1,0 +1,80 @@
+diff --git a/tests/commands/create/test_install_app_support_package.py b/tests/commands/create/test_install_app_support_package.py
+index 421db587b..dd669c5d4 100644
+--- a/tests/commands/create/test_install_app_support_package.py
++++ b/tests/commands/create/test_install_app_support_package.py
+@@ -445,9 +445,11 @@ def test_offline_install(
+     myapp,
+     support_path,
+     app_requirements_path_index,
++    monkeypatch,
+ ):
+     """If the computer is offline, an error is raised."""
+-    stream_mock = create_command.tools.httpx2.stream = mock.MagicMock()
++    stream_mock = mock.MagicMock()
++    monkeypatch.setattr(create_command.tools.httpx2, "stream", stream_mock)
+     stream_mock.return_value.__enter__.side_effect = httpx2.TransportError(
+         "Unstable connection"
+     )
+diff --git a/tests/commands/create/test_install_stub_binary.py b/tests/commands/create/test_install_stub_binary.py
+index 2f7871a13..da65ac96c 100644
+--- a/tests/commands/create/test_install_stub_binary.py
++++ b/tests/commands/create/test_install_stub_binary.py
+@@ -514,9 +514,11 @@ def test_offline_install(
+     create_command,
+     myapp,
+     stub_binary_revision_path_index,
++    monkeypatch,
+ ):
+     """If the computer is offline, an error is raised."""
+-    stream_mock = create_command.tools.httpx2.stream = mock.MagicMock()
++    stream_mock = mock.MagicMock()
++    monkeypatch.setattr(create_command.tools.httpx2, "stream", stream_mock)
+     stream_mock.return_value.__enter__.side_effect = httpx2.TransportError(
+         "Unstable connection"
+     )
+diff --git a/tests/integrations/file/test_File__download.py b/tests/integrations/file/test_File__download.py
+index eee28062d..09f64f993 100644
+--- a/tests/integrations/file/test_File__download.py
++++ b/tests/integrations/file/test_File__download.py
+@@ -714,6 +714,20 @@ def test_ssl_verification_error(mock_tools):
+     mock_tools.os.remove.assert_not_called()
+ 
+ 
++def test_proxy_error(mock_tools):
++    """Proxy failures identify the proxy settings and preserve the reported cause."""
++    mock_tools.httpx2.stream.side_effect = httpx2.ProxyError(
++        "407 Proxy Authentication Required"
++    )
++    with pytest.raises(NetworkFailure) as exc_info:
++        mock_tools.file.download("https://example.com/file.zip", mock_tools.base_path)
++
++    message = str(exc_info.value)
++    assert "407 Proxy Authentication Required" in message
++    assert "HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, and NO_PROXY" in message
++    assert "is your computer offline?" not in message
++
++
+ def test_unknown_httpcore_connectionerror(mock_tools):
+     """NetworkFailure is raised if an unknown core connection error occurs."""
+     # Mock a connection error at the level of httpcore2
+@@ -883,3 +897,20 @@ def test_malformed_expected_hash(mock_tools, expected_hash):
+         )
+ 
+     mock_tools.httpx2.stream.assert_not_called()
++
++
++@pytest.mark.parametrize(
++    ("contents", "hint"),
++    [(None, "existing CA certificate bundle"), ("invalid", "valid CA certificates")],
++    ids=["missing-file", "invalid-certificate"],
++)
++def test_invalid_certificate_file(mock_tools, monkeypatch, tmp_path, contents, hint):
++    """A missing or invalid CA bundle gives an actionable SSL_CERT_FILE error."""
++    bundle = tmp_path / "ca.pem"
++    if contents is not None:
++        bundle.write_text(contents, encoding="utf-8")
++    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
++    mock_tools.httpx2 = httpx2
++
++    with pytest.raises(BriefcaseCommandError, match=f"SSL_CERT_FILE.*{hint}"):
++        mock_tools.file.download("https://example.com/file.zip", tmp_path)

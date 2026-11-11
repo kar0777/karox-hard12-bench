@@ -1,0 +1,4 @@
+tests/brokers/confluent/test_message.py::test_batch_nack_rewinds_every_partition
+tests/brokers/kafka/test_message.py::test_batch_nack_rewinds_every_partition
+tests/brokers/confluent/test_message.py::test_single_message_nack_rewinds_its_partition
+tests/brokers/kafka/test_message.py::test_single_message_nack_rewinds_its_partition

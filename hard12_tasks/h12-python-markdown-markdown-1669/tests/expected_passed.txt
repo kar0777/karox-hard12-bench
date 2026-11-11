@@ -1,0 +1,5 @@
+tests/test_syntax/inline/test_code.py::TestCode::test_bigger_end
+tests/test_syntax/inline/test_code.py::TestCode::test_code_comments
+tests/test_syntax/inline/test_code.py::TestCode::test_code_html
+tests/test_syntax/inline/test_code.py::TestCode::test_noname_tag
+tests/test_syntax/inline/test_code.py::TestCode::test_smaller_end

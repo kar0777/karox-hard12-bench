@@ -1,0 +1,10 @@
+tests/test_query_schema.py::test_optional_query_schema_not_sent_uses_default
+tests/test_query_schema.py::test_optional_query_schema_openapi_params
+tests/test_query_schema.py::test_optional_schema_default_only_when_annotation_allows_none
+tests/test_query_schema.py::test_required_nested_query_schema_keeps_defaults_and_loc
+tests/test_query_schema.py::test_optional_query_schema
+tests/test_query_schema.py::test_request
+tests/test_query_schema.py::test_request_mixed
+tests/test_query_schema.py::test_request_query_params_using_basemodel
+tests/test_query_schema.py::test_schema
+tests/test_query_schema.py::test_schema_all_of_no_ref

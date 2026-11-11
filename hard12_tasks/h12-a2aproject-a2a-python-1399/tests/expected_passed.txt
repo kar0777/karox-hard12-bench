@@ -1,0 +1,9 @@
+tests/server/cluster/test_database_event_stream.py::test_as_int_rejects_non_integer_version
+tests/server/cluster/test_database_event_stream.py::test_initialize_creates_table_and_is_idempotent
+tests/server/cluster/test_database_event_stream.py::test_other_owner_context_does_not_receive_events[sqlite]
+tests/server/cluster/test_database_event_stream.py::test_owner_context_succeeds_on_all_methods[sqlite]
+tests/server/cluster/test_database_event_stream.py::test_publish_is_noop[sqlite]
+tests/server/cluster/test_database_event_stream.py::test_stream_accepts_context_warns_once_per_type
+tests/server/cluster/test_database_event_stream.py::test_stream_delivers_events_written_by_store[sqlite]
+tests/server/cluster/test_database_event_stream.py::test_stream_response_to_event_raises_on_empty
+tests/server/cluster/test_database_event_stream.py::test_stream_response_to_event_roundtrips_all_kinds

@@ -1,0 +1,11 @@
+Tests/test_bgzf.py::BgzfTests::test_write_random_data
+Tests/test_bgzf.py::BgzfTests::test_append_mode
+Tests/test_bgzf.py::BgzfTests::test_double_flush
+Tests/test_bgzf.py::BgzfTests::test_many_blocks_in_single_read
+Tests/test_bgzf.py::BgzfTests::test_reader_with_binary_fileobj
+Tests/test_bgzf.py::BgzfTests::test_reader_with_non_binary_fileobj
+Tests/test_bgzf.py::BgzfTests::test_write_tell
+Tests/test_bgzf.py::BgzfTests::test_writer_passes_on_plain_file_handle
+Tests/test_bgzf.py::BgzfTests::test_writer_with_binary_fileobj
+Tests/test_bgzf.py::BgzfTests::test_writer_with_non_binary_file
+Tests/test_bgzf.py::BgzfTests::test_writer_with_non_binary_fileobj

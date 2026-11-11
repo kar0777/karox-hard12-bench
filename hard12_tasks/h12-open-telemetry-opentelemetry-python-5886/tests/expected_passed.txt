@@ -1,0 +1,12 @@
+opentelemetry-api/tests/test_sdk_backcompat.py::TestFrozenLogger::test_emit_and_enabled
+opentelemetry-api/tests/test_sdk_backcompat.py::TestFrozenMeter::test_instruments_created_before_provider_is_set
+opentelemetry-api/tests/test_sdk_backcompat.py::TestFrozenMeter::test_unknown_keyword_argument
+opentelemetry-api/tests/test_sdk_backcompat.py::TestFrozenTracer::test_start_as_current_span
+opentelemetry-api/tests/test_sdk_backcompat.py::TestFrozenTracer::test_start_span
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_decorated_functions
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_generated_source
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_kwargs_subclass_is_not_wrapped
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_missing_required_and_excess_positional_args_still_raise_type_error
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_multilevel_inheritance_super_calls
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_subclass_without_kwargs_is_wrapped
+opentelemetry-api/tests/util/test_compat.py::TestSignatureCompatABC::test_unadaptable_override_does_not_break_class_definition

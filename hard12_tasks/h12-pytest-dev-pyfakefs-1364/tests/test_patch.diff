@@ -1,0 +1,57 @@
+diff --git a/pyfakefs/tests/fake_filesystem_shutil_test.py b/pyfakefs/tests/fake_filesystem_shutil_test.py
+index 25ee0ad2..3eef8141 100644
+--- a/pyfakefs/tests/fake_filesystem_shutil_test.py
++++ b/pyfakefs/tests/fake_filesystem_shutil_test.py
+@@ -91,6 +91,18 @@ def test_rmtree(self):
+         self.assertFalse(os.path.exists(dir_path))
+         self.assertFalse(os.path.exists(file_path))
+ 
++    def test_rmtree_with_symlink_to_dir(self):
++        skip_if_symlink_not_supported()
++        directory = self.make_path("xyzzy")
++        target_dir = self.make_path("target_dir")
++        target_file = self.os.path.join(target_dir, "file")
++        self.create_file(target_file)
++        link_path = self.os.path.join(directory, "link_to_dir")
++        self.create_symlink(link_path, target_dir)
++        shutil.rmtree(directory)
++        self.assertFalse(self.os.path.exists(directory))
++        self.assertTrue(self.os.path.exists(target_file))
++
+     def test_rmtree_with_trailing_slash(self):
+         directory = self.make_path("xyzzy")
+         dir_path = os.path.join(directory, "subdir")
+diff --git a/pyfakefs/tests/fake_os_test.py b/pyfakefs/tests/fake_os_test.py
+index 39cb74f8..d4d5fd85 100644
+--- a/pyfakefs/tests/fake_os_test.py
++++ b/pyfakefs/tests/fake_os_test.py
+@@ -4858,6 +4858,29 @@ def test_walk_followsymlink_enabled(self):
+             followlinks=True,
+         )
+ 
++    @unittest.skipIf(
++        not hasattr(os, "_walk_symlinks_as_files"),
++        "os._walk_symlinks_as_files not available",
++    )
++    def test_walk_symlinks_as_files(self):
++        # os._walk_symlinks_as_files is used by shutil.rmtree()
++        self.check_posix_only()
++        base_dir = self.make_path("foo")
++        link_dir = self.make_path("linked")
++        self.create_file(self.os.path.join(link_dir, "subfile"))
++        self.create_file(self.os.path.join(base_dir, "bar", "baz"))
++        self.create_symlink(self.os.path.join(base_dir, "created_link"), link_dir)
++
++        expected = [
++            (base_dir, ["bar"], ["created_link"]),
++            (self.os.path.join(base_dir, "bar"), [], ["baz"]),
++        ]
++        followlinks = os._walk_symlinks_as_files  # type: ignore[attr-defined]
++        self.assertWalkResults(expected, base_dir, followlinks=followlinks)
++        self.assertWalkResults(
++            expected, base_dir, topdown=False, followlinks=followlinks
++        )
++
+     def test_walk_linked_file_in_subdir(self):
+         # regression test for #559 (tested for link on incomplete path)
+         self.check_posix_only()

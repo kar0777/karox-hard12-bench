@@ -1,0 +1,23 @@
+diff --git a/tests/test_syntax/inline/test_code.py b/tests/test_syntax/inline/test_code.py
+index c7ccc4bf2..cf54de722 100644
+--- a/tests/test_syntax/inline/test_code.py
++++ b/tests/test_syntax/inline/test_code.py
+@@ -79,3 +79,18 @@ def test_noname_tag(self):
+                 """
+             )
+         )
++
++    def test_bigger_end(self):
++
++        # https://github.com/Python-Markdown/markdown/issues/1668
++        self.assertMarkdownRenders(
++            'a ``` b ````` c',
++            '<p>a ``` b ````` c</p>'
++        )
++
++    def test_smaller_end(self):
++
++        self.assertMarkdownRenders(
++            'a ``` b `` c',
++            '<p>a <code>` b</code> c</p>'
++        )

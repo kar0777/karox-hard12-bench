@@ -1,0 +1,143 @@
+diff --git a/tests/test_filereader.py b/tests/test_filereader.py
+index 2d171ee9de..a5930fa57a 100644
+--- a/tests/test_filereader.py
++++ b/tests/test_filereader.py
+@@ -1028,6 +1028,92 @@ def test_registered_private_transfer_syntax(self, enable_debugging, caplog):
+         assert ds.file_meta.TransferSyntaxUID == uid
+         assert ds.original_encoding == (True, True)
+ 
++    def test_duplicate_elem_non_SQ_explicit_VR(self, caplog):
++        """Test duplicate element detection for non-SQ element with explicit VR."""
++        with pytest.warns(UserWarning):
++            with caplog.at_level(logging.WARNING, logger="pydicom"):
++                read_dataset(
++                    BytesIO(
++                        b"\x08\x00\x05\x00CS\x0a\x00ISO_IR 100"
++                        b"\x08\x00\x05\x00CS\x0a\x00ISO_IR 100"
++                    ),
++                    False,
++                    True,
++                )
++        assert (
++            "Element (0008,0005) found multiple times at the same level of the "
++            "dataset - initially at offset 0 and again at offset 18"
++        ) in caplog.text
++
++    def test_duplicate_elem_non_SQ_implicit_VR(self, caplog):
++        """Test duplicate element detection for non-SQ element with implicit VR."""
++        with pytest.warns(UserWarning):
++            with caplog.at_level(logging.WARNING, logger="pydicom"):
++                read_dataset(
++                    BytesIO(
++                        b"\x08\x00\x05\x00\x0a\x00\x00\x00ISO_IR 100"
++                        b"\x08\x00\x05\x00\x0a\x00\x00\x00ISO_IR 100"
++                    ),
++                    True,
++                    True,
++                )
++        assert (
++            "Element (0008,0005) found multiple times at the same level of the "
++            "dataset - initially at offset 0 and again at offset 18"
++        ) in caplog.text
++
++    def test_duplicate_elem_SQ_explicit_VR(self, caplog):
++        """Test duplicate element detection for SQ element with explicit VR."""
++        with pytest.warns(UserWarning):
++            with caplog.at_level(logging.WARNING, logger="pydicom"):
++                read_dataset(
++                    BytesIO(
++                        b"\x06\x30\x14\x00\x53\x51\x00\x00\x00\x00\x00\x00"
++                        b"\x06\x30\x14\x00\x53\x51\x00\x00\x00\x00\x00\x00"
++                    ),
++                    False,
++                    True,
++                )
++        assert (
++            "Element (3006,0014) found multiple times at the same level of the "
++            "dataset - initially at offset 0 and again at offset 12"
++        ) in caplog.text
++
++    def test_duplicate_elem_SQ_implicit_VR(self, caplog):
++        """Test duplicate element detection for SQ element with implicit VR."""
++        with pytest.warns(UserWarning):
++            with caplog.at_level(logging.WARNING, logger="pydicom"):
++                read_dataset(
++                    BytesIO(
++                        b"\x06\x30\x14\x00\x00\x00\x00\x00"
++                        b"\x06\x30\x14\x00\x00\x00\x00\x00"
++                    ),
++                    True,
++                    True,
++                )
++        assert (
++            "Element (3006,0014) found multiple times at the same level of the "
++            "dataset - initially at offset 0 and again at offset 8"
++        ) in caplog.text
++
++    def test_duplicate_elem_read_length(self, caplog):
++        """Test duplicate element detection when reading a specific length."""
++        with pytest.warns(UserWarning):
++            with caplog.at_level(logging.WARNING, logger="pydicom"):
++                read_dataset(
++                    BytesIO(
++                        b"\x08\x00\x05\x00CS\x0a\x00ISO_IR 100"
++                        b"\x08\x00\x05\x00CS\x0a\x00ISO_IR 100"
++                    ),
++                    False,
++                    True,
++                    bytelength=36,
++                )
++        assert (
++            "Element (0008,0005) found multiple times at the same level of the "
++            "dataset - initially at offset 0 and again at offset 18"
++        ) in caplog.text
++
+ 
+ class TestIncorrectVR:
+     def setup_method(self):
+diff --git a/tests/test_filewriter.py b/tests/test_filewriter.py
+index 109341daf5..b08f2f0627 100644
+--- a/tests/test_filewriter.py
++++ b/tests/test_filewriter.py
+@@ -3029,7 +3029,8 @@ def test_invalid_encoding(self, allow_writing_invalid_values):
+         fp = DicomBytesIO()
+         fp.is_little_endian = True
+         # data element with invalid ASCII value
+-        elem = DataElement(0x00180015, "CS", "Dionysios Διονυσιος")
++        with pytest.warns(UserWarning):
++            elem = DataElement(0x00180015, "CS", "Dionysios Διονυσιος")
+         msg = "Not a valid ASCII string - using replacement characters"
+         with pytest.warns(UserWarning, match=msg):
+             write_string(fp, elem)
+@@ -3053,6 +3054,7 @@ def test_invalid_encoding_enforce_standard(self, enforce_writing_invalid_values)
+         fp = DicomBytesIO()
+         fp.is_little_endian = True
+         # data element with decoded value
++
+         elem = DataElement(0x00081039, "LO", "Dionysios Διονυσιος")
+         with pytest.raises(UnicodeEncodeError, match=msg):
+             # encode with two invalid encodings
+@@ -3061,7 +3063,8 @@ def test_invalid_encoding_enforce_standard(self, enforce_writing_invalid_values)
+         fp = DicomBytesIO()
+         fp.is_little_endian = True
+         # data element with invalid ASCII value
+-        elem = DataElement(0x00180015, "CS", "Dionysios Διονυσιος")
++        with pytest.warns(UserWarning):
++            elem = DataElement(0x00180015, "CS", "Dionysios Διονυσιος")
+         msg = (
+             r"'latin-?1' codec can't encode characters in position 10-18:"
+             r" ordinal not in range\(256\)"
+diff --git a/tests/test_json.py b/tests/test_json.py
+index 307eb7274b..973279302c 100644
+--- a/tests/test_json.py
++++ b/tests/test_json.py
+@@ -555,7 +555,8 @@ def test_numeric_values(self):
+         ds.add_new(0x00091015, "DS", "3.14159265")
+         ds.add_new(0x00091102, "US", 2)
+         ds.add_new(0x00091103, "US", None)
+-        ds.add_new(0x00091104, "US", "")
++        with pytest.warns(UserWarning):
++            ds.add_new(0x00091104, "US", "")
+         ds.add_new(0x00091105, "US", [])
+ 
+         ds_json = ds.to_json_dict()

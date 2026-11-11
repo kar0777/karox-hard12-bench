@@ -1,0 +1,455 @@
+diff --git a/TESTING.md b/TESTING.md
+index b70ded6c7..c4cf38db7 100644
+--- a/TESTING.md
++++ b/TESTING.md
+@@ -1113,6 +1113,10 @@ Each stage call and each `pipeline.cli()` call runs under a budget, as a process
+ 
+ The constructs code generation cannot lower are refused at check, at the written type, the operation or the call that instantiates a generic (#1679, #1680), so a test of the drop machinery, the `[E602]` skip, its `[E620]` propagation to every caller (#1100) and the refusal of a dropped entry (#1183, #1186), injects the skip: the `skip_map_inserts` fixture (`tests/codegen_helpers.py`) makes `map_insert`'s translator raise the skip an `Array`-valued map raised, and the fixture program writes a map the check accepts.  Two check-green shapes code generation still drops a function of are bugs, and neither is a fixture: a function type at a generic's type argument (#1783), and an array literal of closures, whose element type code generation's array-literal inference does not read from the check (`[E602]`, "could not infer array literal element type"; #1525's class).
+ 
++### A parametrised test takes a list, never a generator
++
++`pytest.mark.parametrize` over a generator (or any one-shot iterable) collects its cells once per process: the generator is consumed at the first collection, and a second `pytest.main` in the same process imports no fresh module, so the test then has no parameter sets.  mutmut runs its stats pass, its listing and its clean run as sessions of one process and asks the clean run for the ids the stats pass recorded, so a generator-parametrised test turned the nightly sweep's rerun into pytest's usage-error exit (`ERROR: not found: …`) for three nights (#1822).  pytest names every such usage under `PytestRemovedIn10Warning`, which the suite's configuration makes an error, so the pull-request gate refuses it at collection; `tests/test_mutate_diff.py::TestASecondCollectionInOneProcess` collects the oracle twice in one interpreter and asks for every recorded id the second time, the mechanism's own differential.  Wrap the iterable: `list(cells())`.
++
+ ### Running against ANOTHER checkout: the argument decides, not `PYTHONPATH`
+ 
+ To measure a test file against a different revision — a baseline worktree, to
+diff --git a/tests/program_generator.py b/tests/program_generator.py
+index 5b6b7b14b..1a4a9bc15 100644
+--- a/tests/program_generator.py
++++ b/tests/program_generator.py
+@@ -861,6 +861,7 @@ def _translatable(e: Expr) -> bool:
+ def _no_term(e: Expr) -> bool:
+     """Whether the verifier translates *e* to no term at all: a generic's
+     call, a fold, a cell's read, a handler or a set's size anywhere in it,
++    an `if` with a map or set `let` in a branch block,
+     or a slot of a type other than ``Int``, ``Nat`` and ``Bool`` bound to a
+     value it does not translate (a ``let`` of one of those three holds a
+     fresh value of its type).  A construction is a term of its checked
+@@ -869,6 +870,16 @@ def _no_term(e: Expr) -> bool:
+         if (isinstance(node, (Fold, Get, Handle, SetSize))
+                 or isinstance(node, Call) and node.fn.forall):
+             return True
++        if isinstance(node, If) and any(
++                isinstance(s, Let) and isinstance(s.binding.value, (MapBuild, SetBuild))
++                for b in (node.then, node.other) for s in b.lets):
++            # An `if` whose branch block, taken or not, holds a `let` of a
++            # map or set construction: in place its narrowing is left to
++            # Tier 3, and through a `let` it is refuted over the fresh
++            # value (#1696's line of 2026-11-02, seed 2900205); an array's
++            # or a primitive's `let` in the branch leaves the value whole,
++            # and a map `let` outside the `if` does.
++            return True
+         if (isinstance(node, Ref) and node.binding.value is not None
+                 and node.binding.type not in PRIMITIVES
+                 and _untranslated(node.binding.value)):
+diff --git a/tests/test_composite_coercion_guards.py b/tests/test_composite_coercion_guards.py
+index 81622210c..1cea90475 100644
+--- a/tests/test_composite_coercion_guards.py
++++ b/tests/test_composite_coercion_guards.py
+@@ -436,7 +436,10 @@ def test_the_matrix_spans_every_site_and_shape() -> None:
+ class TestTheRun:
+     """What the compiled program does with each input."""
+ 
+-    @pytest.mark.parametrize(("site", "shape", "form", "arg"), _run_cells())
++    # A list, never the generator itself: a one-shot iterable has its cells
++    # in the first collection of a process alone, and mutmut asks a later
++    # session of the same process for them by id (#1822).
++    @pytest.mark.parametrize(("site", "shape", "form", "arg"), list(_run_cells()))
+     def test_the_value(self, site: str, shape: str, form: str,
+                        arg: float) -> None:
+         src = program(site, SHAPES[shape], form)
+diff --git a/tests/test_distrust_corpus.py b/tests/test_distrust_corpus.py
+index 1b0f94983..70af0b279 100644
+--- a/tests/test_distrust_corpus.py
++++ b/tests/test_distrust_corpus.py
+@@ -60,7 +60,7 @@
+ 
+ import pytest
+ 
+-from vera.tester import FunctionTestResult, TestResult
++from vera.tester import FunctionTestResult, TestResult, TrialResult
+ 
+ from tests import pipeline
+ 
+@@ -121,17 +121,33 @@ def _tested(path: Path, *, distrust: bool) -> TestResult:
+     return tested.result
+ 
+ 
+-def _outcome(f: FunctionTestResult) -> tuple[object, ...]:
+-    """Everything a function's result reports, for the mode differential —
+-    its attribution too, which only a distrusted function may carry."""
++def _treatment(f: FunctionTestResult) -> tuple[object, ...]:
++    """What the mode decided about a function's result, for the mode
++    differential: its classification, and that no trial carries what only
++    a distrusted function may (an attribution, a refutation).  Not the
++    trials: Z3 draws each run's inputs, and two runs of one process can
++    draw them apart (#1785), so the failing inputs and their counts are no
++    measure of the mode."""
+     return (
+-        f.fn_name, f.category, f.reason, f.trials_run, f.trials_passed,
+-        f.trials_failed, f.proved,
+-        [(t.args, t.status, t.message, t.trap_kind, t.attribution,
+-          len(t.refutes)) for t in f.failures],
++        f.fn_name, f.category, f.reason, f.proved, sorted(f.unchecked),
++        all(not t.attribution and not t.refutes for t in f.failures),
+     )
+ 
+ 
++def _assert_undistrusted(default: FunctionTestResult, distrust: FunctionTestResult) -> None:
++    """A function `--distrust` does not distrust: the two modes treat it
++    alike, and in neither does a trial carry what only a distrusted
++    function may.  The second is the invariant, held in each mode on its
++    own: two runs attributing a trial each would agree (PR #1826 review)."""
++    assert _treatment(distrust) == _treatment(default), (
++        f"--distrust changed '{default.fn_name}', which it does not "
++        f"distrust:\n  default:  {_treatment(default)}\n  distrust: {_treatment(distrust)}")
++    for mode, f in (("default", default), ("distrust", distrust)):
++        assert all(not t.attribution and not t.refutes for t in f.failures), (
++            f"'{f.fn_name}' is not distrusted, but a trial of its {mode} run "
++            "carries an attribution or a refutation")
++
++
+ def _distrust_program(
+     path: Path, record: Callable[[str, object], None],
+ ) -> None:
+@@ -156,9 +172,7 @@ def _distrust_program(
+     for f in default.functions:
+         d = by_name[f.fn_name]
+         if not f.proved:
+-            assert _outcome(d) == _outcome(f), (
+-                f"--distrust changed '{f.fn_name}', which it does not "
+-                f"distrust:\n  default:  {_outcome(f)}\n  distrust: {_outcome(d)}")
++            _assert_undistrusted(f, d)
+             continue
+         assert d.proved and d.category in ("tested", "refuted", "verified"), (
+             d.category, d.reason)
+@@ -232,6 +246,39 @@ def test_no_proof_is_refuted(
+ """
+ 
+ 
++def _result(inputs: list[int], attribution: str = "") -> FunctionTestResult:
++    """An undistrusted function's result: a failing trial per input."""
++    failures = [
++        TrialResult("guarded", {"@Int.0": a}, "fail", "assertion failed",
++                    trap_kind="contract_violation", attribution=attribution)
++        for a in inputs]
++    return FunctionTestResult(
++        "guarded", "tested", "Tier 3 contract (runtime check)", 1000,
++        1000 - len(failures), len(failures), failures)
++
++
++def test_the_mode_differential_reads_the_mode_not_the_inputs_z3_drew() -> None:
++    """Two runs of one process can draw a function's inputs apart (#1785:
++    the night of 2026-10-31 saw `ch06_assert_assume`'s `guarded` differ by
++    its trials alone), so over an undistrusted function the differential
++    compares what the mode decided, never the trials."""
++    assert _treatment(_result([0, -1, 7])) == _treatment(_result([3, -9]))
++    assert _treatment(_result([0])) != _treatment(_result([0], attribution="the guard at 5:3"))
++    assert _treatment(_result([0])) != _treatment(
++        FunctionTestResult("guarded", "tested", "Tier 3 contract (runtime check)",
++                           1000, 1000, 0, [], proved=True))
++
++
++def test_an_undistrusted_function_carries_no_attribution_in_either_mode() -> None:
++    """Agreement is not the invariant: two runs each attributing a trial
++    of a function neither distrusts agree, and both are wrong."""
++    _assert_undistrusted(_result([0, 2]), _result([5]))
++    attributed = _result([0], attribution="the guard at 5:3")
++    assert _treatment(attributed) == _treatment(attributed)
++    with pytest.raises(AssertionError, match="carries an attribution"):
++        _assert_undistrusted(attributed, attributed)
++
++
+ def test_the_instrument_fails_on_a_false_proof(tmp_path: Path) -> None:
+     """A green corpus means something only if a refuted program goes red."""
+     path = tmp_path / "false_proof.vera"
+diff --git a/tests/test_mutate_diff.py b/tests/test_mutate_diff.py
+index 44d815959..284718600 100644
+--- a/tests/test_mutate_diff.py
++++ b/tests/test_mutate_diff.py
+@@ -1046,6 +1046,46 @@ def test_a_log_with_no_such_stop_names_none(self) -> None:
+ 
+ """
+ 
++#: The engine dying in its clean run: pytest's usage-error exit, which the
++#: harness raises, ends the log with the exception and no pass sentence
++#: (the night of 2026-11-02, run 41366926654, slice 0).
++CLEAN_RUN_EXCEPTION_LOG = """\
++    done in 442ms (0 files mutated, 115 ignored, 4 unmodified)
++    done
++Traceback (most recent call last):
++  File "/work/vera/scripts/mutate_diff.py", line 1659, in <module>
++    raise SystemExit(engine_main(sys.argv[2:]))
++                     ^^^^^^^^^^^^^^^^^^^^^^^^^
++  File "/work/vera/scripts/mutate_diff.py", line 885, in engine_main
++    engine.cli(args=list(args), prog_name="mutmut")
++  File "/venv/lib/python3.12/site-packages/mutmut/__main__.py", line 991, in _run
++    clean_test_exit_code = runner.run_clean_tests(tests=tests)
++                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++  File "/venv/lib/python3.12/site-packages/mutmut/workers/isolation.py", line 921, in run_clean_tests
++    return self.test_runner.run_tests(mutant_name=None, tests=tests)
++           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 173, in run_tests
++    return int(self.execute_pytest(self._pytest_args_regular_run(tests)))
++               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++  File "/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", line 136, in execute_pytest
++    raise BadTestExecutionCommandsException(params)
++mutmut.runners.harness.BadTestExecutionCommandsException: Failed to run pytest with args: ['-m', 'not stress', '--rootdir=.', '--tb=native', '-x', '-q', 'tests/test_m.py::test_f[a]', 'tests/test_m.py::test_f[b]']. If your config sets debug=true, the original pytest error should be above.
++"""
++
++CLEAN_RUN_EXCEPTION_ERROR = (
++    "mutmut.runners.harness.BadTestExecutionCommandsException: Failed to run pytest with args: "
++    "['-m', 'not stress', '--rootdir=.', '--tb=native', '-x', '-q', 'tests/test_m.py::test_f[a]', "
++    "'tests/test_m.py::test_f[b]']. If your config sets debug=true, the original pytest error "
++    "should be above. (mutmut/runners/harness.py:136)")
++
++def _traceback(frames: list[tuple[str, int, str]], exception: str) -> str:
++    """A traceback in Python's own form: *frames* outermost first, each a
++    file, a line and a function, ending in the *exception* line."""
++    return "Traceback (most recent call last):\n" + "".join(
++        f'  File "{file}", line {line}, in {func}\n    pass\n'
++        for file, line, func in frames) + exception + "\n"
++
++
+ #: What the night's engine named after both of its tests were deselected.
+ NIGHT_LAST_LOG = """\
+     done in 13ms (0 files mutated, 1 ignored, 1 unmodified)
+@@ -1485,6 +1525,105 @@ def test_an_engine_traceback_outside_a_stopped_pass_is_no_engine_failure(self) -
+             NIGHT_ERROR)
+ 
+ 
++    def test_an_exception_that_ends_the_log_from_the_engines_frame_is_the_engines(self) -> None:
++        """The engine died in its clean run: pytest answered a usage error
++        (an id its collection no longer had, #1822) and the harness raised,
++        so no pass sentence follows and the exception is the log's last
++        line.  No test is at fault, and the stop is named."""
++        assert md.engine_failure(CLEAN_RUN_EXCEPTION_LOG) == CLEAN_RUN_EXCEPTION_ERROR
++        assert md.copy_failure(CLEAN_RUN_EXCEPTION_LOG) is None
++
++    def test_the_same_exception_a_pass_went_on_from_decides_nothing(self) -> None:
++        """Followed by a pass's own summary, the traceback is a report the
++        run survived, as the night log's is without its stop sentence."""
++        log = CLEAN_RUN_EXCEPTION_LOG + "1 passed, 1 error in 0.01s\n"
++        assert md.engine_failure(log) is None
++
++    def test_the_last_traceback_decides_not_an_earlier_one_of_its_text(self) -> None:
++        """Where a traceback pytest went on from ends in the same exception
++        line as the last, the last decides: the frame reported is the one
++        the engine died in, and a death in the test's own frames is no
++        engine failure (PR #1826 review)."""
++        went_on = NIGHT_LOG.replace("failed to collect stats. runner returned 1\n", "")
++        exception = NIGHT_ERROR.split(" (")[0]
++        in_the_test = went_on + _traceback(
++            [("/work/vera/mutants/tests/test_m.py", 9, "test_f")], exception)
++        assert md.engine_failure(in_the_test) is None
++        in_the_engine = went_on + _traceback(
++            [("/work/vera/scripts/mutate_diff.py", 885, "engine_main"),
++             ("/venv/lib/python3.12/site-packages/mutmut/runners/harness.py", 136,
++              "execute_pytest")],
++            exception)
++        assert md.engine_failure(in_the_engine) == exception + " (mutmut/runners/harness.py:136)"
++
++    def test_an_exception_whose_message_spans_lines_is_read_whole(self) -> None:
++        """An exception prints a message of several lines as they are, and
++        the lines after the first are the message, not a pass going on;
++        the first line and the frame are reported (PR #1826 review)."""
++        log = CLEAN_RUN_EXCEPTION_LOG + "The ids above were listed by the stats pass.\n"
++        assert md.engine_failure(log) == CLEAN_RUN_EXCEPTION_ERROR
++        assert md.engine_failure(log + "1 passed, 1 error in 0.01s\n") is None
++
++    def test_a_childs_traceback_in_the_engines_message_names_the_childs_death(self) -> None:
++        """mutmut appends a crashed worker's traceback to the exception it
++        raises for it, so the log ends in a traceback inside a message:
++        the child's exception and frame are the engine's death."""
++        child = _traceback(
++            [("/venv/lib/python3.12/site-packages/mutmut/workers/isolation.py", 90, "_child")],
++            "KeyError: 'duration_by_test'")
++        log = CLEAN_RUN_EXCEPTION_LOG.rsplit("mutmut.runners.harness.", 1)[0] + (
++            "RuntimeError: Worker failed\n\nTraceback from the child process:\n" + child)
++        assert md.engine_failure(log) == (
++            "KeyError: 'duration_by_test' (mutmut/workers/isolation.py:90)")
++
++
++class TestASecondCollectionInOneProcess:
++    """mutmut runs its stats pass, its listing and its clean run as pytest
++    sessions of one process, the clean run by the ids the stats pass
++    recorded.  A test parametrised over a one-shot iterable has its cells
++    in the first session alone, and the clean run's ``not found`` is
++    pytest's usage-error exit, which the harness raises (#1822: three
++    nights deciding no mutant).  The two sessions run in a fresh
++    interpreter, since this one has imported the suite already."""
++
++    def test_every_id_the_first_collection_records_is_found_by_the_second(self) -> None:
++        files = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").glob("test_*.py"))
++        script = textwrap.dedent("""\
++            import contextlib, io, json, sys
++            import pytest
++
++            def collect(targets):
++                out = io.StringIO()
++                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
++                    code = pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider",
++                                        "-W", "default::pytest.PytestRemovedIn10Warning",
++                                        *targets])
++                # A node id holds "::"; the matrix plugin's own lines start with a
++                # file's path too ("… runs every matrix cell: …", in CI's mode).
++                ids = [line for line in out.getvalue().splitlines()
++                       if line.startswith("tests/") and "::" in line]
++                return int(code), ids, out.getvalue()
++
++            first, recorded, _ = collect(sys.argv[1:])
++            second, found, text = collect(recorded)
++            lost = sorted(set(recorded) - set(found))
++            print(json.dumps({"first": first, "second": second, "recorded": len(recorded),
++                              "found": len(found), "lost": lost[:5],
++                              "errors": [l for l in text.splitlines() if "not found" in l][:3]}))
++            """)
++        # The child reads node ids off `-q`; a `PYTEST_ADDOPTS=-q` in the
++        # environment would make that `-qq`, per-file counts and no ids.
++        env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
++        result = subprocess.run(
++            [sys.executable, "-c", script, *files], cwd=ROOT, capture_output=True,
++            text=True, encoding="utf-8", check=False, env=env)
++        assert result.returncode == 0, result.stderr[-2000:]
++        report = json.loads(result.stdout.strip().splitlines()[-1])
++        assert report["first"] == 0 and report["recorded"] > 0, report
++        assert report["second"] == 0, report
++        assert report["found"] == report["recorded"], report
++
++
+ class TestRunDropping:
+     """``run_dropping`` against a stand-in for ``run_engine`` that writes,
+     for each attempt, the log the engine would print given the tests the
+diff --git a/tests/test_program_generator.py b/tests/test_program_generator.py
+index 98844e800..325785665 100644
+--- a/tests/test_program_generator.py
++++ b/tests/test_program_generator.py
+@@ -2911,6 +2911,128 @@ def test_the_night_is_read_as_the_workflow_writes_it() -> None:
+         night_seeds("night:0")
+ 
+ 
++def test_an_if_with_a_map_let_in_a_branch_has_no_term() -> None:
++    """#1696's member of 2026-11-02 (seed 2900205): the verifier translates
++    an `if` whose branch block holds a `let` of a map or set construction,
++    the branch taken or not, to no term.  In place its narrowing is left to
++    Tier 3; bound by a `let` it is a fresh value, and a narrowing of that
++    value into `Nat` is refuted (E503) where the value is 15.  An array's
++    or a primitive's `let` in the branch leaves the value whole, and the
++    real value stays whatever the branch holds."""
++    def branch(stmts: list[gen.Let | gen.Do]) -> gen.Block:
++        return gen.Block(stmts, gen.Lit(15))
++    map_let = gen.Let(gen.Binding("Map<String, Int>", value=gen.MapBuild([("b", gen.Lit(3))])))
++    set_let = gen.Let(gen.Binding("Set<Int>", value=gen.SetBuild([gen.Lit(1)])))
++    array_let = gen.Let(gen.Binding("Array<Int>", value=gen.ArrayLit("Int", [gen.Lit(1)])))
++    taken = gen.If(gen.Lit(True), branch([map_let]), branch([]))
++    untaken = gen.If(gen.Lit(True), branch([]), branch([set_let]))
++    whole = gen.If(gen.Lit(True), branch([array_let]), branch([]))
++    assert gen._untranslated(taken) and gen._untranslated(untaken)
++    assert not gen._untranslated(whole)
++    assert gen.iv(taken, "r") == gen.Iv(15, 15) == gen.iv(taken, "v")
++    bound = gen.Ref(gen.Binding("Int", value=taken))
++    assert gen.iv(bound, "v") == gen.ANY and gen.iv(bound, "r") == gen.Iv(15, 15)
++    assert gen.iv(gen.Ref(gen.Binding("Int", value=whole)), "v") == gen.Iv(15, 15)
++
++
++_IF_BRANCH_LET_BOUND = """\
++public fn f3(-> @Bool)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  let @Int = if -4 <= -3 then {
++    %(then)s5 * 3
++  } else {
++    %(other)s8 + 7
++  };
++  handle[State<Nat>](@Nat = @Int.0 + -6) {
++    get(@Unit) -> { resume(@Nat.0) },
++    put(@Nat) -> { resume(()) }
++  } in {
++    true
++  }
++}
++"""
++
++_IF_BRANCH_LET_IN_PLACE = """\
++public fn f3(-> @Bool)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  handle[State<Nat>](@Nat = (if -4 <= -3 then {
++    %(then)s5 * 3
++  } else {
++    %(other)s8 + 7
++  }) + -6) {
++    get(@Unit) -> { resume(@Nat.0) },
++    put(@Nat) -> { resume(()) }
++  } in {
++    true
++  }
++}
++"""
++
++_MAP_LET = 'let @Map<String, Int> = map_insert(map_new(), "b", 3);\n    '
++_SET_LET = "let @Set<Int> = set_add(set_new(), 1);\n    "
++_ARRAY_LET = "let @Array<Int> = [1, 2];\n    "
++
++#: The six shapes both differentials below span: `lost` is the model's claim
++#: that a map or set `let` in either branch of the `if` loses its value,
++#: where an array's `let` or none keeps it.
++_IF_BRANCH_LET_CELLS = [
++    pytest.param(_MAP_LET, "", True, id="map let, taken branch"),
++    pytest.param("", _MAP_LET, True, id="map let, untaken branch"),
++    pytest.param(_SET_LET, "", True, id="set let, taken branch"),
++    pytest.param("", _SET_LET, True, id="set let, untaken branch"),
++    pytest.param(_ARRAY_LET, "", False, id="array let, whole"),
++    pytest.param("", "", False, id="plain, whole"),
++]
++
++
++def _runtime_checks(verified: pipeline.Verified) -> int:
++    return sum(1 for o in verified.result.obligations if o.status in ("tier3", "timeout"))
++
++
++def _nat_bind_status(verified: pipeline.Verified) -> str:
++    """The status of the one `nat_bind` obligation a program of this file
++    holds: the narrowing of the `if`'s value into `Nat`."""
++    (bind,) = [o for o in verified.result.obligations if o.kind == "nat_bind"]
++    return bind.status
++
++
++@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
++def test_the_if_branch_lets_verdicts_are_the_verifiers(
++    then: str, other: str, lost: bool,
++) -> None:
++    """The model's claim against the verifier (#1696's member of 2026-11-02):
++    bound by a `let`, an `if` with a map or set `let` in either branch is a
++    fresh value, and the narrowing of it into `Nat` is refuted; an array's
++    `let` or none leaves the value 15 and the narrowing proved."""
++    verified = pipeline.verify(_IF_BRANCH_LET_BOUND % {"then": then, "other": other},
++                               file="bound.vera")
++    codes = ["E503"] if lost else []
++    assert [d.error_code for d in verified.errors] == codes, [d.format() for d in verified.errors]
++    # An empty error list alone is also what a narrowing left to Tier 3
++    # reports; the status pins "proved" (PR #1826 review).
++    assert _nat_bind_status(verified) == ("violated" if lost else "verified")
++
++
++@pytest.mark.parametrize(("then", "other", "lost"), _IF_BRANCH_LET_CELLS)
++def test_the_if_branch_let_in_place_is_left_to_a_runtime_check(
++    then: str, other: str, lost: bool,
++) -> None:
++    """The model's other claim, over the same six shapes: in place, the
++    `if`'s narrowing is a runtime check where its value is lost, and proved
++    where it is kept."""
++    verified = pipeline.verify(_IF_BRANCH_LET_IN_PLACE % {"then": then, "other": other},
++                               file="in_place.vera")
++    assert verified.ok, [d.format() for d in verified.diagnostics]
++    assert (_runtime_checks(verified) >= 1) == lost
++    assert _nat_bind_status(verified) == ("tier3" if lost else "verified")
++
++
+ NIGHT_SEEDS = night_seeds()
+ 
+ if NIGHT_SEEDS:

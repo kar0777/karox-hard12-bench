@@ -1,0 +1,11 @@
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy[r4-s4-1e-05]
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy_commuting_singular_sigma
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy_pure_against_maximally_mixed
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy_singular_sigma_on_support
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy_support_not_contained
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy[r0-s0-1e-05]
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy[r1-s1-1e-05]
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy[r2-s2-1e-05]
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_measured_relative_entropy[r3-s3-1e-05]
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_meausred_relative_entropy_invalid_input[r0-s0-1e-05-Measured
+toqito/state_metrics/tests/test_measured_relative_entropy.py::test_meausred_relative_entropy_invalid_input[r1-s1-1e-05-Measured

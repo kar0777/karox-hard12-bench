@@ -1,0 +1,125 @@
+diff --git a/tests/integrations/stdlib/test_httplib.py b/tests/integrations/stdlib/test_httplib.py
+index db9c94bc51..068714d4dc 100644
+--- a/tests/integrations/stdlib/test_httplib.py
++++ b/tests/integrations/stdlib/test_httplib.py
+@@ -457,7 +457,7 @@ def getresponse(self, *args, **kwargs):
+         expected_outgoing_baggage = (
+             "sentry-trace_id=771a43a4192642f0b136d5159a501700,"
+             "sentry-public_key=49d0f7386ad645858ae85020e393bef3,"
+-            "sentry-sample_rate=1.0,"
++            "sentry-sample_rate=0.01337,"
+             "sentry-user_id=Am%C3%A9lie,"
+             "sentry-sample_rand=0.000005,"
+             "sentry-sampled=true"
+@@ -487,7 +487,7 @@ def getresponse(self, *args, **kwargs):
+         expected_outgoing_baggage = (
+             "sentry-trace_id=771a43a4192642f0b136d5159a501700,"
+             "sentry-public_key=49d0f7386ad645858ae85020e393bef3,"
+-            "sentry-sample_rate=1.0,"
++            "sentry-sample_rate=0.01337,"
+             "sentry-user_id=Am%C3%A9lie,"
+             "sentry-sample_rand=0.000005,"
+             "sentry-sampled=true"
+diff --git a/tests/test_dsc.py b/tests/test_dsc.py
+index 7aa4669c60..a3c7eda7e5 100644
+--- a/tests/test_dsc.py
++++ b/tests/test_dsc.py
+@@ -201,7 +201,7 @@ def test_dsc_continuation_of_trace(sentry_init, capture_envelopes):
+         dsn="https://mysecret@o1234.ingest.sentry.io/12312012",
+         release="myapp@0.0.1",
+         environment="canary",
+-        traces_sample_rate=1.0,
++        traces_sample_rate=0.5,
+         transport=TestTransportWithOptions,
+     )
+     envelopes = capture_envelopes()
+@@ -244,7 +244,7 @@ def test_dsc_continuation_of_trace(sentry_init, capture_envelopes):
+ 
+     assert "sample_rate" in envelope_trace_header
+     assert type(envelope_trace_header["sample_rate"]) == str
+-    assert envelope_trace_header["sample_rate"] == "1.0"
++    assert envelope_trace_header["sample_rate"] == "0.01337"
+ 
+     assert "sampled" in envelope_trace_header
+     assert type(envelope_trace_header["sampled"]) == str
+@@ -272,7 +272,7 @@ def test_dsc_continuation_of_trace_span_streaming(sentry_init, capture_envelopes
+         dsn="https://mysecret@o1234.ingest.sentry.io/12312012",
+         release="myapp@0.0.1",
+         environment="canary",
+-        traces_sample_rate=1.0,
++        traces_sample_rate=0.5,
+         trace_lifecycle="stream",
+         transport=TestTransportWithOptions,
+     )
+@@ -318,7 +318,7 @@ def test_dsc_continuation_of_trace_span_streaming(sentry_init, capture_envelopes
+ 
+     assert "sample_rate" in envelope_trace_header
+     assert type(envelope_trace_header["sample_rate"]) == str
+-    assert envelope_trace_header["sample_rate"] == "1.0"
++    assert envelope_trace_header["sample_rate"] == "0.01337"
+ 
+     assert "sampled" in envelope_trace_header
+     assert type(envelope_trace_header["sampled"]) == str
+diff --git a/tests/tracing/test_integration_tests.py b/tests/tracing/test_integration_tests.py
+index 59bb1f9d02..3a3447a69f 100644
+--- a/tests/tracing/test_integration_tests.py
++++ b/tests/tracing/test_integration_tests.py
+@@ -189,7 +189,7 @@ def test_continue_trace(sentry_init, capture_envelopes, parent_sampled, sample_r
+         )
+ 
+         if parent_sampled is not None:
+-            expected_sample_rate = str(float(parent_sampled))
++            expected_sample_rate = "0.01337"
+         else:
+             expected_sample_rate = str(sample_rate)
+ 
+@@ -262,7 +262,7 @@ def test_continue_trace_span_streaming(
+         assert not baggage.mutable
+ 
+         if parent_sampled is not None:
+-            expected_sample_rate = str(float(parent_sampled))
++            expected_sample_rate = parent_sample_rate
+         else:
+             if sample_rate is None:
+                 expected_sample_rate = parent_sample_rate
+@@ -312,7 +312,7 @@ def test_continue_trace_span_streaming(
+         )
+ 
+         if parent_sampled is not None:
+-            expected_sample_rate = str(float(parent_sampled))
++            expected_sample_rate = parent_sample_rate
+         else:
+             if sample_rate is None:
+                 expected_sample_rate = parent_sample_rate
+diff --git a/tests/tracing/test_span_streaming.py b/tests/tracing/test_span_streaming.py
+index c73eef678b..74c4a28fb3 100644
+--- a/tests/tracing/test_span_streaming.py
++++ b/tests/tracing/test_span_streaming.py
+@@ -1082,12 +1082,7 @@ def test_outgoing_traceparent_and_baggage_incoming_trace(
+         baggage_items = dict(tuple(item.split("=")) for item in baggage.split(","))
+ 
+         # As we've received incoming baggage, we shouldn't modify it ourselves
+-        # and should propagate it as-is. However, in the case where our
+-        # effective sample rate overrides the parent sample rate, we update the
+-        # sample rate in the baggage as a consequence of updating the sample rate
+-        # in the DSC.
+-        if traces_sample_rate is not None:
+-            incoming_baggage["sentry-sample_rate"] = str(float(parent_sampled))
++        # and should propagate it as-is
+ 
+         assert baggage_items == incoming_baggage
+ 
+@@ -1133,12 +1128,9 @@ def test_outgoing_traceparent_and_baggage_inconsistent_incoming_trace(
+         span_id = span.span_id
+         assert traceparent == f"{trace_id}-{span_id}-0"
+ 
+-        # We shouldn't be updating incoming baggage, but in the case where our
+-        # effective sample rate overrides the parent sample rate, we do this as
+-        # a consequence of updating the sample rate in the DSC.
++        # We shouldn't be updating incoming baggage
+         baggage = sentry_sdk.get_baggage()
+         baggage_items = dict(tuple(item.split("=")) for item in baggage.split(","))
+-        incoming_baggage["sentry-sample_rate"] = "0.0"
+         assert baggage_items == incoming_baggage
+ 
+ 
