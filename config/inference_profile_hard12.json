@@ -1,0 +1,19 @@
+{
+  "profile_id": "hard12-dsv41f-1017-v1",
+  "upstream_provider": "wandb-inference",
+  "upstream_api_base": "https://api.inference.wandb.ai/v1",
+  "upstream_model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  "enforced": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "max_tokens": 32768,
+    "reasoning_effort": "max"
+  },
+  "stripped_request_fields": ["top_k", "thinking", "reasoning", "presence_penalty", "frequency_penalty", "seed", "max_completion_tokens"],
+  "aliases": {
+    "hard12-karox5": "karox5",
+    "hard12-opencode_v2": "opencode_v2",
+    "hard12-deepseek_harness": "deepseek_harness"
+  },
+  "evidence": "HARD12 fresh-task series (2026-11-10). Same upstream/model/sampling for every arm; reasoning_effort=max enforced for all (the HARD20 1017 arena already ran opencode_v2 and deepseek_harness with reasoning_effort=max on this exact W&B model without rejection). Each CLI's own effort setting is overridden so no arm gets a different reasoning budget."
+}

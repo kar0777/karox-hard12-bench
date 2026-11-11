@@ -1,0 +1,110 @@
+diff --git a/tests/fixtures/noqa/noqa.py b/tests/fixtures/noqa/noqa.py
+index f0767ce17..1c77d4321 100644
+--- a/tests/fixtures/noqa/noqa.py
++++ b/tests/fixtures/noqa/noqa.py
+@@ -703,7 +703,7 @@ def method(self):
+ 
+ class LambdaAssign:
+     def __init__(self):
+-        self.attribute = lambda self_arg: int(self_arg) + 1  # noqa: WPS617
++        self.attribute = lambda self_arg: int(self_arg) + 1, lambda user_id: user_id + 1  # noqa: WPS617, WPS221
+ 
+ 
+ # porting noqa38.py
+diff --git a/tests/test_checker/test_noqa.py b/tests/test_checker/test_noqa.py
+index df1ec711d..31d359024 100644
+--- a/tests/test_checker/test_noqa.py
++++ b/tests/test_checker/test_noqa.py
+@@ -83,7 +83,7 @@
+         'WPS218': 1,
+         'WPS219': 1,
+         'WPS220': 1,
+-        'WPS221': 2,
++        'WPS221': 3,
+         'WPS222': 1,
+         'WPS223': 1,
+         'WPS224': 1,
+@@ -313,7 +313,7 @@
+         'WPS614': 1,
+         'WPS615': 2,
+         'WPS616': 1,
+-        'WPS617': 1,
++        'WPS617': 2,
+     },
+ )
+ """Number and count of violations that would be raised."""
+diff --git a/tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py b/tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py
+index df2860387..3393a66bc 100644
+--- a/tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py
++++ b/tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py
+@@ -36,25 +36,18 @@ def some(other):
+     other.api = lambda x: x * 2
+ """
+ 
+-# This is not strictly correct, but we won't detect this:
+-# TODO: maybe we should after we can create pairs of assigned values?
+ correct_lambda_attr_assign5 = """
+-class A:
+-    def __init__(self):
+-        self._api, self.other = (3, lambda x: x * 2)
+-"""
+-
+-correct_lambda_attr_assign6 = """
+ class A:
+     def method(self):
+         self.other.api = lambda x: x * 2
+ """
+ 
+-correct_lambda_attr_assign7 = """
++correct_lambda_attr_assign6 = """
+ def some(other):
+     other.api = sorted([], key=lambda x: x * 2)
+ """
+ 
++
+ # Wrong:
+ 
+ wrong_lambda_assign1 = """
+@@ -82,6 +75,24 @@ def __init__(self):
+         self._api = temp = lambda x: x * 2
+ """
+ 
++wrong_lambda_attr_assign5 = """
++class A:
++    def __init__(self):
++        self._api, self.other = (3, lambda x: x * 2)
++"""
++
++wrong_lambda_attr_assign6 = """
++class A:
++    def __init__(self):
++        self.id, self.login, self.other = (3, 'user', lambda x: x * 2)
++"""
++
++wrong_lambda_attr_assign7 = """
++class User:
++    def __init__(self):
++        self.user_info = 1, 'user', lambda x: x + 1
++"""
++
+ 
+ @pytest.mark.parametrize(
+     'code',
+@@ -90,6 +101,9 @@ def __init__(self):
+         wrong_lambda_assign2,
+         wrong_lambda_assign3,
+         wrong_lambda_assign4,
++        wrong_lambda_attr_assign5,
++        wrong_lambda_attr_assign6,
++        wrong_lambda_attr_assign7,
+     ],
+ )
+ def test_wrong_lambda_assign(
+@@ -117,7 +131,6 @@ def test_wrong_lambda_assign(
+         correct_lambda_attr_assign4,
+         correct_lambda_attr_assign5,
+         correct_lambda_attr_assign6,
+-        correct_lambda_attr_assign7,
+     ],
+ )
+ def test_correct_lambda_assign(

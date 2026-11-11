@@ -1,0 +1,98 @@
+name: hard12
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: "comma list: karox5,opencode_v2,deepseek_harness"
+        default: "karox5,opencode_v2,deepseek_harness"
+      tasks:
+        description: "comma list of task numbers 1..12 (empty = all)"
+        default: ""
+      attempts:
+        description: "independent attempts per task x arm"
+        default: "3"
+      tag:
+        description: "run tag [a-z0-9]"
+        default: "gha"
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        env:
+          ARMS: ${{ inputs.arms }}
+          TASKS: ${{ inputs.tasks }}
+        run: python3 scripts/plan_matrix.py >> "$GITHUB_OUTPUT"
+  run:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.n }}-${{ matrix.arm }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af >/dev/null
+          df -h / | tail -1
+      - name: Tools (pinned)
+        run: |
+          python3 -m pip install --user --break-system-packages uv
+          ~/.local/bin/uv tool install --python 3.12 harbor==0.23.0
+          ~/.local/bin/uv tool install --python 3.12 'litellm[proxy]==1.91.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          docker pull -q alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+      - name: Run
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          TASK: ${{ matrix.task }}
+          N: ${{ matrix.n }}
+          ARM: ${{ matrix.arm }}
+          ATT: ${{ inputs.attempts }}
+          TAG: ${{ inputs.tag }}
+        run: bash scripts/ci_run.sh "$TASK" "$N" "$ARM" "$ATT" "$TAG"
+      - name: Collect
+        if: always()
+        run: |
+          W="$RUNNER_TEMP/h12"; mkdir -p out
+          find "$W/jobs" -name '*.log' -size +20M -delete 2>/dev/null || true
+          cp -r "$W/jobs" out/ 2>/dev/null || true
+          cp "$W/audit/audit.jsonl" "out/audit-${{ matrix.n }}-${{ matrix.arm }}.jsonl" 2>/dev/null || true
+          mkdir -p out/gw && tail -200 "$W/logs/litellm.log" > out/gw/litellm-tail.log 2>/dev/null || true
+          df -h / | tail -1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trial-${{ matrix.n }}-${{ matrix.arm }}
+          path: out
+          retention-days: 30
+  report:
+    needs: run
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: arts
+      - name: Report
+        run: |
+          mkdir -p merged/jobs
+          for d in arts/trial-*/; do cp -r "$d"jobs/* merged/jobs/ 2>/dev/null || true; done
+          cat arts/trial-*/audit-*.jsonl > merged/audit.jsonl 2>/dev/null || touch merged/audit.jsonl
+          H12_JOBS=merged/jobs H12_AUDIT=merged/audit.jsonl H12_OUT=merged \
+            H12_VAL=data/validation_slim.jsonl H12_TASKS=data/night_tasks.txt python3 scripts/hard12_report.py
+          cat merged/HARD12_RESULTS.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HARD12_RESULTS
+          path: merged/HARD12_RESULTS.*

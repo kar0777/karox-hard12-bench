@@ -1,0 +1,15 @@
+tests/test_checker/test_noqa.py::test_noqa_fixture_disabled[noqa.py-violations0-True]
+tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py::test_wrong_lambda_assign[\nclass
+tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py::test_wrong_lambda_assign[code5]
+tests/test_checker/test_noqa.py::test_codes
+tests/test_checker/test_noqa.py::test_noqa_fixture[noqa.py-True]
+tests/test_checker/test_noqa.py::test_noqa_fixture[noqa313.py-False]
+tests/test_checker/test_noqa.py::test_noqa_fixture[noqa315.py-False]
+tests/test_checker/test_noqa.py::test_noqa_fixture_disabled[noqa313.py-violations1-False]
+tests/test_checker/test_noqa.py::test_noqa_fixture_disabled[noqa315.py-violations2-False]
+tests/test_checker/test_noqa.py::test_noqa_fixture_without_ignore[noqa.py-ignored_violations0-True]
+tests/test_checker/test_noqa.py::test_noqa_fixture_without_ignore[noqa313.py-ignored_violations1-False]
+tests/test_checker/test_noqa.py::test_noqa_fixture_without_ignore[noqa315.py-ignored_violations2-False]
+tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py::test_correct_lambda_assign[\nclass
+tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py::test_correct_lambda_assign[\ndef
+tests/test_visitors/test_ast/test_classes/test_lambda_attr_assign.py::test_correct_lambda_assign[\nother.api

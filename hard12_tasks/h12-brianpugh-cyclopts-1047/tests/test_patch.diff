@@ -1,0 +1,95 @@
+diff --git a/tests/test_bind_converter_validator.py b/tests/test_bind_converter_validator.py
+index 6051a7fb..bedd638e 100644
+--- a/tests/test_bind_converter_validator.py
++++ b/tests/test_bind_converter_validator.py
+@@ -4,7 +4,7 @@
+ 
+ import pytest
+ 
+-from cyclopts import Parameter, ValidationError
++from cyclopts import Parameter, ValidationError, convert
+ from cyclopts.exceptions import CoercionError
+ from cyclopts.token import Token
+ 
+@@ -458,3 +458,22 @@ def main(*vals: Annotated[Bounded, Parameter(validator="validate")]):
+ 
+     assert_parse_args(main, "1 2", Bounded(1), Bounded(2))
+     assert seen == [(Bounded, 1), (Bounded, 2)]
++
++
++def test_custom_converter_can_log_coercion_error(app):
++    """A converter that catches convert()'s error to report it and fall back (#1044)."""
++    messages = []
++
++    def lenient(type_, tokens):
++        try:
++            return convert(int, [t.value for t in tokens])
++        except CoercionError as e:
++            messages.append(str(e).splitlines()[-1])
++            return 0
++
++    @app.default
++    def main(x: Annotated[int, Parameter(converter=lenient)]):
++        return x
++
++    assert app(["abc"]) == 0
++    assert messages == ['Unable to convert "abc" into int.']
+diff --git a/tests/test_exceptions_rich.py b/tests/test_exceptions_rich.py
+index 4c0ec2a7..492d394e 100644
+--- a/tests/test_exceptions_rich.py
++++ b/tests/test_exceptions_rich.py
+@@ -1,6 +1,7 @@
+ """Rich-formatted output tests for cyclopts exceptions."""
+ 
+ import re
++from enum import Enum
+ from io import StringIO
+ from typing import Literal
+ from unittest.mock import Mock
+@@ -689,3 +690,46 @@ def foo(a, b, c):
+     # The list literal "['--a', '--b']" appears twice, styled as a single bold span each time.
+     bold_strs = [text for text, style in spans if style == "bold"]
+     assert bold_strs.count("['--a', '--b']") == 2
++
++
++# ---------------------------------------------------------------------------
++# No argument: convert() called directly, e.g. inside a custom converter (#1044).
++# ---------------------------------------------------------------------------
++
++
++def _coercion_error_without_argument(*args, **kwargs) -> CoercionError:
++    """Provoke a CoercionError from ``convert`` directly, so ``argument`` stays None."""
++    try:
++        convert(*args, **kwargs)
++    except CoercionError as e:
++        assert e.argument is None
++        e.verbose = False
++        return e
++    raise AssertionError("convert() did not raise CoercionError")
++
++
++def test_str_no_argument_fallback_int_conversion():
++    e = _coercion_error_without_argument(int, ["abc"])
++    assert str(e) == 'Unable to convert "abc" into int.'
++
++
++def test_str_no_argument_enum_uses_default_name_transform():
++    class Color(Enum):
++        RED = 1
++        GREEN = 2
++
++    e = _coercion_error_without_argument(Color, ["blue"])
++    assert str(e) == 'Invalid value "blue". Choose from: "red", "green".'
++
++
++def test_str_no_argument_literal_with_suggestion():
++    e = _coercion_error_without_argument(Literal["pishock", "openshock"], ["pisock"])
++    assert str(e) == 'Invalid value "pisock". Choose from: "pishock", "openshock". Did you mean "pishock"?'
++
++
++def test_rich_no_argument_fallback_styles_value_and_source():
++    e = _coercion_error_without_argument(int, [Token(value="abc", source="ENV")])
++    assert str(e) == 'Unable to convert "abc" from ENV into int.'
++    spans = _spans(e.__rich__())
++    assert ("abc", "bold red") in spans
++    assert (" from ENV", "dim") in spans

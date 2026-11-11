@@ -1,0 +1,39 @@
+schema_version = "1.4"
+artifacts = []
+
+[task]
+name = "hard12/h12-pyjanitor-devs-pyjanitor-1799"
+version = "1.0.0"
+description = "HARD12 fresh task pyjanitor-devs/pyjanitor#1799 (PR merged 2026-10-22, post-checkpoint)"
+authors = []
+keywords = []
+
+[metadata]
+
+[verifier]
+timeout_sec = 1200.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 3600.0
+# Network: agent phase = allowlist, docker RFC1918 bridge only (race gateway via
+# the in-container loopback relays). Public web, GitHub, PyPI are blocked.
+# History: r2/r3 ran "public" because gost (Harbor egress sidecar) sniffs the
+# HTTP Host header and the relays forwarded "Host: 127.0.0.1:1400x", which is
+# not in the allowlist -> ECONNRESET. karo_relay.py now rewrites the first
+# request's Host to the gateway address; verified: gateway 200 (streaming +
+# keep-alive), pypi/github/example.com blocked.
+network_mode = "allowlist"
+allowed_hosts = ["172.16.0.0/12"]
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 2400.0
+os = "linux"
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

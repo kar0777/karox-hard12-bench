@@ -1,0 +1,12 @@
+SpikeInterface/spikeinterface#4921 spikeinterface-spikeinterface-4921
+huggingface/huggingface_hub#5302 huggingface-huggingface-hub-5302
+tobymao/sqlglot#8948 tobymao-sqlglot-8948
+wemake-services/wemake-python-styleguide#3867 wemake-services-wemake-python-styleguide-3867
+MemPalace/mempalace#2898 mempalace-mempalace-2898
+BrianPugh/cyclopts#1047 brianpugh-cyclopts-1047
+Kozea/WeasyPrint#3010 kozea-weasyprint-3010
+Python-Markdown/markdown#1691 python-markdown-markdown-1691
+graphistry/pygraphistry#2234 graphistry-pygraphistry-2234
+unit8co/darts#3340 unit8co-darts-3340
+PyPSA/linopy#1113 pypsa-linopy-1113
+pyjanitor-devs/pyjanitor#1799 pyjanitor-devs-pyjanitor-1799
