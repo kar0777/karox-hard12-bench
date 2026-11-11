@@ -214,7 +214,13 @@ class Karo(BaseInstalledAgent):
             environment,
             command=(
                 "set -euo pipefail; "
-                f"python3 -m venv {_VENV} && "
+                # KaroX needs Python >= 3.10. On an older image it gets its own
+                # standalone interpreter (like the Node-based CLIs ship theirs);
+                # the project's checks still run on the image's python.
+                "if python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then "
+                f"python3 -m venv {_VENV}; else "
+                "python3 -m venv /tmp/karo-uv && /tmp/karo-uv/bin/python -m pip install --quiet uv && "
+                f"/tmp/karo-uv/bin/uv venv --quiet --seed --python 3.12 {_VENV}; fi && "
                 f"{_PY} -m pip install --quiet --force-reinstall {shlex.quote(target)} && "
                 f"{_PY} -c 'import karox; print(karox.__file__)'"
             ),
