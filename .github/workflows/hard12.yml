@@ -14,6 +14,9 @@ on:
       tag:
         description: "run tag [a-z0-9]"
         default: "gha"
+      taskset:
+        description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -27,6 +30,7 @@ jobs:
         env:
           ARMS: ${{ inputs.arms }}
           TASKS: ${{ inputs.tasks }}
+          TASKSET: ${{ inputs.taskset }}
         run: python3 scripts/plan_matrix.py >> "$GITHUB_OUTPUT"
   run:
     needs: plan

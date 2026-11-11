@@ -5,7 +5,7 @@
 # model and sampling profile), unwrap :4110, in-container relay, Harbor egress
 # allowlist = docker bridge only. WANDB_API_KEY is given to litellm only.
 set -euo pipefail
-TASK=$1; N=$2; ARM=$3; ATT=$4; TAG=$5
+TASKDIR=$1; TASK=$(basename "$1"); N=$2; ARM=$3; ATT=$4; TAG=$5
 ROOT=${GITHUB_WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}
 WORK=${RUNNER_TEMP:-/tmp}/h12
 mkdir -p "$WORK/jobs" "$WORK/logs" "$WORK/tasks" "$WORK/audit/context"
@@ -28,11 +28,11 @@ for _ in $(seq 1 120); do health && break; sleep 2; done
 health || { echo "GATEWAY_FAIL"; tail -50 "$WORK/logs/litellm.log"; exit 1; }
 LABEL="hard12-$TAG-$(printf '%02d' "$N")-$TASK"
 printf '{"run_id": "%s-%s", "task_id": "%s"}\n' "$LABEL" "$ARM" "$TASK" > "$WORK/audit/context/$ARM.json"
-cp -r "$ROOT/hard12_tasks/$TASK" "$WORK/tasks/$TASK"
+cp -r "$ROOT/$TASKDIR" "$WORK/tasks/$TASK"
 export PYTHONPATH="$ROOT/harbor_agents"
 HARD12_ARMS="$ARM" HARD12_ATTEMPTS="$ATT" \
   HARD12_KARO_WHEEL="$ROOT/wheels/karox_runtime-5.0.0-py3-none-any.whl" \
-  python3 "$ROOT/scripts/hard12_render_job.py" "$TASK" "$WORK/tasks/$TASK" "$WORK/job.json"
+  python3 "$ROOT/scripts/hard12_render_job.py" "$TASKDIR" "$WORK/tasks/$TASK" "$WORK/job.json"
 echo "== $LABEL start $(date -u +%FT%TZ)"
 harbor run --config "$WORK/job.json" --job-name "$LABEL" -o "$WORK/jobs" -q || echo "harbor rc=$?"
 echo "== $LABEL done $(date -u +%FT%TZ)"

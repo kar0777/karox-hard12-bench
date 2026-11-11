@@ -16,7 +16,7 @@ WHEEL = os.environ.get("HARD12_KARO_WHEEL") or str(RACE / "wheels" / "karox_runt
 WRAPUP = 50
 
 name, task_path, out = sys.argv[1:4]
-task = RACE / "hard12_tasks" / name
+task = RACE / name if "/" in name else RACE / "hard12_tasks" / name
 timeout = int(float(re.search(r"\[agent\]\s*\ntimeout_sec\s*=\s*([\d.]+)",
                               (task / "task.toml").read_text(encoding="utf-8")).group(1)))
 opts_file = task / "karo_options.json"
