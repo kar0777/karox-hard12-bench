@@ -17,8 +17,8 @@ WRAPUP = 50
 
 name, task_path, out = sys.argv[1:4]
 task = RACE / name if "/" in name else RACE / "hard12_tasks" / name
-timeout = int(float(re.search(r"\[agent\]\s*\ntimeout_sec\s*=\s*([\d.]+)",
-                              (task / "task.toml").read_text(encoding="utf-8")).group(1)))
+timeout = int(float(re.search(r"^\[agent\]\n(?:(?!^\[).*\n)*?timeout_sec\s*=\s*([\d.]+)",
+                              (task / "task.toml").read_text(encoding="utf-8"), re.M).group(1)))
 opts_file = task / "karo_options.json"
 opts = (json.loads(opts_file.read_text(encoding="utf-8")) if opts_file.exists()
         else {"task_dir": "/app", "verify_command": ["python3", "-c", "print('verification ok')"]})

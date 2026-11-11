@@ -26,25 +26,27 @@ PY=$(command -v /opt/conda/bin/python || command -v python3)
 exec "$@"
 """
 
-set_name, dirs = sys.argv[1], sys.argv[2:]
-out_root = ROOT / "ext_tasks" / set_name
-listing = ROOT / "data" / "sets" / f"{set_name}.txt"
-listing.parent.mkdir(parents=True, exist_ok=True)
-lines = []
-for src in map(Path, dirs):
-    name = src.name.lower().replace("_", "-")[:60]
-    out = out_root / name
-    if out.exists():
-        shutil.rmtree(out)
-    shutil.copytree(src, out, ignore=shutil.ignore_patterns("solution"))
-    test_sh = (out / "tests" / "test.sh").read_text(encoding="utf-8", errors="replace")
-    envs = list(dict.fromkeys(re.findall(r"envs/([A-Za-z0-9_.-]+)/bin", test_sh))) or ["testbed"]
-    path = ":".join(f"{root}/envs/{e}/bin" for e in envs[:1] for root in ("/opt/conda", "/opt/miniconda3"))
-    env = out / "environment"
-    shutil.copyfile(ENTRY, env / "karo_relay.py")
-    (env / "entrypoint.sh").write_text(ENTRYPOINT, encoding="utf-8", newline="\n")
-    docker = (env / "Dockerfile").read_text(encoding="utf-8").rstrip() + "\n"
-    docker += f"""RUN cd /testbed \\
+
+def main() -> None:
+    set_name, dirs = sys.argv[1], sys.argv[2:]
+    out_root = ROOT / "ext_tasks" / set_name
+    listing = ROOT / "data" / "sets" / f"{set_name}.txt"
+    listing.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for src in map(Path, dirs):
+        name = src.name.lower().replace("_", "-")[:60]
+        out = out_root / name
+        if out.exists():
+            shutil.rmtree(out)
+        shutil.copytree(src, out, ignore=shutil.ignore_patterns("solution"))
+        test_sh = (out / "tests" / "test.sh").read_text(encoding="utf-8", errors="replace")
+        envs = list(dict.fromkeys(re.findall(r"envs/([A-Za-z0-9_.-]+)/bin", test_sh))) or ["testbed"]
+        path = ":".join(f"{root}/envs/{e}/bin" for e in envs[:1] for root in ("/opt/conda", "/opt/miniconda3"))
+        env = out / "environment"
+        shutil.copyfile(ENTRY, env / "karo_relay.py")
+        (env / "entrypoint.sh").write_text(ENTRYPOINT, encoding="utf-8", newline="\n")
+        docker = (env / "Dockerfile").read_text(encoding="utf-8").rstrip() + "\n"
+        docker += f"""RUN cd /testbed \\
  && git config --global --add safe.directory /testbed \\
  && (git remote | xargs -r -n1 git remote remove) \\
  && git branch -f hard12-base HEAD 2>/dev/null; git checkout -q hard12-base 2>/dev/null; \\
@@ -57,16 +59,20 @@ RUN chmod +x /opt/entrypoint.sh
 WORKDIR /testbed
 ENTRYPOINT ["/opt/entrypoint.sh"]
 """
-    (env / "Dockerfile").write_text(docker, encoding="utf-8", newline="\n")
-    toml = (out / "task.toml").read_text(encoding="utf-8")
-    toml = re.sub(r"(\[agent\]\s*\ntimeout_sec\s*=\s*)([\d.]+)",
-                  lambda m: m.group(1) + str(min(float(m.group(2)), 3600.0)), toml)
-    toml = toml.replace("[agent]\n", '[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = ["172.16.0.0/12"]\n', 1)
-    toml = toml.replace("[environment]\n", '[environment]\nnetwork_mode = "public"\n', 1)
-    (out / "task.toml").write_text(toml, encoding="utf-8", newline="\n")
-    (out / "karo_options.json").write_text(json.dumps(
-        {"task_dir": "/testbed", "verify_command": [["python", "-m", "pytest", "*"], ["python", "*"]]},
-        indent=2) + "\n", encoding="utf-8", newline="\n")
-    lines.append(f"ext_tasks/{set_name}/{name}")
-listing.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-print(len(lines), "tasks ->", listing)
+        (env / "Dockerfile").write_text(docker, encoding="utf-8", newline="\n")
+        toml = (out / "task.toml").read_text(encoding="utf-8")
+        toml = re.sub(r"(\[agent\]\s*\ntimeout_sec\s*=\s*)([\d.]+)",
+                      lambda m: m.group(1) + str(min(float(m.group(2)), 3600.0)), toml)
+        toml = toml.replace("[agent]\n", '[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = ["172.16.0.0/12"]\n', 1)
+        toml = toml.replace("[environment]\n", '[environment]\nnetwork_mode = "public"\n', 1)
+        (out / "task.toml").write_text(toml, encoding="utf-8", newline="\n")
+        (out / "karo_options.json").write_text(json.dumps(
+            {"task_dir": "/testbed", "verify_command": [["python", "-m", "pytest", "*"], ["python", "*"]]},
+            indent=2) + "\n", encoding="utf-8", newline="\n")
+        lines.append(f"ext_tasks/{set_name}/{name}")
+    listing.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    print(len(lines), "tasks ->", listing)
+
+
+if __name__ == "__main__":
+    main()
