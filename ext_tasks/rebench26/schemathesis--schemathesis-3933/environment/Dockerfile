@@ -11,7 +11,7 @@ RUN cd /testbed \
  && git branch -f hard12-base HEAD 2>/dev/null; git checkout -q hard12-base 2>/dev/null; \
  (git for-each-ref --format='%(refname)' | grep -v '^refs/heads/hard12-base$' | xargs -r -n1 git update-ref -d) \
  && git reflog expire --expire=now --all && git gc --prune=now -q
-ENV PATH=/opt/conda/envs/schemathesis/bin:/opt/miniconda3/envs/schemathesis/bin:$PATH
+ENV PATH=/opt/conda/envs/schemathesis/bin:/opt/miniconda3/envs/schemathesis/bin:/opt/conda/envs/testbed/bin:/opt/miniconda3/envs/testbed/bin:$PATH
 COPY karo_relay.py /opt/karo_relay.py
 COPY entrypoint.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh

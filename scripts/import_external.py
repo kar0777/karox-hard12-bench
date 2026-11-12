@@ -41,7 +41,8 @@ def main() -> None:
         shutil.copytree(src, out, ignore=shutil.ignore_patterns("solution"))
         test_sh = (out / "tests" / "test.sh").read_text(encoding="utf-8", errors="replace")
         envs = list(dict.fromkeys(re.findall(r"envs/([A-Za-z0-9_.-]+)/bin", test_sh))) or ["testbed"]
-        path = ":".join(f"{root}/envs/{e}/bin" for e in envs[:1] for root in ("/opt/conda", "/opt/miniconda3"))
+        envs += [] if "testbed" in envs else ["testbed"]
+        path = ":".join(f"{root}/envs/{e}/bin" for e in envs for root in ("/opt/conda", "/opt/miniconda3"))
         env = out / "environment"
         shutil.copyfile(ENTRY, env / "karo_relay.py")
         (env / "entrypoint.sh").write_text(ENTRYPOINT, encoding="utf-8", newline="\n")
