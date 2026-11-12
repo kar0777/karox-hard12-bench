@@ -5,7 +5,7 @@ name = "custom/aquarium-3d"
 description = "User frontend + 3D benchmark (judged visually by the owner)"
 
 [verifier]
-timeout_sec = 300.0
+timeout_sec = 900.0
 
 [agent]
 network_mode = "allowlist"

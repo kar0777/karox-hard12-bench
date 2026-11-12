@@ -9,6 +9,7 @@ ok = False
 with sync_playwright() as pw:
     browser = pw.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
     page = browser.new_page(viewport={"width": 1600, "height": 900})
+    page.set_default_timeout(180_000)  # CPU-only WebGL on a 2-CPU runner: a frame can take seconds
     page.on("console", lambda m: m.type == "error" and report["console_errors"].append(m.text))
     page.on("pageerror", lambda e: report["page_errors"].append(str(e)))
     page.on("requestfailed", lambda r: report["failed_requests"].append(f"{r.url} {r.failure}"))

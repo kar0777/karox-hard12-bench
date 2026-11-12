@@ -1,7 +1,20 @@
 {
   "task_dir": "/app",
   "verify_command": [
-    ["python3", "-c", "import pathlib; p = pathlib.Path('/app/aquarium-test.html'); assert p.stat().st_size > 0; print('aquarium-test.html', p.stat().st_size, 'bytes')"],
-    ["python3", "*"]
+    [
+      "python3",
+      "-c",
+      "import pathlib; p = pathlib.Path('/app/aquarium-test.html'); assert p.stat().st_size > 0; print('aquarium-test.html', p.stat().st_size, 'bytes')"
+    ],
+    [
+      "python3",
+      "-m",
+      "karox.web_check",
+      "--render"
+    ],
+    [
+      "python3",
+      "*"
+    ]
   ]
 }
