@@ -33,6 +33,7 @@ GATEWAY_BASE = "http://127.0.0.1:14000/v1"
 KEY_ENV = "RACE_GATEWAY_KEY"
 OPENCODE_VERSION = "2.2.7"
 DSH_VERSION = "0.2.2-rc.1"
+PLAYWRIGHT_MCP_VERSION = "0.0.41"  # official Microsoft browser MCP, used on web-task images only
 NVM = "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; "
 
 
@@ -98,13 +99,19 @@ class OpenCodeV2(OpenCode):
         await self.exec_as_agent(environment, command=(
             "set -euo pipefail; " + nvm_node_install_snippet() + " && "
             f"npm i -g @opencode/cli@{OPENCODE_VERSION} && "
-            f"opencode --version | grep -q 'v{OPENCODE_VERSION}'"))
+            f"opencode --version | grep -q 'v{OPENCODE_VERSION}' && "
+            # Web-task images ship Chromium: give OpenCode the official Playwright MCP.
+            f"if [ -x /usr/local/bin/chromium-pw ]; then npm i -g @playwright/mcp@{PLAYWRIGHT_MCP_VERSION}; fi"))
 
     @override
     async def run(self, instruction: str, environment: BaseEnvironment,
                   context: AgentContext) -> None:
         self._instruction = instruction
-        config = json.dumps(opencode_config(self.ALIAS))
+        config = opencode_config(self.ALIAS)
+        web = json.dumps(dict(config, mcp={"playwright": {"type": "local", "enabled": True, "command": [
+            "mcp-server-playwright", "--headless", "--no-sandbox", "--isolated",
+            "--executable-path", "/usr/local/bin/chromium-pw"]}}))
+        config = json.dumps(config)
         env = {KEY_ENV: _gateway_key(self),
                "XDG_CONFIG_HOME": "/tmp/oc-config", "OPENCODE_CONFIG": "/tmp/oc-config/opencode/opencode.json",
                "XDG_DATA_HOME": "/logs/agent/opencode/xdg-data",
@@ -112,6 +119,8 @@ class OpenCodeV2(OpenCode):
         await self.exec_as_agent(environment, env=env, command=(
             "mkdir -p /tmp/oc-config/opencode && "
             f"printf '%s' {shlex.quote(config)} > /tmp/oc-config/opencode/opencode.json && "
+            f"if [ -x /usr/local/bin/chromium-pw ]; then printf '%s' {shlex.quote(web)} "
+            "> /tmp/oc-config/opencode/opencode.json; fi && "
             + NVM +
             # Exactly the arena invocation (hard20_live_one.max_command).
             f"opencode run --standalone --auto --format json --thinking "

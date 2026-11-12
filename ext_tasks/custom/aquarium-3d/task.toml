@@ -5,11 +5,12 @@ name = "custom/aquarium-3d"
 description = "User frontend + 3D benchmark (judged visually by the owner)"
 
 [verifier]
-timeout_sec = 120.0
+timeout_sec = 300.0
 
 [agent]
 network_mode = "allowlist"
-allowed_hosts = ["172.16.0.0/12"]
+# web task: the model gateway plus the public JS CDNs a page may import from (same for every arm)
+allowed_hosts = ["172.16.0.0/12", "unpkg.com", "cdn.jsdelivr.net", "cdnjs.cloudflare.com"]
 timeout_sec = 3600.0
 
 [environment]

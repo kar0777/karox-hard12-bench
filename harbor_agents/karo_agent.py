@@ -222,6 +222,10 @@ class Karo(BaseInstalledAgent):
                 "python3 -m venv /tmp/karo-uv && /tmp/karo-uv/bin/python -m pip install --quiet uv && "
                 f"/tmp/karo-uv/bin/uv venv --quiet --seed --python 3.12 {_VENV}; fi && "
                 f"{_PY} -m pip install --quiet --force-reinstall {shlex.quote(target)} && "
+                # Web-task images pin one Chromium build (/opt/playwright-version);
+                # match the venv's playwright to it so the browser is found, not downloaded.
+                f"if [ -s /opt/playwright-version ]; then {_PY} -m pip install --quiet "
+                f"\"playwright==$(cat /opt/playwright-version)\"; fi && "
                 f"{_PY} -c 'import karox; print(karox.__file__)'"
             ),
         )
