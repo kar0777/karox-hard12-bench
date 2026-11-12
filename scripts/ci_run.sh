@@ -12,16 +12,23 @@ mkdir -p "$WORK/jobs" "$WORK/logs" "$WORK/tasks" "$WORK/audit/context"
 RACE_GATEWAY_KEY=$(python3 -c 'import secrets;print(secrets.token_hex(24))')
 export RACE_GATEWAY_KEY
 echo "::add-mask::$RACE_GATEWAY_KEY"
-[ -n "${WANDB_API_KEY:-}" ] || { echo "no WANDB_API_KEY secret"; exit 1; }
+# UPSTREAM=synthetic swaps only the provider serving the same model (same profile).
+if [ "${UPSTREAM:-wandb}" = synthetic ]; then
+  [ -n "${SYNTHETIC_API_KEY:-}" ] || { echo "no SYNTHETIC_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.synthetic.yaml; PROF=inference_profile_hard12_synthetic.json; KEYVAR=SYNTHETIC_API_KEY; KEYVAL=$SYNTHETIC_API_KEY
+else
+  [ -n "${WANDB_API_KEY:-}" ] || { echo "no WANDB_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.yaml; PROF=inference_profile_hard12.json; KEYVAR=WANDB_API_KEY; KEYVAL=$WANDB_API_KEY
+fi
 (
   cd "$ROOT/gateway"
-  env -i PATH="$PATH" HOME="$HOME" WANDB_API_KEY="$WANDB_API_KEY" \
+  env -i PATH="$PATH" HOME="$HOME" "$KEYVAR=$KEYVAL" \
     HARNESS_RACE_GATEWAY_KEY="$RACE_GATEWAY_KEY" HARNESS_RACE_AUDIT_DIR="$WORK/audit" \
-    HARNESS_RACE_PROFILE="$ROOT/config/inference_profile_hard12.json" LITELLM_TELEMETRY=False \
-    nohup litellm --config litellm.hard12.yaml --host 0.0.0.0 --port 4100 --num_workers 1 \
+    HARNESS_RACE_PROFILE="$ROOT/config/$PROF" LITELLM_TELEMETRY=False \
+    nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY
+unset WANDB_API_KEY SYNTHETIC_API_KEY KEYVAL
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done

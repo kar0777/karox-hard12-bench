@@ -17,6 +17,12 @@ on:
       taskset:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
+      upstream:
+        description: "model provider: wandb | synthetic (same model and profile)"
+        default: "wandb"
+      parallel:
+        description: "max parallel jobs"
+        default: "20"
 permissions:
   contents: read
 jobs:
@@ -38,7 +44,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: ${{ fromJson(inputs.parallel) }}
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     name: ${{ matrix.n }}-${{ matrix.arm }}
     steps:
@@ -58,6 +64,8 @@ jobs:
       - name: Run
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.n }}
           ARM: ${{ matrix.arm }}
