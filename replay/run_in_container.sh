@@ -20,7 +20,7 @@ else
   python3 -m venv /tmp/karo-uv && /tmp/karo-uv/bin/python -m pip install --quiet uv &&
   /tmp/karo-uv/bin/uv venv --quiet --seed --python 3.12 $VENV
 fi
-$PY -m pip install --quiet --force-reinstall /replay/karox.whl || { echo "INSTALL FAILED"; exit 2; }
+$PY -m pip install --quiet --force-reinstall /replay/karox_runtime-5.0.0-py3-none-any.whl || { echo "INSTALL FAILED"; exit 2; }
 echo "install: $(( $(date +%s) - t0 ))s"
 
 LOG=$OUT/requests.jsonl

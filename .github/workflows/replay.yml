@@ -39,7 +39,7 @@ jobs:
           SCENARIO: ${{ inputs.scenario }}
         run: |
           mkdir -p out && chmod 777 out
-          cp wheels/karox_runtime-5.0.0-py3-none-any.whl replay/karox.whl
+          cp wheels/karox_runtime-5.0.0-py3-none-any.whl replay/
           docker run --rm --entrypoint bash \
             -v "$PWD/replay:/replay:ro" -v "$PWD/out:/replay-out" \
             replay-task /replay/run_in_container.sh "$SCENARIO" | tee out/summary.txt
