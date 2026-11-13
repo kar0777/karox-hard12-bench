@@ -1,0 +1,4 @@
+ext_tasks/tb41/session-window-debug
+ext_tasks/tb41/wal-recovery-ordering
+ext_tasks/tb41/mvcc-lsm-compaction
+ext_tasks/tb41/risk-scorer-replay
