@@ -45,8 +45,9 @@ for src in map(Path, dirs):
         docker = docker_src.rstrip() + "\n"
     shutil.copyfile(ENTRY, edir / "karo_relay.py")
     (edir / "entrypoint.sh").write_text(ENTRYPOINT, encoding="utf-8", newline="\n")
-    docker += ("COPY karo_relay.py /opt/karo_relay.py\nCOPY entrypoint.sh /opt/entrypoint.sh\n"
-               f"RUN chmod +x /opt/entrypoint.sh\nWORKDIR {workdir}\nENTRYPOINT [\"/opt/entrypoint.sh\"]\n")
+    # COPY --chmod, not RUN chmod: some TB 4.1 images end with a non-root USER.
+    docker += ("COPY karo_relay.py /opt/karo_relay.py\nCOPY --chmod=0755 entrypoint.sh /opt/entrypoint.sh\n"
+               f"WORKDIR {workdir}\nENTRYPOINT [\"/opt/entrypoint.sh\"]\n")
     (edir / "Dockerfile").write_text(docker, encoding="utf-8", newline="\n")
     head = re.sub(r"(\[agent\]\s*\ntimeout_sec\s*=\s*)([\d.]+)", lambda m: m.group(1) + str(min(float(m.group(2)), cap)), head)
     head = head.replace("[agent]\n", '[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = ["172.16.0.0/12"]\n', 1)
