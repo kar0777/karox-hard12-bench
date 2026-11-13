@@ -1,0 +1,54 @@
+name: replay
+# Offline replay: the KaroX wheel runs inside real task images against a
+# scripted OpenAI-compatible endpoint. No model and no API key are used.
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: "space-separated ext_tasks/tb41 task names"
+        default: "session-window-debug mvcc-lsm-compaction risk-scorer-replay"
+      scenario:
+        description: "scenario under replay/scenarios (without .json)"
+        default: "tb_basics"
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          TASKS: ${{ inputs.tasks }}
+        run: python3 -c "import json,os;print('matrix='+json.dumps({'task':os.environ['TASKS'].split()}))" >> "$GITHUB_OUTPUT"
+  replay:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.task }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build task image
+        run: docker build -q -t replay-task "ext_tasks/tb41/${{ matrix.task }}/environment"
+      - name: replay
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          mkdir -p out && chmod 777 out
+          cp wheels/karox_runtime-5.0.0-py3-none-any.whl replay/karox.whl
+          docker run --rm --entrypoint bash \
+            -v "$PWD/replay:/replay:ro" -v "$PWD/out:/replay-out" \
+            replay-task /replay/run_in_container.sh "$SCENARIO" | tee out/summary.txt
+          exit "${PIPESTATUS[0]}"
+      - if: always()
+        run: grep -E "^(REPLAY|FAIL|  turn|tools advertised|finish attempts|install|agent run)" out/summary.txt >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-${{ matrix.task }}
+          path: out
+          retention-days: 14
