@@ -30,6 +30,7 @@ for name in scenario.get("tools_absent", []):
     if name in tools:
         failures.append(f"tool {name} advertised but should be hidden")
 
+readonly = False
 for index, turn in enumerate(turns):
     label = turn.get("note") or (turn.get("tool_calls") or [{}])[0].get("name", "")
     if index + 1 >= len(requests):
@@ -39,6 +40,13 @@ for index, turn in enumerate(turns):
     new = "\n".join(str(m.get("content") or "") for m in requests[index + 1]["messages"][before:])
     gap = requests[index + 1]["at"] - requests[index]["at"]
     status = "ok"
+    if turn.get("readonly_ok") and turn["readonly_ok"] in new:
+        readonly = True
+        print(f"  turn {index:2} RO   {gap:6.2f}s  {label}: task dir is read-only here; KaroX said so")
+        continue
+    if turn.get("needs_write") and readonly:
+        print(f"  turn {index:2} skip {gap:6.2f}s  {label} (needs a writable task dir)")
+        continue
     for needle in turn.get("expect", []):
         if needle not in new:
             status = "FAIL"
