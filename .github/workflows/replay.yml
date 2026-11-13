@@ -46,6 +46,8 @@ jobs:
           exit "${PIPESTATUS[0]}"
       - if: always()
         run: grep -E "^(REPLAY|FAIL|  turn|tools advertised|finish attempts|install|agent run)" out/summary.txt >> "$GITHUB_STEP_SUMMARY" || true
+      - if: always()
+        run: sudo chmod -R a+rX out; sudo find out -name '*:*' -exec rm -rf {} + || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
