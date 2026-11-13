@@ -217,8 +217,13 @@ class Karo(BaseInstalledAgent):
                 # KaroX needs Python >= 3.10. On an older image it gets its own
                 # standalone interpreter (like the Node-based CLIs ship theirs);
                 # the project's checks still run on the image's python.
+                # Images without python3-venv (no ensurepip, TB 4.1) get a bare
+                # venv and pip bootstrapped from get-pip.py.
                 "if python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then "
-                f"python3 -m venv {_VENV}; else "
+                f"if ! python3 -m venv {_VENV} >/dev/null 2>&1; then rm -rf {_VENV} && "
+                f"python3 -m venv --without-pip {_VENV} && "
+                f"{_PY} -c \"import urllib.request; exec(urllib.request.urlopen("
+                "'https://bootstrap.pypa.io/get-pip.py', timeout=120).read())\" --quiet; fi; else "
                 "python3 -m venv /tmp/karo-uv && /tmp/karo-uv/bin/python -m pip install --quiet uv && "
                 f"/tmp/karo-uv/bin/uv venv --quiet --seed --python 3.12 {_VENV}; fi && "
                 f"{_PY} -m pip install --quiet --force-reinstall {shlex.quote(target)} && "
