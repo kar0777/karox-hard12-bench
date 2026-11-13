@@ -60,10 +60,16 @@ for src in map(Path, dirs):
     # Keep the root check, drop the ownership check, keep the dir host-readable.
     test_sh = out / "tests" / "test.sh"
     if test_sh.is_file():
-        t = test_sh.read_text(encoding="utf-8")
-        t = t.replace(" || { [ -e /logs/verifier ] && [ ! -O /logs/verifier ]; }", "")
+        orig = test_sh.read_text(encoding="utf-8")
+        t = orig.replace(" || { [ -e /logs/verifier ] && [ ! -O /logs/verifier ]; }", "")
         t = t.replace("mkdir -p /logs/verifier && chmod 700 /logs/verifier", "mkdir -p /logs/verifier")
-        test_sh.write_text(t, encoding="utf-8", newline="\n")
+        if t != orig:
+            test_sh.write_text(t, encoding="utf-8", newline="\n")
+            # The prebuilt verifier image bakes the original tests in; build
+            # it from tests/Dockerfile so the patched test.sh is what runs.
+            vt = (out / "task.toml").read_text(encoding="utf-8")
+            vt = re.sub(r'(\[verifier\.environment\][^\[]*?)^docker_image\s*=\s*"[^"]+"\s*\n', r"\1", vt, count=1, flags=re.M | re.S)
+            (out / "task.toml").write_text(vt, encoding="utf-8", newline="\n")
     lines.append(f"ext_tasks/{set_name}/{src.name}")
 listing.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 print(len(lines), "tasks ->", listing)
