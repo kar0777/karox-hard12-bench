@@ -1,6 +1,11 @@
 name: probe-datasets
 on:
   workflow_dispatch:
+    inputs:
+      datasets:
+        default: ''
+      full_tar:
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -10,6 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/probe_datasets.sh
+        env:
+          DATASETS: ${{ inputs.datasets }}
+          FULL_TAR: ${{ inputs.full_tar }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
