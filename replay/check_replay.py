@@ -48,9 +48,7 @@ for index, turn in enumerate(turns):
             status = "FAIL"
             failures.append(f"turn {index} ({label}): unexpected {needle!r} in the result")
     print(f"  turn {index:2} {status:4} {gap:6.2f}s  {label}")
-    print("      | " + new[-400:].replace("
-", "
-      | "))
+    print("      | " + new[-400:].replace("\n", "\n      | "))
 
 finishes = len(requests) - len(turns)
 print(f"finish attempts: {finishes}; agent exit code: {agent_exit}")
