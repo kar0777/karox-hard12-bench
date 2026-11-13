@@ -54,6 +54,15 @@ for src in map(Path, dirs):
     (out / "task.toml").write_text(head + sep + env, encoding="utf-8", newline="\n")
     (out / "karo_options.json").write_text(json.dumps({"task_dir": workdir, "verify_command": [
         ["bash", "-lc", "*"], ["python3", "*"], ["python", "*"]]}, indent=2) + "\n", encoding="utf-8", newline="\n")
+    # Harbor 0.23 bind-mounts /logs/verifier from the runner (not root-owned);
+    # a few TB 4.1 verifiers refuse that dir and would never write a reward.
+    # Keep the root check, drop the ownership check, keep the dir host-readable.
+    test_sh = out / "tests" / "test.sh"
+    if test_sh.is_file():
+        t = test_sh.read_text(encoding="utf-8")
+        t = t.replace(" || { [ -e /logs/verifier ] && [ ! -O /logs/verifier ]; }", "")
+        t = t.replace("mkdir -p /logs/verifier && chmod 700 /logs/verifier", "mkdir -p /logs/verifier")
+        test_sh.write_text(t, encoding="utf-8", newline="\n")
     lines.append(f"ext_tasks/{set_name}/{src.name}")
 listing.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 print(len(lines), "tasks ->", listing)
