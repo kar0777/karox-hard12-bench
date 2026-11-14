@@ -7,6 +7,7 @@
     "repo_read_lines",
     "repo_edit_file",
     "repo_search",
+    "code_run",
     "finish"
   ],
   "tools_absent": [
@@ -81,6 +82,39 @@
         "replay_note.txt"
       ],
       "readonly_ok": "not writable by this process"
+    },
+    {
+      "note": "list_files sees the project even outside a git checkout",
+      "tool_calls": [
+        {
+          "name": "repo_list_files",
+          "arguments": {}
+        }
+      ],
+      "expect": [
+        "replay_note.txt"
+      ],
+      "needs_write": true
+    },
+    {
+      "note": "code mode: a script calls a tool and stays sandboxed",
+      "tool_calls": [
+        {
+          "name": "code_run",
+          "arguments": {
+            "code": "r = checks_run(argv=['python3', '-c', 'print(6*7)'])\nprint('CM-OK' if '42' in r else 'CM-BAD', r.ok)\ntry:\n    open('/etc/hostname').read()\n    print('CM-SANDBOX leak')\nexcept Exception:\n    print('CM-SANDBOX blocked')\nimport json, re, collections\n'CM-' + str(len(json.dumps({'a': 1})))"
+          }
+        }
+      ],
+      "expect": [
+        "CM-OK True",
+        "CM-SANDBOX blocked",
+        "CM-8"
+      ],
+      "expect_absent": [
+        "CM-SANDBOX leak",
+        "Traceback"
+      ]
     },
     {
       "note": "whole-file read through read_lines",
