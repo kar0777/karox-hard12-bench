@@ -31,8 +31,8 @@ except ImportError as exc:  # keep importable for offline tests
 
 GATEWAY_BASE = "http://127.0.0.1:14000/v1"
 KEY_ENV = "RACE_GATEWAY_KEY"
-OPENCODE_VERSION = "2.2.7"
-DSH_VERSION = "0.2.2-rc.1"
+OPENCODE_VERSION = "2.3.0"
+DSH_VERSION = "0.2.2-rc.3"
 PLAYWRIGHT_MCP_VERSION = "0.0.41"  # official Microsoft browser MCP, used on web-task images only
 NVM = "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; "
 
@@ -80,7 +80,7 @@ def _gateway_key(agent) -> str:
 
 
 class OpenCodeV2(OpenCode):
-    """Official OpenCode V2 CLI (@opencode/cli) pinned to 2.2.7."""
+    """Official OpenCode V2 CLI (@opencode/cli) pinned to 2.3.0."""
 
     ALIAS = "hard12-opencode_v2"
 
@@ -129,7 +129,7 @@ class OpenCodeV2(OpenCode):
 
 
 class DeepSeekHarness(BaseInstalledAgent):
-    """Genuine DeepSeek Harness (@deepseek-ai/dsh) pinned to 0.2.2-rc.1."""
+    """Genuine DeepSeek Harness (@deepseek-ai/dsh) pinned to 0.2.2-rc.3."""
 
     ALIAS = "hard12-deepseek_harness"
     SUPPORTS_ATIF = False
