@@ -16,6 +16,9 @@ echo "::add-mask::$RACE_GATEWAY_KEY"
 if [ "${UPSTREAM:-wandb}" = synthetic ]; then
   [ -n "${SYNTHETIC_API_KEY:-}" ] || { echo "no SYNTHETIC_API_KEY secret"; exit 1; }
   CFG=litellm.hard12.synthetic.yaml; PROF=inference_profile_hard12_synthetic.json; KEYVAR=SYNTHETIC_API_KEY; KEYVAL=$SYNTHETIC_API_KEY
+elif [ "${UPSTREAM:-wandb}" = runcrate ]; then
+  [ -n "${RUNCRATE_API_KEY:-}" ] || { echo "no RUNCRATE_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.runcrate.yaml; PROF=inference_profile_hard12_runcrate.json; KEYVAR=RUNCRATE_API_KEY; KEYVAL=$RUNCRATE_API_KEY
 else
   [ -n "${WANDB_API_KEY:-}" ] || { echo "no WANDB_API_KEY secret"; exit 1; }
   CFG=litellm.hard12.yaml; PROF=inference_profile_hard12.json; KEYVAR=WANDB_API_KEY; KEYVAL=$WANDB_API_KEY
@@ -28,7 +31,7 @@ fi
     nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY SYNTHETIC_API_KEY KEYVAL
+unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY KEYVAL
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done

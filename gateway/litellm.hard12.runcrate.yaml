@@ -1,0 +1,67 @@
+# HARD12 gateway (Runcrate upstream): same model DeepSeek-V4.1-Flash-1017, same profile, per-arm aliases.
+# per-arm aliases for accounting only. Profile: config/inference_profile_hard12_synthetic.json
+# (HARNESS_RACE_PROFILE). Key only from the launcher environment (RUNCRATE_API_KEY).
+model_list:
+  - model_name: hard12-karox5
+    litellm_params:
+      model: openai/deepseek-ai/DeepSeek-V4.1-Flash-1017
+      api_base: https://api.runcrate.ai/v1
+      api_key: os.environ/RUNCRATE_API_KEY
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1048576
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-opencode_v2
+    litellm_params:
+      model: openai/deepseek-ai/DeepSeek-V4.1-Flash-1017
+      api_base: https://api.runcrate.ai/v1
+      api_key: os.environ/RUNCRATE_API_KEY
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1048576
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-deepseek_harness
+    litellm_params:
+      model: openai/deepseek-ai/DeepSeek-V4.1-Flash-1017
+      api_base: https://api.runcrate.ai/v1
+      api_key: os.environ/RUNCRATE_API_KEY
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1048576
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+
+litellm_settings:
+  callbacks: race_audit.proxy_handler_instance
+  drop_params: false
+  num_retries: 2
+  request_timeout: 900
+  turn_off_message_logging: true
+
+router_settings:
+  num_retries: 2
+  fallbacks: []
+  context_window_fallbacks: []
+  content_policy_fallbacks: []
+  enable_pre_call_checks: false
+
+general_settings:
+  master_key: os.environ/HARNESS_RACE_GATEWAY_KEY
+  disable_spend_logs: true
