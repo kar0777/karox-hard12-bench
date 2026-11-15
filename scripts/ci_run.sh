@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One GitHub Actions job: ONE task x ONE arm x N attempts in parallel.
-#   ci_run.sh <task_name> <task_no 1..12> <arm: karox5|opencode_v2|deepseek_harness> <attempts> <tag>
+#   ci_run.sh <task_name> <task_no 1..12> <arm: karox5|karox6|opencode_v2|deepseek_harness> <attempts> <tag>
 # Same plumbing as the local HARD12 stand: litellm gateway :4100 (W&B, one pinned
 # model and sampling profile), unwrap :4110, in-container relay, Harbor egress
 # allowlist = docker bridge only. WANDB_API_KEY is given to litellm only.

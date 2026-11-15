@@ -2,7 +2,7 @@
 
     python3 scripts/snap_verify.py <trial artifact dir> <out dir>
 
-KaroX (v60.21+) keeps the changed files as they stood at every submitted finish
+KaroX 5 (v60.21+) and KaroX 6 keep the changed files as they stood at every submitted finish
 under <session>/submissions/NN/{files/,manifest.json}. Each snapshot is laid on
 a fresh task image (no agent, no model, no key) and graded by the task's own
 tests/test.sh, so the first finish can be scored against the final one.
@@ -33,6 +33,7 @@ for trial in sorted(p for p in art.glob("jobs/*/*") if p.is_dir()):
     reward_file = trial / "verifier" / "reward.txt"
     final = reward_file.read_text(encoding="utf-8").strip() if reward_file.is_file() else None
     snaps = sorted(trial.glob("agent/karox-runtime/vnext/sessions/*/submissions/*/manifest.json"))
+    snaps += sorted(trial.glob("agent/karox6/sessions/*/submissions/*/manifest.json"))  # KaroX 6
     if not task_dir.is_dir() or not snaps:
         rows.append({"task": task, "final_reward": final, "note": "no task dir" if not task_dir.is_dir() else "no snapshots"})
         continue

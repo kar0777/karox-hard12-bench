@@ -3,7 +3,9 @@
 No model is called. Each POST to /v1/chat/completions returns the next turn of
 a scenario as a streamed tool call (SSE, the shape KaroX's provider expects),
 and every request is logged so a checker can assert what KaroX sent back after
-each tool ran. When the script is exhausted it keeps answering with finish.
+each tool ran. When the script is exhausted it keeps answering with finish, or,
+for agents that end a run by answering without tool calls (scenario
+"final": "text", KaroX 6), with the plain-text answer.
 
 usage: mock_openai.py SCENARIO.json LOG.jsonl PORT
 """
@@ -21,6 +23,8 @@ LOG = sys.argv[2]
 PORT = int(sys.argv[3])
 TURNS = SCENARIO["turns"]
 FINISH = {"name": "finish", "arguments": {"answer": SCENARIO.get("answer", "done")}}
+END = ({"content": SCENARIO.get("answer", "done")} if SCENARIO.get("final") == "text"
+       else {"tool_calls": [FINISH]})
 LOCK = threading.Lock()
 STATE = {"index": 0}
 
@@ -51,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             index = STATE["index"]
             STATE["index"] += 1
-            turn = TURNS[index] if index < len(TURNS) else {"tool_calls": [FINISH]}
+            turn = TURNS[index] if index < len(TURNS) else END
             with open(LOG, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps({
                     "index": index,

@@ -8,7 +8,7 @@ on:
         description: "hard12 run id whose trial artifacts to grade"
         required: true
       arm:
-        description: "arm suffix of the trial artifacts"
+        description: "arm suffix of the trial artifacts (karox5 | karox6)"
         default: "karox5"
 permissions:
   contents: read

@@ -25,8 +25,8 @@ from pathlib import Path
 JOBS = Path(os.environ["H12_JOBS"])
 VAL = Path(os.environ["H12_VAL"])
 AUDIT = Path(os.environ["H12_AUDIT"])
-ARM = {"karo": "KaroX 5", "opencode-v2-hard12": "OpenCode 2.2.7", "deepseek-harness-hard12": "DeepSeek Harness"}
-GW = {"KaroX 5": "karox5", "OpenCode 2.2.7": "opencode_v2", "DeepSeek Harness": "deepseek_harness"}
+ARM = {"karo": "KaroX 5", "karox6-hard12": "KaroX 6", "opencode-v2-hard12": "OpenCode 2.2.7", "deepseek-harness-hard12": "DeepSeek Harness"}
+GW = {"KaroX 5": "karox5", "KaroX 6": "karox6", "OpenCode 2.2.7": "opencode_v2", "DeepSeek Harness": "deepseek_harness"}
 JOB_RE = re.compile(r"^hard12-(?P<tag>[a-z0-9]+)-(?P<n>\d\d)b?-(?P<name>.+)$")
 
 val = {}
@@ -38,6 +38,8 @@ tasks = [l.split() for l in Path(os.environ["H12_TASKS"]).read_text().splitlines
 
 
 def variant(arm, tag):
+    if arm == "KaroX 6":
+        return f"KaroX 6 ({tag})"
     if arm != "KaroX 5":
         return arm
     return "KaroX 5 (v14)" if tag == "20261110" else f"KaroX 5 ({tag})"

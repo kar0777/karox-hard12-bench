@@ -5,11 +5,20 @@ on:
   workflow_dispatch:
     inputs:
       tasks:
-        description: "space-separated ext_tasks/tb41 task names"
+        description: "space-separated task names under taskroot"
         default: "session-window-debug mvcc-lsm-compaction risk-scorer-replay"
       scenario:
         description: "scenario under replay/scenarios (without .json)"
         default: "tb_basics"
+      agent:
+        description: "karox5 (karox_runtime wheel) | karox6 (newest wheels/karox6-*.whl)"
+        default: "karox5"
+      taskroot:
+        description: "ext_tasks/tb41 | hard12_tasks"
+        default: "ext_tasks/tb41"
+      task_dir:
+        description: "task working directory inside the image (/app for tb41, /testbed for hard12)"
+        default: "/app"
 permissions:
   contents: read
 jobs:
@@ -33,19 +42,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: build task image
-        run: docker build -q -t replay-task "ext_tasks/tb41/${{ matrix.task }}/environment"
+        env:
+          TASKROOT: ${{ inputs.taskroot }}
+          TASK: ${{ matrix.task }}
+        run: docker build -q -t replay-task "$TASKROOT/$TASK/environment"
       - name: replay
         env:
           SCENARIO: ${{ inputs.scenario }}
+          AGENT: ${{ inputs.agent }}
+          TASK_DIR: ${{ inputs.task_dir }}
         run: |
           mkdir -p out && chmod 777 out
-          cp wheels/karox_runtime-5.0.0-py3-none-any.whl replay/
-          docker run --rm --entrypoint bash \
+          if [ "$AGENT" = karox6 ]; then
+            cp "$(ls wheels/karox6-*.whl | tail -1)" replay/; SCRIPT=run_in_container_karox6.sh
+          else
+            cp wheels/karox_runtime-5.0.0-py3-none-any.whl replay/; SCRIPT=run_in_container.sh
+          fi
+          docker run --rm --entrypoint bash -e TASK_DIR="$TASK_DIR" \
             -v "$PWD/replay:/replay:ro" -v "$PWD/out:/replay-out" \
-            replay-task /replay/run_in_container.sh "$SCENARIO" | tee out/summary.txt
+            replay-task "/replay/$SCRIPT" "$SCENARIO" | tee out/summary.txt
           exit "${PIPESTATUS[0]}"
       - if: always()
-        run: grep -E "^(REPLAY|FAIL|  turn|tools advertised|finish attempts|install|agent run)" out/summary.txt >> "$GITHUB_STEP_SUMMARY" || true
+        run: grep -E "^(REPLAY|KAROX6|FAIL|  turn|tools advertised|finish attempts|install|agent run|run_finished|snapshot)" out/summary.txt >> "$GITHUB_STEP_SUMMARY" || true
       - if: always()
         run: sudo chmod -R a+rX out; sudo find out -name '*:*' -exec rm -rf {} + || true
       - uses: actions/upload-artifact@v4

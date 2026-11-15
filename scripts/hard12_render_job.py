@@ -1,4 +1,4 @@
-"""Render the HARD12 Harbor job config: ONE task, THREE arms in parallel.
+"""Render the HARD12 Harbor job config: ONE task, the selected arms in parallel.
 
     python3 hard12_render_job.py <task_name> <wsl_task_path> <out.json>
 
@@ -13,6 +13,9 @@ from pathlib import Path
 
 RACE = Path(__file__).resolve().parents[1]
 WHEEL = os.environ.get("HARD12_KARO_WHEEL") or str(RACE / "wheels" / "karox_runtime-5.0.0-py3-none-any.whl")
+# KaroX 6: the newest karox6-*.whl in wheels/ unless HARD12_KAROX6_WHEEL names one.
+_K6 = sorted((RACE / "wheels").glob("karox6-*.whl"))
+WHEEL6 = os.environ.get("HARD12_KAROX6_WHEEL") or (str(_K6[-1]) if _K6 else "")
 WRAPUP = 50
 
 name, task_path, out = sys.argv[1:4]
@@ -33,6 +36,13 @@ job = {
                     "effort_level": "ultra", **opts},
          "env": {"KARO_RACE_GATEWAY_URL": "http://127.0.0.1:14000",
                  "KARO_RACE_GATEWAY_KEY": "${RACE_GATEWAY_KEY}"}},
+        # KaroX 6 gets only the task directory: no verification command, no hidden checks.
+        {"name": "karox6_agent:KaroX6", "model_name": "hard12-karox6",
+         "kwargs": {"wheel_path": WHEEL6, "model_alias": "hard12-karox6",
+                    "max_seconds": timeout - WRAPUP, "task_dir": opts.get("task_dir", "/app"),
+                    **({"extra_flags": os.environ["HARD12_KAROX6_FLAGS"]}
+                       if os.environ.get("HARD12_KAROX6_FLAGS") else {})},
+         "env": key_env},
         {"name": "hard12_agents:OpenCodeV2", "model_name": "wandb-triad/hard12-opencode_v2",
          "kwargs": {}, "env": key_env},
         {"name": "hard12_agents:DeepSeekHarness", "model_name": "hard12-deepseek_harness",
@@ -40,8 +50,9 @@ job = {
     ],
     "tasks": [{"path": task_path}],
 }
+job["n_concurrent_trials"] = len(job["agents"])
 # HARD12_ARMS (optional, comma list of model aliases' arm names) reruns only
-# arms that did not finish (e.g. after a host reboot); default = all three.
+# arms that did not finish (e.g. after a host reboot); default = all arms.
 only = [a for a in os.environ.get("HARD12_ARMS", "").split(",") if a]
 if only:
     job["agents"] = [a for a in job["agents"] if a["model_name"].split("/")[-1].removeprefix("hard12-") in only]

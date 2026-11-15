@@ -1,0 +1,286 @@
+{
+  "task": "Create replay_note.txt in the repository containing the single word ok, check it, and report what it contains.",
+  "answer": "replay_note.txt contains okay",
+  "final": "text",
+  "max_tools": 12,
+  "tools_present": [
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "todo_write",
+    "job_output",
+    "job_list",
+    "job_kill"
+  ],
+  "tools_absent": [
+    "finish",
+    "apply_patch",
+    "checks_run"
+  ],
+  "max_finishes": 1,
+  "expect_status": "completed",
+  "expect_snapshot": [
+    "replay_note.txt"
+  ],
+  "turns": [
+    {
+      "note": "bash runs a script",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "echo MARK-$((6*7)); id -u; command -v git || echo NO_GIT",
+            "description": "probe"
+          }
+        }
+      ],
+      "expect": [
+        "MARK-42",
+        "[exit code: 0]"
+      ]
+    },
+    {
+      "note": "heredoc through bash",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "python3 - <<'EOF'\nprint('HD-' + str(2 + 3))\nEOF"
+          }
+        }
+      ],
+      "expect": [
+        "HD-5"
+      ]
+    },
+    {
+      "note": "nonzero exit is reported",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "echo ERR-OUT >&2; exit 3"
+          }
+        }
+      ],
+      "expect": [
+        "ERR-OUT",
+        "[exit code: 3]"
+      ]
+    },
+    {
+      "note": "write in the task repository",
+      "needs_write": true,
+      "readonly_ok": "Read-only file system",
+      "tool_calls": [
+        {
+          "name": "write",
+          "arguments": {
+            "file_path": "replay_note.txt",
+            "content": "ok\n"
+          }
+        }
+      ],
+      "expect": [
+        "Created"
+      ]
+    },
+    {
+      "note": "read with line numbers",
+      "needs_write": true,
+      "tool_calls": [
+        {
+          "name": "read",
+          "arguments": {
+            "file_path": "replay_note.txt"
+          }
+        }
+      ],
+      "expect": [
+        "1: ok"
+      ]
+    },
+    {
+      "note": "edit after read",
+      "needs_write": true,
+      "tool_calls": [
+        {
+          "name": "edit",
+          "arguments": {
+            "file_path": "replay_note.txt",
+            "old_string": "ok",
+            "new_string": "okay"
+          }
+        }
+      ],
+      "expect": [
+        "Edited",
+        "replaced 1 occurrence"
+      ]
+    },
+    {
+      "note": "parallel read-only calls",
+      "needs_write": true,
+      "tool_calls": [
+        {
+          "name": "grep",
+          "arguments": {
+            "pattern": "okay",
+            "include": "replay_note.txt"
+          }
+        },
+        {
+          "name": "glob",
+          "arguments": {
+            "pattern": "replay_note.*"
+          }
+        }
+      ],
+      "expect": [
+        "Line 1: okay",
+        "replay_note.txt"
+      ]
+    },
+    {
+      "note": "unknown tool is answered, run continues",
+      "tool_calls": [
+        {
+          "name": "repo_inspect",
+          "arguments": {}
+        }
+      ],
+      "expect": [
+        "unknown tool",
+        "Available tools"
+      ]
+    },
+    {
+      "note": "invalid arguments are answered",
+      "tool_calls": [
+        {
+          "name": "read",
+          "arguments": {
+            "offset": 2
+          }
+        }
+      ],
+      "expect": [
+        "invalid arguments"
+      ]
+    },
+    {
+      "note": "destructive command is not executed",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "rm -rf \"$HOME/karox6-replay-nonexistent\""
+          }
+        }
+      ],
+      "expect": [
+        "Not executed"
+      ]
+    },
+    {
+      "note": "background job",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "sleep 1; echo BG-DONE",
+            "run_in_background": true
+          }
+        }
+      ],
+      "expect": [
+        "Started background job 1"
+      ]
+    },
+    {
+      "note": "job_output waits",
+      "tool_calls": [
+        {
+          "name": "job_output",
+          "arguments": {
+            "job_id": "1",
+            "wait": true,
+            "timeout": 20000
+          }
+        }
+      ],
+      "expect": [
+        "BG-DONE"
+      ]
+    },
+    {
+      "note": "timeout moves a command to the background",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "sleep 3; echo LATE-DONE",
+            "timeout": 1000
+          }
+        }
+      ],
+      "expect": [
+        "moved to background job 2"
+      ]
+    },
+    {
+      "note": "job_output of the moved command",
+      "tool_calls": [
+        {
+          "name": "job_output",
+          "arguments": {
+            "job_id": "2",
+            "wait": true,
+            "timeout": 20000
+          }
+        }
+      ],
+      "expect": [
+        "LATE-DONE"
+      ]
+    },
+    {
+      "note": "big output spills to a file",
+      "tool_calls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "python3 -c \"print('x' * 100000)\""
+          }
+        }
+      ],
+      "expect": [
+        "Output truncated",
+        "Full output saved to"
+      ]
+    },
+    {
+      "note": "todo list",
+      "tool_calls": [
+        {
+          "name": "todo_write",
+          "arguments": {
+            "todos": [
+              {
+                "content": "check replay",
+                "status": "completed"
+              }
+            ]
+          }
+        }
+      ],
+      "expect_absent": [
+        "invalid arguments",
+        "Error:"
+      ]
+    }
+  ]
+}

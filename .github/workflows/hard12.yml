@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       arms:
-        description: "comma list: karox5,opencode_v2,deepseek_harness"
+        description: "comma list: karox5,karox6,opencode_v2,deepseek_harness"
         default: "karox5,opencode_v2,deepseek_harness"
       tasks:
         description: "comma list of task numbers 1..12 (empty = all)"
@@ -23,6 +23,9 @@ on:
       parallel:
         description: "max parallel jobs"
         default: "20"
+      karox6_flags:
+        description: "extra `karox run` flags for the karox6 arm (A/B variants)"
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -73,6 +76,7 @@ jobs:
           ARM: ${{ matrix.arm }}
           ATT: ${{ inputs.attempts }}
           TAG: ${{ inputs.tag }}
+          HARD12_KAROX6_FLAGS: ${{ inputs.karox6_flags }}
         run: bash scripts/ci_run.sh "$TASK" "$N" "$ARM" "$ATT" "$TAG"
       - name: Collect
         if: always()
