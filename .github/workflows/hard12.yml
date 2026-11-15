@@ -18,7 +18,7 @@ on:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
       upstream:
-        description: "model provider: wandb | synthetic | runcrate (same model and profile)"
+        description: "model provider: wandb | synthetic | runcrate | reformboss (same model and profile; reformboss: parallel <= 3)"
         default: "wandb"
       parallel:
         description: "max parallel jobs"
@@ -66,6 +66,7 @@ jobs:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
           RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
+          REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.n }}
