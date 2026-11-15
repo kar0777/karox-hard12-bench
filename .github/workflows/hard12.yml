@@ -18,7 +18,7 @@ on:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
       upstream:
-        description: "model provider: wandb | synthetic | runcrate | reformboss (same model and profile; reformboss: parallel <= 3)"
+        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only)"
         default: "wandb"
       parallel:
         description: "max parallel jobs"
@@ -70,6 +70,7 @@ jobs:
           SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
           RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
+          FREEINFERENCE_API_KEY: ${{ secrets.FREEINFERENCE_API_KEY }}
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.n }}

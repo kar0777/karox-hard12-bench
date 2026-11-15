@@ -1,0 +1,28 @@
+{
+  "profile_id": "hard12-glm53f-freeinference-v1",
+  "upstream_provider": "freeinference",
+  "upstream_api_base": "https://freeinference.org/v1",
+  "upstream_model": "glm-5.3-flash",
+  "enforced": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "max_tokens": 32768,
+    "reasoning_effort": "max"
+  },
+  "stripped_request_fields": [
+    "top_k",
+    "thinking",
+    "reasoning",
+    "presence_penalty",
+    "frequency_penalty",
+    "seed",
+    "max_completion_tokens"
+  ],
+  "aliases": {
+    "hard12-karox5": "karox5",
+    "hard12-karox6": "karox6",
+    "hard12-opencode_v2": "opencode_v2",
+    "hard12-deepseek_harness": "deepseek_harness"
+  },
+  "evidence": "D-026 dev lane, NOT the D-022 bench model: GLM-5.3-Flash (fp8, 1M context, always reasons, reasoning_effort low/high/max) served free by FreeInference (Harvard SEAS); $80/day quota, 2 concurrent requests per key; prompts are logged for research. Probed 2026-11-15: two-turn tool calls, reasoning_content and reasoning_effort=max accepted."
+}
