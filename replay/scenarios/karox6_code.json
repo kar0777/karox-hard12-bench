@@ -1,0 +1,82 @@
+{
+  "task": "Check code mode: write code_note.txt with the word ok through a run_code program and report.",
+  "answer": "code_note.txt contains ok",
+  "final": "text",
+  "max_tools": 13,
+  "karox6_flags": [
+    "--code-mode"
+  ],
+  "tools_present": [
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "run_code"
+  ],
+  "tools_absent": [
+    "finish",
+    "apply_patch",
+    "agent"
+  ],
+  "max_finishes": 1,
+  "expect_status": "completed",
+  "expect_snapshot": [
+    "code_note.txt"
+  ],
+  "turns": [
+    {
+      "note": "program calls bash, write, read; a caught ToolError",
+      "tool_calls": [
+        {
+          "name": "run_code",
+          "arguments": {
+            "description": "probe",
+            "code": "import sys\nprint('PY', sys.version_info[0])\nprint(tools.bash(command='echo CM-$((6*7))').splitlines()[0])\ntools.write(file_path='code_note.txt', content='ok')\nprint('READ-OK' if 'ok' in tools.read('code_note.txt') else 'READ-BAD')\ntry:\n    tools.read(file_path='no_such_file.txt')\nexcept ToolError as error:\n    print('CAUGHT', str(error)[:60])\n"
+          }
+        }
+      ],
+      "expect": [
+        "PY 3",
+        "CM-42",
+        "READ-OK",
+        "CAUGHT",
+        "[exit code: 0; 4 tool calls"
+      ]
+    },
+    {
+      "note": "a refused nested command fails the program",
+      "tool_calls": [
+        {
+          "name": "run_code",
+          "arguments": {
+            "code": "tools.bash(command='rm -rf /')\nprint('UNREACHED')\n"
+          }
+        }
+      ],
+      "expect": [
+        "ToolError",
+        "[exit code: 1"
+      ],
+      "expect_absent": [
+        "UNREACHED"
+      ]
+    },
+    {
+      "note": "program with no output",
+      "tool_calls": [
+        {
+          "name": "run_code",
+          "arguments": {
+            "code": "x = 1\n"
+          }
+        }
+      ],
+      "expect": [
+        "(the program printed nothing)",
+        "[exit code: 0; 0 tool calls"
+      ]
+    }
+  ]
+}

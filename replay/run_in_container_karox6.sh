@@ -36,12 +36,13 @@ for _ in $(seq 50); do python3 -c "import socket; socket.create_connection(('127
 
 export REPLAY_GATEWAY_KEY=replay-not-a-secret
 TASK=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['task'])" "$SCENARIO")
+EXTRA=$(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1])).get('karox6_flags', [])))" "$SCENARIO")
 cd "$TASK_DIR"
 t1=$(date +%s)
 $PY -m karox6 run --json --provider openai-chat --base-url http://127.0.0.1:18555/v1 \
   --api-key-env REPLAY_GATEWAY_KEY --model replay --context-window 1048576 --max-output-tokens 32768 \
   --max-steps 40 --max-seconds 600 --home "$OUT/karox6" --cwd "$TASK_DIR" --approve-dangerous deny \
-  -- "$TASK" </dev/null >"$OUT/events.jsonl" 2>"$OUT/stderr.txt"
+  $EXTRA -- "$TASK" </dev/null >"$OUT/events.jsonl" 2>"$OUT/stderr.txt"
 RC=$?
 echo "agent run: $(( $(date +%s) - t1 ))s exit=$RC"
 kill $MOCK 2>/dev/null
