@@ -6,9 +6,9 @@ Same rules for every arm:
 * environment: FROM the task's pinned prebuilt image + loopback relay entrypoint;
 * agent phase network = docker bridge allowlist (the model gateway only), timeout capped;
 * verifier untouched (separate environment built from tests/Dockerfile, reward.json);
-* the collect hook first commits whatever the agent left uncommitted, so an agent that
-  edits files but does not run `git commit` is graded on its work (the task text asks
-  for a commit; DeepSWE's own runs used agents that commit);
+* the collect hook diffs committed + uncommitted work against the base commit (through a
+  temporary index), so an agent that edits files but does not run `git commit` is graded
+  on its work (the task text asks for a commit; DeepSWE's own runs used agents that commit);
 * solution/ is kept for the oracle arm only (Harbor uploads it for the oracle agent).
 """
 import json
@@ -21,9 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from import_external import ENTRY, ENTRYPOINT  # noqa: E402
 
-COMMIT = ("cd /app && git config --global --add safe.directory /app && git add -A && "
-          "(git diff --cached --quiet || git -c user.name=agent -c user.email=agent@local "
-          "commit -q --no-verify -m 'agent work') ; ")
+def collect(base):
+    """Snapshot of committed + uncommitted work vs base, through a temporary index (the
+    repository itself is not touched; a failing step leaves no model.patch)."""
+    return ("cd /app && git config --global --add safe.directory /app && mkdir -p /logs/artifacts && "
+            "cp .git/index /tmp/collect.index && GIT_INDEX_FILE=/tmp/collect.index git add -A && "
+            f"GIT_INDEX_FILE=/tmp/collect.index git diff --cached --binary {base} > /logs/artifacts/model.patch")
 
 set_name, cap, dirs = sys.argv[1], float(sys.argv[2]), sys.argv[3:]
 listing = ROOT / "data" / "sets" / f"{set_name}.txt"
@@ -55,16 +58,10 @@ for src in map(Path, dirs):
     head = head[:agent_at] + re.sub(r"^(timeout_sec\s*=\s*)([\d.]+)",
                                     lambda m: m.group(1) + str(min(float(m.group(2)), cap)),
                                     head[agent_at:], count=1, flags=re.M)
-    n = 0
-
-    def hook(m):
-        global n
-        n += 1
-        return m.group(1) + COMMIT + m.group(2)
-
-    head = re.sub(r'(\[\[verifier\.collect\]\]\s*\ncommand\s*=\s*")(cd /app && )', hook, head)
-    head = head.replace(COMMIT + "cd /app && ", COMMIT)
-    assert n == 1, (src, n)
+    cmd = re.search(r'^\[\[verifier\.collect\]\]\s*\ncommand\s*=\s*"([^"\n]*)"', head, re.M)
+    base = re.search(r"git diff --binary ([0-9a-f]{7,40}) HEAD > /logs/artifacts/model\.patch$", cmd.group(1))
+    assert base, src
+    head = head.replace(cmd.group(1), collect(base.group(1)), 1)
     env = 'network_mode = "public"\n' + env
     (out / "task.toml").write_text(head + sep + env, encoding="utf-8", newline="\n")
     (out / "karo_options.json").write_text(json.dumps({"task_dir": "/app", "verify_command": [

