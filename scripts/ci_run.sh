@@ -23,6 +23,10 @@ elif [ "${UPSTREAM:-wandb}" = freeinference ]; then
   # D-026: a different model (GLM-5.3-Flash), dev lane only; 2 concurrent requests per key.
   [ -n "${FREEINFERENCE_API_KEY:-}" ] || { echo "no FREEINFERENCE_API_KEY secret"; exit 1; }
   CFG=litellm.hard12.freeinference.yaml; PROF=inference_profile_hard12_freeinference.json; KEYVAR=FREEINFERENCE_API_KEY; KEYVAL=$FREEINFERENCE_API_KEY
+elif [ "${UPSTREAM:-wandb}" = openrouter ]; then
+  # Same model on fp8 providers with caching; spend is capped by the key's own limit.
+  [ -n "${OPENROUTER_API_KEY:-}" ] || { echo "no OPENROUTER_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.openrouter.yaml; PROF=inference_profile_hard12_openrouter.json; KEYVAR=OPENROUTER_API_KEY; KEYVAL=$OPENROUTER_API_KEY
 elif [ "${UPSTREAM:-wandb}" = reformboss ]; then
   # 4 concurrent requests per key: keep the workflow's parallel <= 3.
   [ -n "${REFORMBOSS_API_KEY:-}" ] || { echo "no REFORMBOSS_API_KEY secret"; exit 1; }
@@ -39,7 +43,7 @@ fi
     nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY KEYVAL
+unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY KEYVAL
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done

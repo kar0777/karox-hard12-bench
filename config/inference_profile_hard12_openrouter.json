@@ -1,0 +1,38 @@
+{
+  "profile_id": "hard12-dsv41f-1017-openrouter-v1",
+  "upstream_provider": "openrouter",
+  "upstream_api_base": "https://openrouter.ai/api/v1",
+  "upstream_model": "deepseek/deepseek-v4.1-flash-1017",
+  "enforced": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "max_tokens": 32768,
+    "reasoning_effort": "max"
+  },
+  "stripped_request_fields": [
+    "top_k",
+    "thinking",
+    "reasoning",
+    "presence_penalty",
+    "frequency_penalty",
+    "seed",
+    "max_completion_tokens"
+  ],
+  "aliases": {
+    "hard12-karox5": "karox5",
+    "hard12-karox6": "karox6",
+    "hard12-opencode_v2": "opencode_v2",
+    "hard12-deepseek_harness": "deepseek_harness"
+  },
+  "evidence": "Same model (DeepSeek-V4.1-Flash-1017 via OpenRouter, providers deepinfra/fp8, stepfun/fp8, novita/fp8, no fallbacks) and the same enforced sampling; probed 2026-11-16: tool calls, reasoning_effort=max and prompt caching (3840/3903 cached on a repeat) work on deepinfra/fp8.",
+  "extra_body": {
+    "provider": {
+      "order": [
+        "deepinfra/fp8",
+        "stepfun/fp8",
+        "novita/fp8"
+      ],
+      "allow_fallbacks": false
+    }
+  }
+}

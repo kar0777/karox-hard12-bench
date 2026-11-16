@@ -64,6 +64,11 @@ def enforce_profile(kwargs: dict) -> dict:
     if isinstance(extra, dict):
         for field in STRIPPED:
             extra.pop(field, None)
+    routing = PROFILE.get("extra_body")  # e.g. OpenRouter provider pinning, for every arm
+    if isinstance(routing, dict):
+        merged = dict(extra) if isinstance(extra, dict) else {}
+        merged.update(routing)
+        kwargs["extra_body"] = merged
     return kwargs
 
 
