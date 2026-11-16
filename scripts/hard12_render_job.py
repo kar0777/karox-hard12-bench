@@ -47,15 +47,19 @@ job = {
          "kwargs": {}, "env": key_env},
         {"name": "hard12_agents:DeepSeekHarness", "model_name": "hard12-deepseek_harness",
          "kwargs": {}, "env": key_env},
+        # Reference solution (task solution/solve.sh): proves a task is solvable on this runner.
+        {"name": "oracle", "model_name": "hard12-oracle", "kwargs": {}},
     ],
     "tasks": [{"path": task_path}],
 }
+all_agents = job["agents"]
+job["agents"] = [a for a in all_agents if a["name"] != "oracle"]  # oracle is opt-in only
 job["n_concurrent_trials"] = len(job["agents"])
 # HARD12_ARMS (optional, comma list of model aliases' arm names) reruns only
 # arms that did not finish (e.g. after a host reboot); default = all arms.
 only = [a for a in os.environ.get("HARD12_ARMS", "").split(",") if a]
 if only:
-    job["agents"] = [a for a in job["agents"] if a["model_name"].split("/")[-1].removeprefix("hard12-") in only]
+    job["agents"] = [a for a in all_agents if a["model_name"].split("/")[-1].removeprefix("hard12-") in only]
     job["n_concurrent_trials"] = len(job["agents"])
 # HARD12_ATTEMPTS (optional) = independent repeats per arm (variance runs).
 attempts = int(os.environ.get("HARD12_ATTEMPTS", "1"))

