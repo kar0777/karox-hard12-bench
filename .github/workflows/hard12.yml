@@ -26,6 +26,9 @@ on:
       karox6_flags:
         description: "extra `karox run` flags for the karox6 arm (A/B variants)"
         default: ""
+      karox6_wheel:
+        description: "karox6 wheel file name under wheels/ (empty = the newest by name)"
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -79,6 +82,7 @@ jobs:
           ATT: ${{ inputs.attempts }}
           TAG: ${{ inputs.tag }}
           HARD12_KAROX6_FLAGS: ${{ inputs.karox6_flags }}
+          HARD12_KAROX6_WHEEL: ${{ inputs.karox6_wheel && format('{0}/wheels/{1}', github.workspace, inputs.karox6_wheel) || '' }}
         run: bash scripts/ci_run.sh "$TASK" "$N" "$ARM" "$ATT" "$TAG"
       - name: Collect
         if: always()
