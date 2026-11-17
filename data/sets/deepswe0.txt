@@ -1,0 +1,4 @@
+ext_tasks/deepswe0/claude-code-by-agents-recursive-delegation
+ext_tasks/deepswe0/httpx-streaming-json-iteration
+ext_tasks/deepswe0/koota-deferred-mutation-buffer
+ext_tasks/deepswe0/csstree-shorthand-expansion-compression
