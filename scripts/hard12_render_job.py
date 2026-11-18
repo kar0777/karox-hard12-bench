@@ -14,7 +14,8 @@ from pathlib import Path
 RACE = Path(__file__).resolve().parents[1]
 WHEEL = os.environ.get("HARD12_KARO_WHEEL") or str(RACE / "wheels" / "karox_runtime-5.0.0-py3-none-any.whl")
 # KaroX 6: the newest karox6-*.whl in wheels/ unless HARD12_KAROX6_WHEEL names one.
-_K6 = sorted((RACE / "wheels").glob("karox6-*.whl"))
+_K6 = sorted((RACE / "wheels").glob("karox6-*.whl"),
+             key=lambda w: [int(n) for n in re.findall(r"[0-9]+", w.name)])  # dev13 > dev9
 WHEEL6 = os.environ.get("HARD12_KAROX6_WHEEL") or (str(_K6[-1]) if _K6 else "")
 WRAPUP = 50
 

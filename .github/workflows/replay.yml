@@ -54,7 +54,7 @@ jobs:
         run: |
           mkdir -p out && chmod 777 out
           if [ "$AGENT" = karox6 ]; then
-            cp "$(ls wheels/karox6-*.whl | tail -1)" replay/; SCRIPT=run_in_container_karox6.sh
+            cp "$(ls wheels/karox6-*.whl | sort -V | tail -1)" replay/; SCRIPT=run_in_container_karox6.sh
           else
             cp wheels/karox_runtime-5.0.0-py3-none-any.whl replay/; SCRIPT=run_in_container.sh
           fi
