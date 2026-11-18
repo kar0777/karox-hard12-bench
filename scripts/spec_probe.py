@@ -44,6 +44,9 @@ may already handle. Tests the author added prove only what the author believed.
 If there are no such gaps, answer exactly: NO GAPS"""
 
 
+CALL_STATS = {"429": 0}
+
+
 def call(key, task, diff):
     body = {
         "model": MODEL,
@@ -58,6 +61,7 @@ def call(key, task, diff):
         "stream": False,
     }
     data = json.dumps(body).encode()
+    refused = 0
     for attempt in range(6):
         req = urllib.request.Request(
             BASE,
@@ -71,6 +75,8 @@ def call(key, task, diff):
             return out, round(time.time() - started, 1), None
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < 5:
+                refused += 1
+                CALL_STATS["429"] += 1
                 time.sleep(2 + attempt * 3)
                 continue
             body = exc.read()[:300].decode("utf-8", "replace") if exc.fp else ""
@@ -118,8 +124,12 @@ def main():
             json.dump(rec, f, ensure_ascii=False, indent=1)
         print(case, k, secs, err or rec.get("finish_reason"), flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    workers = int(os.environ.get("PROBE_WORKERS", "2"))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(run, jobs))
+    print("workers", workers, "429 refusals", CALL_STATS["429"], flush=True)
+    with open(os.path.join(out_dir, "_stats.json"), "w", encoding="utf-8") as f:
+        json.dump({"workers": workers, "refused_429": CALL_STATS["429"]}, f)
 
 
 if __name__ == "__main__":
