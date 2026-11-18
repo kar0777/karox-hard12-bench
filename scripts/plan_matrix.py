@@ -10,7 +10,9 @@ else:
     lines = [line.split() for line in open("data/night_tasks.txt", encoding="utf-8") if line.strip()]
 want = [int(x) for x in os.environ.get("TASKS", "").split(",") if x.strip()]
 arms = [a.strip() for a in os.environ.get("ARMS", "").split(",") if a.strip()]
-bad = set(arms) - {"karox5", "karox6", "opencode_v2", "deepseek_harness", "oracle"}
+# "trio" = karox6 + opencode_v2 + deepseek_harness in ONE job (one runner IP, the three
+# agents at once under identical conditions; for providers that limit IPs per key).
+bad = set(arms) - {"karox5", "karox6", "opencode_v2", "deepseek_harness", "oracle", "trio"}
 if bad or not arms:
     sys.exit(f"bad arms: {sorted(bad) or 'none'}")
 include = [

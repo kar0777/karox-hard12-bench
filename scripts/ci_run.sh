@@ -49,10 +49,14 @@ health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.
 for _ in $(seq 1 120); do health && break; sleep 2; done
 health || { echo "GATEWAY_FAIL"; tail -50 "$WORK/logs/litellm.log"; exit 1; }
 LABEL="hard12-$TAG-$(printf '%02d' "$N")-$TASK"
-printf '{"run_id": "%s-%s", "task_id": "%s"}\n' "$LABEL" "$ARM" "$TASK" > "$WORK/audit/context/$ARM.json"
+# "trio": the three CLIs in this one job (one runner IP; see plan_matrix.py).
+ARMS=$ARM; [ "$ARM" = trio ] && ARMS=karox6,opencode_v2,deepseek_harness
+for A in ${ARMS//,/ }; do
+  printf '{"run_id": "%s-%s", "task_id": "%s"}\n' "$LABEL" "$A" "$TASK" > "$WORK/audit/context/$A.json"
+done
 cp -r "$ROOT/$TASKDIR" "$WORK/tasks/$TASK"
 export PYTHONPATH="$ROOT/harbor_agents"
-HARD12_ARMS="$ARM" HARD12_ATTEMPTS="$ATT" \
+HARD12_ARMS="$ARMS" HARD12_ATTEMPTS="$ATT" \
   HARD12_KARO_WHEEL="$ROOT/wheels/karox_runtime-5.0.0-py3-none-any.whl" \
   python3 "$ROOT/scripts/hard12_render_job.py" "$TASKDIR" "$WORK/tasks/$TASK" "$WORK/job.json"
 echo "== $LABEL start $(date -u +%FT%TZ)"
