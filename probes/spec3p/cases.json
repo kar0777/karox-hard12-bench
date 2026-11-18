@@ -1,0 +1,26 @@
+[
+ {
+  "case": "abs-stepped-slices--44021705895",
+  "outcome": "fail",
+  "diff_chars": 34519,
+  "dir": "spec1"
+ },
+ {
+  "case": "httpx-streaming-json-iteration--44138163101",
+  "outcome": "fail",
+  "diff_chars": 44445,
+  "dir": "spec1"
+ },
+ {
+  "case": "fastapi-implicit-head-options--44060598494",
+  "outcome": "solved",
+  "diff_chars": 84990,
+  "dir": "spec1"
+ },
+ {
+  "case": "koota-query-predicates--43944899185",
+  "outcome": "solved",
+  "diff_chars": 88554,
+  "dir": "spec1"
+ }
+]

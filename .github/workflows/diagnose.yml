@@ -8,6 +8,9 @@ on:
       samples:
         description: "spec probe: reviewer samples per case"
         default: "2"
+      probe_wheel:
+        description: "spec probe: karox6 wheel in wheels/ to run the reviewer as an agent (empty: one model call)"
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -49,7 +52,15 @@ jobs:
           REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
           CASES: ${{ inputs.spec_probe }}
           SAMPLES: ${{ inputs.samples }}
-        run: python3 scripts/spec_probe.py "probes/$CASES" out "$SAMPLES"
+          WHEEL: ${{ inputs.probe_wheel }}
+        run: |
+          if [ -n "$WHEEL" ]; then
+            python3 -m venv /tmp/kv
+            /tmp/kv/bin/pip install --quiet "wheels/$WHEEL"
+            /tmp/kv/bin/python scripts/spec_probe_agent.py "probes/$CASES" out "$SAMPLES"
+          else
+            python3 scripts/spec_probe.py "probes/$CASES" out "$SAMPLES"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
