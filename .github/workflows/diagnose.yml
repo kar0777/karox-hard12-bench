@@ -1,10 +1,18 @@
 name: diagnose
 on:
   workflow_dispatch:
+    inputs:
+      spec_probe:
+        description: "probes/<dir> to run the spec-reviewer probe on instead of the diagnose matrix (empty: diagnose)"
+        default: ""
+      samples:
+        description: "spec probe: reviewer samples per case"
+        default: "2"
 permissions:
   contents: read
 jobs:
   plan:
+    if: inputs.spec_probe == ''
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
@@ -28,4 +36,23 @@ jobs:
         with:
           name: diag-${{ matrix.n }}
           path: out/${{ matrix.n }}
+          retention-days: 30
+  spec_probe:
+    # Model-only probe (no agent); key only from the REFORMBOSS_API_KEY secret.
+    if: inputs.spec_probe != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe
+        env:
+          REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
+          CASES: ${{ inputs.spec_probe }}
+          SAMPLES: ${{ inputs.samples }}
+        run: python3 scripts/spec_probe.py "probes/$CASES" out "$SAMPLES"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spec-probe
+          path: out
           retention-days: 30
