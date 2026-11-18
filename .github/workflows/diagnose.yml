@@ -53,6 +53,8 @@ jobs:
           CASES: ${{ inputs.spec_probe }}
           SAMPLES: ${{ inputs.samples }}
           WHEEL: ${{ inputs.probe_wheel }}
+          # ReformBoss allows 4 concurrent requests per key; run nothing else meanwhile.
+          PROBE_WORKERS: "4"
         run: |
           if [ -n "$WHEEL" ]; then
             python3 -m venv /tmp/kv

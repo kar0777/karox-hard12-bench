@@ -96,7 +96,7 @@ def main():
     jobs = [(c, k) for c in cases for k in range(samples)]
     for c in cases:
         c.setdefault("dir", os.path.basename(os.path.abspath(cases_dir)))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=int(os.environ.get("PROBE_WORKERS", "2"))) as pool:
         list(pool.map(lambda j: run_one(root, out_dir, j[0], j[1], key), jobs))
 
 
