@@ -86,11 +86,21 @@ def main():
         sys.exit("no REFORMBOSS_API_KEY")
     os.makedirs(out_dir, exist_ok=True)
     cases = json.load(open(os.path.join(cases_dir, "cases.json"), encoding="utf-8"))
+    # Optional prompt override (prompt.json: {"system": ..., "user": ...}); cases.json may
+    # list cases kept in another probe dir ("dir" key) so variants reuse the same inputs.
+    global SYSTEM, USER
+    override = os.path.join(cases_dir, "prompt.json")
+    if os.path.exists(override):
+        prompt = json.load(open(override, encoding="utf-8"))
+        SYSTEM, USER = prompt["system"], prompt["user"]
     jobs = [(c["case"], k) for c in cases for k in range(samples)]
 
     def run(job):
         case, k = job
-        base = os.path.join(cases_dir, case)
+        entry = next(c for c in cases if c["case"] == case)
+        base = os.path.join(os.path.dirname(cases_dir.rstrip("/")), entry.get("dir", ""), case)
+        if not entry.get("dir"):
+            base = os.path.join(cases_dir, case)
         task = open(os.path.join(base, "instruction.md"), encoding="utf-8").read()
         diff = open(os.path.join(base, "agent.diff"), encoding="utf-8").read()
         if len(diff) > MAX_DIFF_CHARS:
