@@ -73,9 +73,10 @@ def call(key, task, diff):
             if exc.code == 429 and attempt < 5:
                 time.sleep(2 + attempt * 3)
                 continue
-            return None, round(time.time() - started, 1), f"HTTP {exc.code}"
+            body = exc.read()[:300].decode("utf-8", "replace") if exc.fp else ""
+            return None, round(time.time() - started, 1), f"HTTP {exc.code} {body}"
         except Exception as exc:  # sent and failed: do not repeat a possibly paid call
-            return None, round(time.time() - started, 1), type(exc).__name__
+            return None, round(time.time() - started, 1), f"{type(exc).__name__}: {exc}"[:300]
     return None, 0, "429 exhausted"
 
 
