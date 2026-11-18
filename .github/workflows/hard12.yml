@@ -92,6 +92,7 @@ jobs:
           cp -r "$W/jobs" out/ 2>/dev/null || true
           cp "$W/audit/audit.jsonl" "out/audit-${{ matrix.n }}-${{ matrix.arm }}.jsonl" 2>/dev/null || true
           mkdir -p out/gw && tail -200 "$W/logs/litellm.log" > out/gw/litellm-tail.log 2>/dev/null || true
+          cp "$W/logs/vmstat.log" out/gw/ 2>/dev/null || true
           df -h / | tail -1
       - uses: actions/upload-artifact@v4
         if: always()
@@ -116,7 +117,10 @@ jobs:
           H12_JOBS=merged/jobs H12_AUDIT=merged/audit.jsonl H12_OUT=merged \
             H12_VAL=data/validation_slim.jsonl H12_TASKS=data/night_tasks.txt python3 scripts/hard12_report.py
           cat merged/HARD12_RESULTS.md >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/time_breakdown.py merged/jobs merged/audit.jsonl merged/TIME_BREAKDOWN             && cat merged/TIME_BREAKDOWN.md >> "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
         with:
           name: HARD12_RESULTS
-          path: merged/HARD12_RESULTS.*
+          path: |
+            merged/HARD12_RESULTS.*
+            merged/TIME_BREAKDOWN.*

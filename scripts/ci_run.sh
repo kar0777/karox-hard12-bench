@@ -59,6 +59,9 @@ export PYTHONPATH="$ROOT/harbor_agents"
 HARD12_ARMS="$ARMS" HARD12_ATTEMPTS="$ATT" \
   HARD12_KARO_WHEEL="$ROOT/wheels/karox_runtime-5.0.0-py3-none-any.whl" \
   python3 "$ROOT/scripts/hard12_render_job.py" "$TASKDIR" "$WORK/tasks/$TASK" "$WORK/job.json"
+# Runner load every 30 s (CPU run queue, memory, iowait): shows contention when several
+# task containers share this runner.
+nohup vmstat -t 30 >"$WORK/logs/vmstat.log" 2>&1 &
 echo "== $LABEL start $(date -u +%FT%TZ)"
 harbor run --config "$WORK/job.json" --job-name "$LABEL" -o "$WORK/jobs" -q || echo "harbor rc=$?"
 echo "== $LABEL done $(date -u +%FT%TZ)"

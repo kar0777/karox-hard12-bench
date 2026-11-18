@@ -178,8 +178,22 @@ class RaceAudit(CustomLogger):
             latency = (end_time - start_time).total_seconds()
         except Exception:  # noqa: BLE001
             latency = None
+        # Request start (epoch s) and time to the first streamed token: LiteLLM sets
+        # completion_start_time at the first chunk (equal to end time without streaming).
+        try:
+            start_epoch = round(start_time.timestamp(), 3)
+        except Exception:  # noqa: BLE001
+            start_epoch = slo.get("startTime")
+        first = kwargs.get("completion_start_time")
+        try:
+            ttft = round((first - start_time).total_seconds(), 3) if first else None
+        except Exception:  # noqa: BLE001
+            cst, st = slo.get("completionStartTime"), slo.get("startTime")
+            ttft = round(cst - st, 3) if isinstance(cst, (int, float)) and isinstance(st, (int, float)) else None
         record = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "start_epoch": start_epoch,
+            "ttft_s": ttft,
             "harness": harness,
             "run_id": ctx.get("run_id"),
             "task_id": ctx.get("task_id"),
