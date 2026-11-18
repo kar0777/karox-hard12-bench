@@ -1,0 +1,4 @@
+{
+ "system": "You answer in one word.",
+ "user": "{task}{diff}"
+}
