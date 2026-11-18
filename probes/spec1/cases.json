@@ -1,0 +1,152 @@
+[
+ {
+  "case": "abs-stepped-slices--44021705895",
+  "outcome": "fail",
+  "diff_chars": 34519
+ },
+ {
+  "case": "bandit-structured-nosec-directives--44021663883",
+  "outcome": "fail",
+  "diff_chars": 48985
+ },
+ {
+  "case": "cattrs-partial-structuring-recovery--43944899185",
+  "outcome": "fail",
+  "diff_chars": 44711
+ },
+ {
+  "case": "claude-code-by-agents-recursive-delegation--44138163101",
+  "outcome": "fail",
+  "diff_chars": 41856
+ },
+ {
+  "case": "csstree-shorthand-expansion-compression--44138163101",
+  "outcome": "fail",
+  "diff_chars": 55313
+ },
+ {
+  "case": "expr-try-catch-errors--44021705895",
+  "outcome": "fail",
+  "diff_chars": 53574
+ },
+ {
+  "case": "fastapi-implicit-head-options--43944899185",
+  "outcome": "fail",
+  "diff_chars": 75319
+ },
+ {
+  "case": "httpx-streaming-json-iteration--44138163101",
+  "outcome": "fail",
+  "diff_chars": 44445
+ },
+ {
+  "case": "kea-atomic-signal-selectors--44021663883",
+  "outcome": "fail",
+  "diff_chars": 75033
+ },
+ {
+  "case": "koota-pair-relation-tracking--44070073090",
+  "outcome": "fail",
+  "diff_chars": 145037
+ },
+ {
+  "case": "textual-kitty-key-phases--43944899185",
+  "outcome": "fail",
+  "diff_chars": 37524
+ },
+ {
+  "case": "happy-dom-deterministic-intersectionobserver--44021705895",
+  "outcome": "fail",
+  "diff_chars": 47372
+ },
+ {
+  "case": "abs-stepped-slices--44021663883",
+  "outcome": "solved",
+  "diff_chars": 31923
+ },
+ {
+  "case": "arcane-drift-detection-baselines--44021663883",
+  "outcome": "solved",
+  "diff_chars": 95243
+ },
+ {
+  "case": "arktype-json-schema-refs-dependencies--43944899185",
+  "outcome": "solved",
+  "diff_chars": 321262
+ },
+ {
+  "case": "bandit-interprocedural-taint-checks--44021663883",
+  "outcome": "solved",
+  "diff_chars": 64059
+ },
+ {
+  "case": "cattrs-partial-structuring-recovery--44060598494",
+  "outcome": "solved",
+  "diff_chars": 42949
+ },
+ {
+  "case": "fastapi-deprecation-response-headers--43944899185",
+  "outcome": "solved",
+  "diff_chars": 89298
+ },
+ {
+  "case": "fastapi-implicit-head-options--44060598494",
+  "outcome": "solved",
+  "diff_chars": 84990
+ },
+ {
+  "case": "helm-array-merge-strategies--43944899185",
+  "outcome": "solved",
+  "diff_chars": 76274
+ },
+ {
+  "case": "ipython-session-bundle-replay--43944899185",
+  "outcome": "solved",
+  "diff_chars": 73321
+ },
+ {
+  "case": "katex-multicolumn-array-spans--44021663883",
+  "outcome": "solved",
+  "diff_chars": 33093
+ },
+ {
+  "case": "koota-entity-snapshot-rollback--43944899185",
+  "outcome": "solved",
+  "diff_chars": 84192
+ },
+ {
+  "case": "koota-query-predicates--43944899185",
+  "outcome": "solved",
+  "diff_chars": 88554
+ },
+ {
+  "case": "kysely-window-grouping-helpers--44060598494",
+  "outcome": "solved",
+  "diff_chars": 109627
+ },
+ {
+  "case": "opa-rego-rule-profiling--44070073090",
+  "outcome": "solved",
+  "diff_chars": 46260
+ },
+ {
+  "case": "textual-kitty-key-phases--44070073090",
+  "outcome": "solved",
+  "diff_chars": 33583
+ },
+ {
+  "case": "ts-pattern-match-each--43944899185",
+  "outcome": "solved",
+  "diff_chars": 43742
+ },
+ {
+  "case": "wazero-multi-module-snapshots--43944899185",
+  "outcome": "solved",
+  "diff_chars": 71031
+ },
+ {
+  "case": "expr-try-catch-errors--44021663883",
+  "outcome": "solved",
+  "diff_chars": 56279
+ }
+]

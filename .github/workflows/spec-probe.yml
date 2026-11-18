@@ -1,0 +1,32 @@
+name: spec-probe
+# Model-only probe (no agent): an independent reviewer call per (task statement, final
+# diff) case on the ReformBoss upstream. Key only from the REFORMBOSS_API_KEY secret.
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "case directory under probes/"
+        default: "spec1"
+      samples:
+        description: "reviewer samples per case"
+        default: "2"
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe
+        env:
+          REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
+          CASES: ${{ inputs.cases }}
+          SAMPLES: ${{ inputs.samples }}
+        run: python3 scripts/spec_probe.py "probes/$CASES" out "$SAMPLES"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spec-probe-${{ inputs.cases }}
+          path: out
+          retention-days: 30
