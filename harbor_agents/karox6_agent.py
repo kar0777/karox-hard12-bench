@@ -190,3 +190,12 @@ class KaroX6(BaseInstalledAgent):
             context.n_input_tokens = int(usage.get("input_tokens") or 0)
             context.n_cache_tokens = int(usage.get("cached_tokens") or 0)
             context.n_output_tokens = int(usage.get("output_tokens") or 0)
+
+
+class KaroX6B(KaroX6):
+    """The same agent as a second arm (A/B variant flags or wheel) in the same job."""
+
+    @staticmethod
+    @override
+    def name() -> str:
+        return "karox6b-hard12"

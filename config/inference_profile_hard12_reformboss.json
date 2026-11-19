@@ -22,7 +22,8 @@
     "hard12-karox5": "karox5",
     "hard12-karox6": "karox6",
     "hard12-opencode_v2": "opencode_v2",
-    "hard12-deepseek_harness": "deepseek_harness"
+    "hard12-deepseek_harness": "deepseek_harness",
+    "hard12-karox6b": "karox6b"
   },
-  "evidence": "Same model (deepseek-v4.1-flash-1017 served by ReformBoss) and the same enforced sampling as the Runcrate profile; probed 2026-11-15: model id echoed, streaming tool calls, reasoning_content, usage and reasoning_effort=max accepted. Limit: 4 concurrent requests per key (429 + Retry-After: 1 beyond that), no per-minute cap seen; keep parallel <= 3."
+  "evidence": "Same model (deepseek-v4.1-flash-1017 served by ReformBoss) and the same enforced sampling as the Runcrate profile; probed 2026-11-15: model id echoed, streaming tool calls, reasoning_content, usage and reasoning_effort=max accepted. Limit: 4 concurrent requests per key (429 + Retry-After: 1 beyond that), no per-minute cap seen; keep parallel <= 3. 2026-11-19: also refuses a key seen from more than 3 IP addresses in 10 minutes ('key used from 4 different IP addresses'): GitHub runners turn over per job, so run chunks of tasks per runner."
 }

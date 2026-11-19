@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# One GitHub Actions job: ONE task x ONE arm x N attempts in parallel.
-#   ci_run.sh <task_name> <task_no 1..12> <arm: karox5|karox6|opencode_v2|deepseek_harness> <attempts> <tag>
+# One GitHub Actions job: one or more tasks (run one after another, same runner and IP)
+#   x one arm or an arm group (karox6+karox6b, trio) x N attempts.
+#   ci_run.sh "<task dirs>" "<task numbers>" <arm|group> <attempts> <tag>
 # Same plumbing as the local HARD12 stand: litellm gateway :4100 (W&B, one pinned
 # model and sampling profile), unwrap :4110, in-container relay, Harbor egress
 # allowlist = docker bridge only. WANDB_API_KEY is given to litellm only.
 set -euo pipefail
-TASKDIR=$1; TASK=$(basename "$1"); N=$2; ARM=$3; ATT=$4; TAG=$5
+TASKDIRS=$1; NUMS=$2; ARM=$3; ATT=$4; TAG=$5
 ROOT=${GITHUB_WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}
 WORK=${RUNNER_TEMP:-/tmp}/h12
 mkdir -p "$WORK/jobs" "$WORK/logs" "$WORK/tasks" "$WORK/audit/context"
@@ -48,21 +49,28 @@ unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEIN
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done
 health || { echo "GATEWAY_FAIL"; tail -50 "$WORK/logs/litellm.log"; exit 1; }
-LABEL="hard12-$TAG-$(printf '%02d' "$N")-$TASK"
-# "trio": the three CLIs in this one job (one runner IP; see plan_matrix.py).
-ARMS=$ARM; [ "$ARM" = trio ] && ARMS=karox6,opencode_v2,deepseek_harness
-for A in ${ARMS//,/ }; do
-  printf '{"run_id": "%s-%s", "task_id": "%s"}\n' "$LABEL" "$A" "$TASK" > "$WORK/audit/context/$A.json"
-done
-cp -r "$ROOT/$TASKDIR" "$WORK/tasks/$TASK"
+# Arm group: the CLIs side by side in each Harbor job (one runner IP; see plan_matrix.py).
+ARMS=${ARM//+/,}; [ "$ARM" = trio ] && ARMS=karox6,opencode_v2,deepseek_harness
 export PYTHONPATH="$ROOT/harbor_agents"
-HARD12_ARMS="$ARMS" HARD12_ATTEMPTS="$ATT" \
-  HARD12_KARO_WHEEL="$ROOT/wheels/karox_runtime-5.0.0-py3-none-any.whl" \
-  python3 "$ROOT/scripts/hard12_render_job.py" "$TASKDIR" "$WORK/tasks/$TASK" "$WORK/job.json"
 # Runner load every 30 s (CPU run queue, memory, iowait): shows contention when several
 # task containers share this runner.
 nohup vmstat -t 30 >"$WORK/logs/vmstat.log" 2>&1 &
-echo "== $LABEL start $(date -u +%FT%TZ)"
-harbor run --config "$WORK/job.json" --job-name "$LABEL" -o "$WORK/jobs" -q || echo "harbor rc=$?"
-echo "== $LABEL done $(date -u +%FT%TZ)"
-grep -rh "" "$WORK/jobs/$LABEL"/*/verifier/reward.txt 2>/dev/null || true
+read -r -a DIRS <<<"$TASKDIRS"
+read -r -a NS <<<"$NUMS"
+for i in "${!DIRS[@]}"; do
+  TASKDIR=${DIRS[$i]}; TASK=$(basename "$TASKDIR"); N=${NS[$i]}
+  LABEL="hard12-$TAG-$(printf '%02d' "$N")-$TASK"
+  for A in ${ARMS//,/ }; do
+    printf '{"run_id": "%s-%s", "task_id": "%s"}\n' "$LABEL" "$A" "$TASK" > "$WORK/audit/context/$A.json"
+  done
+  cp -r "$ROOT/$TASKDIR" "$WORK/tasks/$TASK"
+  HARD12_ARMS="$ARMS" HARD12_ATTEMPTS="$ATT" \
+    HARD12_KARO_WHEEL="$ROOT/wheels/karox_runtime-5.0.0-py3-none-any.whl" \
+    python3 "$ROOT/scripts/hard12_render_job.py" "$TASKDIR" "$WORK/tasks/$TASK" "$WORK/job.json"
+  echo "== $LABEL start $(date -u +%FT%TZ)"
+  harbor run --config "$WORK/job.json" --job-name "$LABEL" -o "$WORK/jobs" -q || echo "harbor rc=$?"
+  echo "== $LABEL done $(date -u +%FT%TZ)"
+  grep -rh "" "$WORK/jobs/$LABEL"/*/verifier/reward.txt 2>/dev/null || true
+  # Free the disk for the next task: its images are no longer needed.
+  if [ "$i" -lt $(( ${#DIRS[@]} - 1 )) ]; then docker system prune -af >/dev/null 2>&1 || true; fi
+done

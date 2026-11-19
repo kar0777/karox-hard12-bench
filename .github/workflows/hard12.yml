@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       arms:
-        description: "comma list: karox5,karox6,opencode_v2,deepseek_harness"
+        description: "comma list: karox5,karox6,karox6b,opencode_v2,deepseek_harness; a+b runs arms side by side in one job; trio = karox6+opencode_v2+deepseek_harness"
         default: "karox5,opencode_v2,deepseek_harness"
       tasks:
         description: "comma list of task numbers 1..12 (empty = all)"
@@ -29,6 +29,15 @@ on:
       karox6_wheel:
         description: "karox6 wheel file name under wheels/ (empty = the newest by name)"
         default: ""
+      karox6b_flags:
+        description: "extra `karox run` flags for the karox6b arm (A/B in the same job)"
+        default: ""
+      karox6b_wheel:
+        description: "wheel for the karox6b arm (empty = the karox6 one)"
+        default: ""
+      chunk:
+        description: "tasks per job, run one after another on one runner (one IP); 1 = a job per task"
+        default: "1"
 permissions:
   contents: read
 jobs:
@@ -43,16 +52,17 @@ jobs:
           ARMS: ${{ inputs.arms }}
           TASKS: ${{ inputs.tasks }}
           TASKSET: ${{ inputs.taskset }}
+          CHUNK: ${{ inputs.chunk }}
         run: python3 scripts/plan_matrix.py >> "$GITHUB_OUTPUT"
   run:
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(inputs.parallel) }}
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    name: ${{ matrix.n }}-${{ matrix.arm }}
+    name: ${{ matrix.n }}-${{ matrix.armname }}
     steps:
       - uses: actions/checkout@v4
       - name: Free disk
@@ -77,12 +87,14 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
-          N: ${{ matrix.n }}
+          N: ${{ matrix.nums }}
           ARM: ${{ matrix.arm }}
           ATT: ${{ inputs.attempts }}
           TAG: ${{ inputs.tag }}
           HARD12_KAROX6_FLAGS: ${{ inputs.karox6_flags }}
           HARD12_KAROX6_WHEEL: ${{ inputs.karox6_wheel && format('{0}/wheels/{1}', github.workspace, inputs.karox6_wheel) || '' }}
+          HARD12_KAROX6B_FLAGS: ${{ inputs.karox6b_flags }}
+          HARD12_KAROX6B_WHEEL: ${{ inputs.karox6b_wheel && format('{0}/wheels/{1}', github.workspace, inputs.karox6b_wheel) || '' }}
         run: bash scripts/ci_run.sh "$TASK" "$N" "$ARM" "$ATT" "$TAG"
       - name: Collect
         if: always()
@@ -90,14 +102,14 @@ jobs:
           W="$RUNNER_TEMP/h12"; mkdir -p out
           find "$W/jobs" -name '*.log' -size +20M -delete 2>/dev/null || true
           cp -r "$W/jobs" out/ 2>/dev/null || true
-          cp "$W/audit/audit.jsonl" "out/audit-${{ matrix.n }}-${{ matrix.arm }}.jsonl" 2>/dev/null || true
+          cp "$W/audit/audit.jsonl" "out/audit-${{ matrix.n }}-${{ matrix.armname }}.jsonl" 2>/dev/null || true
           mkdir -p out/gw && tail -200 "$W/logs/litellm.log" > out/gw/litellm-tail.log 2>/dev/null || true
           cp "$W/logs/vmstat.log" out/gw/ 2>/dev/null || true
           df -h / | tail -1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: trial-${{ matrix.n }}-${{ matrix.arm }}
+          name: trial-${{ matrix.n }}-${{ matrix.armname }}
           path: out
           retention-days: 30
   report:

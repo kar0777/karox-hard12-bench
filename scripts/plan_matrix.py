@@ -10,15 +10,28 @@ else:
     lines = [line.split() for line in open("data/night_tasks.txt", encoding="utf-8") if line.strip()]
 want = [int(x) for x in os.environ.get("TASKS", "").split(",") if x.strip()]
 arms = [a.strip() for a in os.environ.get("ARMS", "").split(",") if a.strip()]
-# "trio" = karox6 + opencode_v2 + deepseek_harness in ONE job (one runner IP, the three
-# agents at once under identical conditions; for providers that limit IPs per key).
-bad = set(arms) - {"karox5", "karox6", "opencode_v2", "deepseek_harness", "oracle", "trio"}
+# An arm may be a group run side by side in ONE job ("karox6+karox6b"; "trio" =
+# karox6+opencode_v2+deepseek_harness): identical conditions, one runner IP.
+# CHUNK > 1: one job runs that many tasks one after another (the runner, and so its IP,
+# stays the same for hours: providers that limit IPs per key refuse fresh runners).
+KNOWN = {"karox5", "karox6", "karox6b", "opencode_v2", "deepseek_harness", "oracle"}
+GROUPS = {"trio": "karox6+opencode_v2+deepseek_harness"}
+arms = [GROUPS.get(a, a) for a in arms]
+bad = {p for a in arms for p in a.split("+")} - KNOWN
 if bad or not arms:
     sys.exit(f"bad arms: {sorted(bad) or 'none'}")
-include = [
-    {"n": n, "task": slug if SET else "hard12_tasks/h12-" + slug[:40], "arm": arm}
-    for n, (_key, slug) in enumerate(lines, 1)
-    if not want or n in want
-    for arm in arms
-]
+chunk = max(int(os.environ.get("CHUNK", "1") or 1), 1)
+picked = [(n, slug if SET else "hard12_tasks/h12-" + slug[:40])
+          for n, (_key, slug) in enumerate(lines, 1) if not want or n in want]
+include = []
+for arm in arms:
+    for i in range(0, len(picked), chunk):
+        part = picked[i:i + chunk]
+        include.append({
+            "n": part[0][0] if chunk == 1 else f"c{i // chunk + 1:02d}",
+            "nums": " ".join(str(n) for n, _ in part),
+            "task": " ".join(t for _, t in part),
+            "arm": arm,
+            "armname": arm.replace("+", "-"),
+        })
 print("matrix=" + json.dumps({"include": include}))

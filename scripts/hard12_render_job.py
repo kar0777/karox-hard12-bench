@@ -44,6 +44,14 @@ job = {
                     **({"extra_flags": os.environ["HARD12_KAROX6_FLAGS"]}
                        if os.environ.get("HARD12_KAROX6_FLAGS") else {})},
          "env": key_env},
+        # Second KaroX 6 arm for A/B in the same job: its own wheel and flags, own alias.
+        {"name": "karox6_agent:KaroX6B", "model_name": "hard12-karox6b",
+         "kwargs": {"wheel_path": os.environ.get("HARD12_KAROX6B_WHEEL") or WHEEL6,
+                    "model_alias": "hard12-karox6b",
+                    "max_seconds": timeout - WRAPUP, "task_dir": opts.get("task_dir", "/app"),
+                    **({"extra_flags": os.environ["HARD12_KAROX6B_FLAGS"]}
+                       if os.environ.get("HARD12_KAROX6B_FLAGS") else {})},
+         "env": key_env},
         {"name": "hard12_agents:OpenCodeV2", "model_name": "wandb-triad/hard12-opencode_v2",
          "kwargs": {}, "env": key_env},
         {"name": "hard12_agents:DeepSeekHarness", "model_name": "hard12-deepseek_harness",
@@ -54,7 +62,7 @@ job = {
     "tasks": [{"path": task_path}],
 }
 all_agents = job["agents"]
-job["agents"] = [a for a in all_agents if a["name"] != "oracle"]  # oracle is opt-in only
+job["agents"] = [a for a in all_agents if a["name"] not in ("oracle", "karox6_agent:KaroX6B")]  # opt-in only
 job["n_concurrent_trials"] = len(job["agents"])
 # HARD12_ARMS (optional, comma list of model aliases' arm names) reruns only
 # arms that did not finish (e.g. after a host reboot); default = all arms.
