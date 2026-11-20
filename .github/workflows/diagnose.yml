@@ -59,7 +59,9 @@ jobs:
           # ReformBoss allows 4 concurrent requests per key; run nothing else meanwhile.
           PROBE_WORKERS: ${{ inputs.probe_workers }}
         run: |
-          if [ -n "$WHEEL" ]; then
+          if [ -f "probes/$CASES/.replay" ]; then
+            python3 scripts/replay_probe.py "probes/$CASES" out "$SAMPLES"
+          elif [ -n "$WHEEL" ]; then
             python3 -m venv /tmp/kv
             /tmp/kv/bin/pip install --quiet "wheels/$WHEEL"
             /tmp/kv/bin/python scripts/spec_probe_agent.py "probes/$CASES" out "$SAMPLES"

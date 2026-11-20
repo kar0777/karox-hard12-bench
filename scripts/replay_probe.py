@@ -1,0 +1,89 @@
+"""Counterfactual replay probe: send a saved agent request (cut from a real trajectory,
+possibly with an injected variant message) and record what the model does next.
+
+python3 scripts/replay_probe.py CASES_DIR OUT_DIR SAMPLES
+Reads CASES_DIR/cases.json and CASES_DIR/<case>/request.json.gz (an OpenAI chat body). The
+frozen sampling profile is enforced (same as the hard12 gateway). Key only from
+REFORMBOSS_API_KEY; it is never printed. A request that was sent and failed is not
+retried (a paid call may have run); only 429 refusals are retried. Output per sample:
+tool call names, text, finish_reason, usage, seconds.
+"""
+
+import concurrent.futures
+import gzip
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE = "https://api.reformboss.com/v1/chat/completions"
+MODEL = "deepseek-v4.1-flash-1017"
+STATS = {"429": 0}
+
+
+def call(key, body):
+    data = json.dumps(body).encode()
+    for attempt in range(8):
+        req = urllib.request.Request(
+            BASE, data=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        )
+        started = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=900) as resp:
+                return json.loads(resp.read()), round(time.time() - started, 1), None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 7:
+                STATS["429"] += 1
+                time.sleep(3 + attempt * 4)
+                continue
+            text = exc.read()[:300].decode("utf-8", "replace") if exc.fp else ""
+            return None, round(time.time() - started, 1), f"HTTP {exc.code} {text}"
+        except Exception as exc:  # sent and failed: do not repeat a possibly paid call
+            return None, round(time.time() - started, 1), f"{type(exc).__name__}: {exc}"[:300]
+    return None, 0, "429 exhausted"
+
+
+def main():
+    cases_dir, out_dir, samples = sys.argv[1], sys.argv[2], int(sys.argv[3])
+    key = os.environ.get("REFORMBOSS_API_KEY", "")
+    if not key:
+        sys.exit("no REFORMBOSS_API_KEY")
+    os.makedirs(out_dir, exist_ok=True)
+    cases = json.load(open(os.path.join(cases_dir, "cases.json"), encoding="utf-8"))
+    # sample-major order: every case gets its first sample before any gets a second
+    jobs = [(c["case"], k) for k in range(samples) for c in cases]
+
+    def run(job):
+        case, k = job
+        path = os.path.join(out_dir, f"{case}.{k}.json")
+        if os.path.exists(path):
+            return
+        with gzip.open(os.path.join(cases_dir, case, "request.json.gz"), "rt", encoding="utf-8") as f:
+            body = json.load(f)
+        body.update(model=MODEL, temperature=1.0, top_p=0.95, max_tokens=32768,
+                    reasoning_effort="max", stream=False)
+        body.pop("stream_options", None)
+        out, secs, err = call(key, body)
+        rec = {"case": case, "sample": k, "seconds": secs, "error": err}
+        if out:
+            msg = out["choices"][0]["message"]
+            rec["tool_calls"] = [c["function"]["name"] for c in msg.get("tool_calls") or []]
+            rec["tool_args"] = [c["function"]["arguments"][:400] for c in msg.get("tool_calls") or []]
+            rec["content"] = (msg.get("content") or "")[:3000]
+            rec["finish_reason"] = out["choices"][0].get("finish_reason")
+            rec["usage"] = out.get("usage")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=1)
+        print(case, k, secs, err or (rec.get("tool_calls") or "STOP"), flush=True)
+
+    workers = int(os.environ.get("PROBE_WORKERS", "2"))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(run, jobs))
+    print("workers", workers, "429 refusals", STATS["429"], flush=True)
+
+
+if __name__ == "__main__":
+    main()

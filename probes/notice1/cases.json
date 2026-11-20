@@ -1,0 +1,257 @@
+[
+ {
+  "case": "biped-contact-dynamics--tbd3--dgnuqss--none",
+  "variant": "none",
+  "task": "biped-contact-dynamics"
+ },
+ {
+  "case": "biped-contact-dynamics--tbd3--dgnuqss--v1",
+  "variant": "v1",
+  "task": "biped-contact-dynamics"
+ },
+ {
+  "case": "biped-contact-dynamics--tbd3--dgnuqss--v2",
+  "variant": "v2",
+  "task": "biped-contact-dynamics"
+ },
+ {
+  "case": "data-anonymization--tbd3--tkF7LsE--none",
+  "variant": "none",
+  "task": "data-anonymization"
+ },
+ {
+  "case": "data-anonymization--tbd3--tkF7LsE--v1",
+  "variant": "v1",
+  "task": "data-anonymization"
+ },
+ {
+  "case": "data-anonymization--tbd3--tkF7LsE--v2",
+  "variant": "v2",
+  "task": "data-anonymization"
+ },
+ {
+  "case": "html-js-filter--tbd3--uGXek75--none",
+  "variant": "none",
+  "task": "html-js-filter"
+ },
+ {
+  "case": "html-js-filter--tbd3--uGXek75--v1",
+  "variant": "v1",
+  "task": "html-js-filter"
+ },
+ {
+  "case": "html-js-filter--tbd3--uGXek75--v2",
+  "variant": "v2",
+  "task": "html-js-filter"
+ },
+ {
+  "case": "layout-config-recreation2--tbd3--uSwkKMi--none",
+  "variant": "none",
+  "task": "layout-config-recreation2"
+ },
+ {
+  "case": "layout-config-recreation2--tbd3--uSwkKMi--v1",
+  "variant": "v1",
+  "task": "layout-config-recreation2"
+ },
+ {
+  "case": "layout-config-recreation2--tbd3--uSwkKMi--v2",
+  "variant": "v2",
+  "task": "layout-config-recreation2"
+ },
+ {
+  "case": "ontology-kg-querying--tbd3--HxQyhxs--none",
+  "variant": "none",
+  "task": "ontology-kg-querying"
+ },
+ {
+  "case": "ontology-kg-querying--tbd3--HxQyhxs--v1",
+  "variant": "v1",
+  "task": "ontology-kg-querying"
+ },
+ {
+  "case": "ontology-kg-querying--tbd3--HxQyhxs--v2",
+  "variant": "v2",
+  "task": "ontology-kg-querying"
+ },
+ {
+  "case": "sound-change-cascade--tbd3--tWkJitK--none",
+  "variant": "none",
+  "task": "sound-change-cascade"
+ },
+ {
+  "case": "sound-change-cascade--tbd3--tWkJitK--v1",
+  "variant": "v1",
+  "task": "sound-change-cascade"
+ },
+ {
+  "case": "sound-change-cascade--tbd3--tWkJitK--v2",
+  "variant": "v2",
+  "task": "sound-change-cascade"
+ },
+ {
+  "case": "ks-solver-cpp--tbd3r--BXiWjne--none",
+  "variant": "none",
+  "task": "ks-solver-cpp"
+ },
+ {
+  "case": "ks-solver-cpp--tbd3r--BXiWjne--v1",
+  "variant": "v1",
+  "task": "ks-solver-cpp"
+ },
+ {
+  "case": "ks-solver-cpp--tbd3r--BXiWjne--v2",
+  "variant": "v2",
+  "task": "ks-solver-cpp"
+ },
+ {
+  "case": "risk-scorer-replay--tbd3r--zjeTRzj--none",
+  "variant": "none",
+  "task": "risk-scorer-replay"
+ },
+ {
+  "case": "risk-scorer-replay--tbd3r--zjeTRzj--v1",
+  "variant": "v1",
+  "task": "risk-scorer-replay"
+ },
+ {
+  "case": "risk-scorer-replay--tbd3r--zjeTRzj--v2",
+  "variant": "v2",
+  "task": "risk-scorer-replay"
+ },
+ {
+  "case": "hof-topology-interpenetration--dln--JAe4nCP--none",
+  "variant": "none",
+  "task": "hof-topology-interpenetration"
+ },
+ {
+  "case": "hof-topology-interpenetration--dln--JAe4nCP--v1",
+  "variant": "v1",
+  "task": "hof-topology-interpenetration"
+ },
+ {
+  "case": "hof-topology-interpenetration--dln--JAe4nCP--v2",
+  "variant": "v2",
+  "task": "hof-topology-interpenetration"
+ },
+ {
+  "case": "hof-topology-interpenetration--dln--yFdwx8N--none",
+  "variant": "none",
+  "task": "hof-topology-interpenetration"
+ },
+ {
+  "case": "hof-topology-interpenetration--dln--yFdwx8N--v1",
+  "variant": "v1",
+  "task": "hof-topology-interpenetration"
+ },
+ {
+  "case": "hof-topology-interpenetration--dln--yFdwx8N--v2",
+  "variant": "v2",
+  "task": "hof-topology-interpenetration"
+ },
+ {
+  "case": "interleaved-vigenere--dln--4aEjc65--none",
+  "variant": "none",
+  "task": "interleaved-vigenere"
+ },
+ {
+  "case": "interleaved-vigenere--dln--4aEjc65--v1",
+  "variant": "v1",
+  "task": "interleaved-vigenere"
+ },
+ {
+  "case": "interleaved-vigenere--dln--4aEjc65--v2",
+  "variant": "v2",
+  "task": "interleaved-vigenere"
+ },
+ {
+  "case": "interleaved-vigenere--dln--b57keSF--none",
+  "variant": "none",
+  "task": "interleaved-vigenere"
+ },
+ {
+  "case": "interleaved-vigenere--dln--b57keSF--v1",
+  "variant": "v1",
+  "task": "interleaved-vigenere"
+ },
+ {
+  "case": "interleaved-vigenere--dln--b57keSF--v2",
+  "variant": "v2",
+  "task": "interleaved-vigenere"
+ },
+ {
+  "case": "pretrain-shard-corruption--dln--AAnvPBD--none",
+  "variant": "none",
+  "task": "pretrain-shard-corruption"
+ },
+ {
+  "case": "pretrain-shard-corruption--dln--AAnvPBD--v1",
+  "variant": "v1",
+  "task": "pretrain-shard-corruption"
+ },
+ {
+  "case": "pretrain-shard-corruption--dln--AAnvPBD--v2",
+  "variant": "v2",
+  "task": "pretrain-shard-corruption"
+ },
+ {
+  "case": "pretrain-shard-corruption--dln--B2rMSiz--none",
+  "variant": "none",
+  "task": "pretrain-shard-corruption"
+ },
+ {
+  "case": "pretrain-shard-corruption--dln--B2rMSiz--v1",
+  "variant": "v1",
+  "task": "pretrain-shard-corruption"
+ },
+ {
+  "case": "pretrain-shard-corruption--dln--B2rMSiz--v2",
+  "variant": "v2",
+  "task": "pretrain-shard-corruption"
+ },
+ {
+  "case": "telecom-entity-resolution--dln--LKkov5A--none",
+  "variant": "none",
+  "task": "telecom-entity-resolution"
+ },
+ {
+  "case": "telecom-entity-resolution--dln--LKkov5A--v1",
+  "variant": "v1",
+  "task": "telecom-entity-resolution"
+ },
+ {
+  "case": "telecom-entity-resolution--dln--LKkov5A--v2",
+  "variant": "v2",
+  "task": "telecom-entity-resolution"
+ },
+ {
+  "case": "telecom-entity-resolution--dln--r5Hjmir--none",
+  "variant": "none",
+  "task": "telecom-entity-resolution"
+ },
+ {
+  "case": "telecom-entity-resolution--dln--r5Hjmir--v1",
+  "variant": "v1",
+  "task": "telecom-entity-resolution"
+ },
+ {
+  "case": "telecom-entity-resolution--dln--r5Hjmir--v2",
+  "variant": "v2",
+  "task": "telecom-entity-resolution"
+ },
+ {
+  "case": "vf2-speedup-networkx--dln--PBhgFKo--none",
+  "variant": "none",
+  "task": "vf2-speedup-networkx"
+ },
+ {
+  "case": "vf2-speedup-networkx--dln--PBhgFKo--v1",
+  "variant": "v1",
+  "task": "vf2-speedup-networkx"
+ },
+ {
+  "case": "vf2-speedup-networkx--dln--PBhgFKo--v2",
+  "variant": "v2",
+  "task": "vf2-speedup-networkx"
+ }
+]
