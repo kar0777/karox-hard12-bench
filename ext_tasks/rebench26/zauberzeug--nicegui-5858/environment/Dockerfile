@@ -13,7 +13,6 @@ RUN cd /testbed \
  && git reflog expire --expire=now --all && git gc --prune=now -q
 ENV PATH=/opt/conda/envs/nicegui/bin:/opt/miniconda3/envs/nicegui/bin:/opt/conda/envs/testbed/bin:/opt/miniconda3/envs/testbed/bin:$PATH
 COPY karo_relay.py /opt/karo_relay.py
-COPY entrypoint.sh /opt/entrypoint.sh
-RUN chmod +x /opt/entrypoint.sh
+COPY --chmod=0755 entrypoint.sh /opt/entrypoint.sh
 WORKDIR /testbed
 ENTRYPOINT ["/opt/entrypoint.sh"]

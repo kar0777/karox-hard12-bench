@@ -50,17 +50,23 @@ STDERR = "/logs/agent/karox6.stderr.txt"
 
 #: A venv for KaroX only (the task's own python stays untouched). KaroX 6 needs
 #: Python >= 3.12: older images get a standalone 3.12 through uv. Images without
-#: ensurepip get a bare venv plus get-pip.py.
+#: ensurepip get a bare venv plus pip from the uploaded pip wheel (pip runs from its
+#: own wheel and carries its own CA bundle: images without system CA certs failed
+#: to fetch get-pip.py).
 INSTALL = r"""
 set -euo pipefail
 mkvenv() {
   python3 -m venv "$1" >/dev/null 2>&1 || {
     rm -rf "$1" && python3 -m venv --without-pip "$1" &&
-    "$1/bin/python" -c "import urllib.request; exec(urllib.request.urlopen('https://bootstrap.pypa.io/get-pip.py', timeout=120).read())" --quiet
+    "$1/bin/python" {pipwhl}/pip install --quiet --no-index {pipwhl}
   }
 }
 if python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
   mkvenv {venv}
+  # pip's own CA bundle for both its certifi path and truststore (OpenSSL reads
+  # SSL_CERT_FILE): some images have no system CA certificates.
+  CA=$({py} -c 'import pip._vendor.certifi as c; print(c.where())') &&
+    export PIP_CERT="$CA" SSL_CERT_FILE="$CA"
 else
   mkvenv /tmp/karox6-uv && /tmp/karox6-uv/bin/python -m pip install --quiet uv &&
   /tmp/karox6-uv/bin/uv venv --quiet --seed --python 3.12 {venv}
@@ -123,12 +129,19 @@ class KaroX6(BaseInstalledAgent):
         await self.ensure_system_dependencies(environment, ("python3",))
         target = "/tmp/" + self._wheel_path.name  # pip checks the basename against metadata
         await environment.upload_file(str(self._wheel_path), target)
+        pips = sorted(self._wheel_path.parent.glob("pip-*-py3-none-any.whl"))
+        if not pips:
+            raise RuntimeError(f"no pip wheel next to {self._wheel_path}")
+        pip_target = "/tmp/" + pips[-1].name
+        await environment.upload_file(str(pips[-1]), pip_target)
         if environment.default_user is not None:
             await self.exec_as_root(
                 environment,
-                command=f"chown {shlex.quote(str(environment.default_user))} {shlex.quote(target)}",
+                command=f"chown {shlex.quote(str(environment.default_user))} "
+                f"{shlex.quote(target)} {shlex.quote(pip_target)}",
             )
-        script = INSTALL.replace("{venv}", VENV).replace("{py}", PY)
+        script = (INSTALL.replace("{venv}", VENV).replace("{py}", PY)
+                  .replace("{pipwhl}", shlex.quote(pip_target)))
         await self.exec_as_agent(
             environment, command=script.replace("{wheel}", shlex.quote(target))
         )
