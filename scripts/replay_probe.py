@@ -42,7 +42,8 @@ def call(key, body):
             with urllib.request.urlopen(req, timeout=900) as resp:
                 return json.loads(resp.read()), round(time.time() - started, 1), None
         except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt < 7:
+            # 429, or 503 "at capacity": refused before any work, so a retry is safe
+            if exc.code in (429, 503) and attempt < 7:
                 STATS["429"] += 1
                 time.sleep(3 + attempt * 4)
                 continue
