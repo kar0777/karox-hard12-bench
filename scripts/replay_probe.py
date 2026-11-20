@@ -27,6 +27,7 @@ UPSTREAMS = {
              "zai-org/GLM-5.3-Flash", "DAHL_API_KEY"),
 }
 BASE, MODEL, KEYVAR = UPSTREAMS["reformboss"]
+EFFORT = "max"
 STATS = {"429": 0}
 
 
@@ -56,10 +57,15 @@ def call(key, body):
 
 def main():
     cases_dir, out_dir, samples = sys.argv[1], sys.argv[2], int(sys.argv[3])
-    global BASE, MODEL, KEYVAR
+    global BASE, MODEL, KEYVAR, EFFORT
     marker = os.path.join(cases_dir, ".upstream")
     if os.path.exists(marker):
         BASE, MODEL, KEYVAR = UPSTREAMS[open(marker, encoding="utf-8").read().strip()]
+    # <cases>/.effort overrides the profile's reasoning effort (a reviewer call, not an
+    # agent step: "max" can spend the whole output on reasoning)
+    effort_file = os.path.join(cases_dir, ".effort")
+    if os.path.exists(effort_file):
+        EFFORT = open(effort_file, encoding="utf-8").read().strip()
     key = os.environ.get(KEYVAR, "")
     if not key:
         sys.exit(f"no {KEYVAR}")
@@ -76,7 +82,7 @@ def main():
         with gzip.open(os.path.join(cases_dir, case, "request.json.gz"), "rt", encoding="utf-8") as f:
             body = json.load(f)
         body.update(model=MODEL, temperature=1.0, top_p=0.95, max_tokens=32768,
-                    reasoning_effort="max", stream=False)
+                    reasoning_effort=EFFORT, stream=False)
         body.pop("stream_options", None)
         out, secs, err = call(key, body)
         rec = {"case": case, "sample": k, "seconds": secs, "error": err}
