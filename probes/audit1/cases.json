@@ -1,0 +1,107 @@
+[
+ {
+  "case": "csstree-shorthand-expansion-comp--44138163101--9Nvx5DH",
+  "outcome": "fail",
+  "task": "csstree-shorthand-expansion-comp"
+ },
+ {
+  "case": "claude-code-by-agents-recursive--44138163101--Vw5kZoF",
+  "outcome": "fail",
+  "task": "claude-code-by-agents-recursive"
+ },
+ {
+  "case": "httpx-streaming-json-iteration--44138163101--aRyM5bG",
+  "outcome": "fail",
+  "task": "httpx-streaming-json-iteration"
+ },
+ {
+  "case": "scriggo-method-declarations--44070073090--guPNzby",
+  "outcome": "fail",
+  "task": "scriggo-method-declarations"
+ },
+ {
+  "case": "happy-dom-deterministic-intersec--44021705895--ouDFmAr",
+  "outcome": "fail",
+  "task": "happy-dom-deterministic-intersec"
+ },
+ {
+  "case": "abs-stepped-slices--44021705895--CnGQs9u",
+  "outcome": "fail",
+  "task": "abs-stepped-slices"
+ },
+ {
+  "case": "expr-try-catch-errors--44021705895--qM7NcDD",
+  "outcome": "fail",
+  "task": "expr-try-catch-errors"
+ },
+ {
+  "case": "bandit-structured-nosec-directiv--44021663883--4QcYGTL",
+  "outcome": "fail",
+  "task": "bandit-structured-nosec-directiv"
+ },
+ {
+  "case": "opa-rego-rule-profiling--43944899185--8pYoJiA",
+  "outcome": "fail",
+  "task": "opa-rego-rule-profiling"
+ },
+ {
+  "case": "textual-kitty-key-phases--43944899185--rWQRUC8",
+  "outcome": "fail",
+  "task": "textual-kitty-key-phases"
+ },
+ {
+  "case": "cattrs-partial-structuring-recov--43944899185--7wyckGb",
+  "outcome": "fail",
+  "task": "cattrs-partial-structuring-recov"
+ },
+ {
+  "case": "textual-kitty-key-phases--44070073090--3hZvhMR",
+  "outcome": "pass",
+  "task": "textual-kitty-key-phases"
+ },
+ {
+  "case": "opa-rego-rule-profiling--44070073090--rewjguJ",
+  "outcome": "pass",
+  "task": "opa-rego-rule-profiling"
+ },
+ {
+  "case": "cattrs-partial-structuring-recov--44060598494--riKRTgi",
+  "outcome": "pass",
+  "task": "cattrs-partial-structuring-recov"
+ },
+ {
+  "case": "katex-multicolumn-array-spans--44021705895--VDJNhse",
+  "outcome": "pass",
+  "task": "katex-multicolumn-array-spans"
+ },
+ {
+  "case": "happy-dom-abort-pending-body-rea--44021663883--UwPcL4J",
+  "outcome": "pass",
+  "task": "happy-dom-abort-pending-body-rea"
+ },
+ {
+  "case": "happy-dom-deterministic-intersec--44021663883--PobFPp6",
+  "outcome": "pass",
+  "task": "happy-dom-deterministic-intersec"
+ },
+ {
+  "case": "bandit-interprocedural-taint-che--44021705895--MLe9H8V",
+  "outcome": "pass",
+  "task": "bandit-interprocedural-taint-che"
+ },
+ {
+  "case": "abs-stepped-slices--44021663883--ZkBAPUr",
+  "outcome": "pass",
+  "task": "abs-stepped-slices"
+ },
+ {
+  "case": "expr-try-catch-errors--44021663883--Yw5MQ8G",
+  "outcome": "pass",
+  "task": "expr-try-catch-errors"
+ },
+ {
+  "case": "ts-pattern-match-each--43944899185--igmJ4a3",
+  "outcome": "pass",
+  "task": "ts-pattern-match-each"
+ }
+]
