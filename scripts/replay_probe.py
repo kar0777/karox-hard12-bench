@@ -18,8 +18,15 @@ import time
 import urllib.error
 import urllib.request
 
-BASE = "https://api.reformboss.com/v1/chat/completions"
-MODEL = "deepseek-v4.1-flash-1017"
+# Upstream per probe dir: a file <cases>/.upstream holding "dahl" picks the GLM-5.3-Flash dev
+# lane (key DAHL_API_KEY); otherwise the bench model on ReformBoss.
+UPSTREAMS = {
+    "reformboss": ("https://api.reformboss.com/v1/chat/completions",
+                   "deepseek-v4.1-flash-1017", "REFORMBOSS_API_KEY"),
+    "dahl": ("https://inference.dahl.global/v1/chat/completions",
+             "zai-org/GLM-5.3-Flash", "DAHL_API_KEY"),
+}
+BASE, MODEL, KEYVAR = UPSTREAMS["reformboss"]
 STATS = {"429": 0}
 
 
@@ -48,9 +55,13 @@ def call(key, body):
 
 def main():
     cases_dir, out_dir, samples = sys.argv[1], sys.argv[2], int(sys.argv[3])
-    key = os.environ.get("REFORMBOSS_API_KEY", "")
+    global BASE, MODEL, KEYVAR
+    marker = os.path.join(cases_dir, ".upstream")
+    if os.path.exists(marker):
+        BASE, MODEL, KEYVAR = UPSTREAMS[open(marker, encoding="utf-8").read().strip()]
+    key = os.environ.get(KEYVAR, "")
     if not key:
-        sys.exit("no REFORMBOSS_API_KEY")
+        sys.exit(f"no {KEYVAR}")
     os.makedirs(out_dir, exist_ok=True)
     cases = json.load(open(os.path.join(cases_dir, "cases.json"), encoding="utf-8"))
     # sample-major order: every case gets its first sample before any gets a second
