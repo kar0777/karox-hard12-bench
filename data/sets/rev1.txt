@@ -1,0 +1,6 @@
+ext_tasks/deepswe/kysely-window-grouping-helpers
+ext_tasks/deepswe/textual-kitty-key-phases
+ext_tasks/deepswe/cattrs-partial-structuring-recovery
+ext_tasks/tb4/embedding-drift-monitor
+ext_tasks/deepswe/koota-pair-relation-tracking
+ext_tasks/deepswe/opa-rego-rule-profiling
