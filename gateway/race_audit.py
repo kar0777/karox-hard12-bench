@@ -90,6 +90,65 @@ def sanitize_sent(kwargs: dict) -> dict:
     return out
 
 
+def request_shape(data: Any) -> dict:
+    """What a request is made of, by name only (no content): its fields, the roles and
+    types of its messages or input items, the types of their content parts and of its
+    tools. Enough to see which part an upstream refuses."""
+    if not isinstance(data, dict):
+        return {}
+    skip = ("metadata", "proxy_server_request", "litellm_metadata", "secret_fields")
+    shape: dict[str, Any] = {"keys": sorted(str(k) for k in data if k not in skip)}
+    items = data.get("input") if isinstance(data.get("input"), list) else data.get("messages")
+    if isinstance(items, list):
+        roles: dict[str, int] = {}
+        kinds: dict[str, int] = {}
+        parts: dict[str, int] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for bucket, value in ((roles, item.get("role")), (kinds, item.get("type"))):
+                if value is not None:
+                    bucket[str(value)] = bucket.get(str(value), 0) + 1
+            content = item.get("content")
+            for part in content if isinstance(content, list) else []:
+                if isinstance(part, dict):
+                    name = str(part.get("type"))
+                    parts[name] = parts.get(name, 0) + 1
+        shape.update(roles=roles, item_types=kinds, part_types=parts)
+    tools = data.get("tools")
+    if isinstance(tools, list):
+        types: dict[str, int] = {}
+        for tool in tools:
+            name = str(tool.get("type")) if isinstance(tool, dict) else type(tool).__name__
+            types[name] = types.get(name, 0) + 1
+        shape["tool_types"] = types
+    return shape
+
+
+def responses_request_for_chat_upstream(data: dict) -> list[str]:
+    """The `codex` arm speaks the Responses API to upstreams that only serve chat
+    completions. Two things in its requests have no form there: the `developer` role
+    (these upstreams know system, user, assistant and tool) and tools that are not
+    functions (hosted or free-form tools the upstream cannot run). The role is renamed,
+    such tools are left out. Returns what was changed, for the audit."""
+    changed: list[str] = []
+    items = data.get("input")
+    renamed = 0
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and item.get("role") == "developer":
+            item["role"] = "system"
+            renamed += 1
+    if renamed:
+        changed.append(f"developer->system x{renamed}")
+    tools = data.get("tools")
+    if isinstance(tools, list):
+        kept = [t for t in tools if not isinstance(t, dict) or t.get("type") == "function"]
+        if len(kept) != len(tools):
+            changed.append(f"dropped {len(tools) - len(kept)} non-function tools")
+            data["tools"] = kept
+    return changed
+
+
 def write_record(record: dict) -> None:
     path = audit_dir() / "audit.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +221,14 @@ class RaceAudit(CustomLogger):
                                                    "reasoning_effort", "reasoning", "thinking") if k in data}
             meta["race_requested_params"] = json.dumps(requested, default=str)[:400]
             meta["race_call_type"] = str(call_type)
+        if ALIASES.get(alias) == "codex":  # the other arms' requests are not looked at here
+            try:
+                shape = request_shape(data)
+                shape["changed"] = responses_request_for_chat_upstream(data)
+                if isinstance(meta, dict):
+                    meta["race_request_shape"] = json.dumps(shape, default=str)[:1500]
+            except Exception:  # noqa: BLE001 - diagnostics must never refuse a request
+                pass
         return data
 
     async def async_pre_call_deployment_hook(self, kwargs: dict, call_type):  # noqa: ANN001
@@ -209,12 +276,18 @@ class RaceAudit(CustomLogger):
             "latency_s": latency,
             "stream": bool(kwargs.get("stream")),
             "status": status,
-            "retry_attempt": (kwargs.get("litellm_params") or {}).get("metadata", {}).get("attempted_retries"),
+            # "metadata" may be present and None (the Responses bridge): that raised here and
+            # the failure row of a refused request was never written (devc2).
+            "retry_attempt": meta.get("attempted_retries"),
         }
         record.update(_usage(response_obj))
         if status != "success":
             exc = kwargs.get("exception")
             record["error"] = f"{type(exc).__name__}: {str(exc)[:300]}" if exc else str(slo.get("error_str"))[:300]
+            if isinstance(sent, dict):  # names only: which part of the request was refused
+                record["sent_shape"] = request_shape(sent)
+        if meta.get("race_request_shape"):
+            record["request_shape"] = meta["race_request_shape"]
         write_record(record)
 
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict,
@@ -232,6 +305,8 @@ class RaceAudit(CustomLogger):
             "requested_alias": alias,
             "status": "failure",
             "error": f"{type(original_exception).__name__}: {str(original_exception)[:300]}",
+            "request_shape": ((request_data.get("metadata") or {}).get("race_request_shape")
+                              if isinstance(request_data, dict) else None),
         })
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):  # noqa: ANN001
