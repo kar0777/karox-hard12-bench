@@ -62,6 +62,16 @@ jobs:
           DAHL_API_KEY_7: ${{ secrets.DAHL_API_KEY_7 }}
           DAHL_API_KEY_8: ${{ secrets.DAHL_API_KEY_8 }}
           DAHL_API_KEY_9: ${{ secrets.DAHL_API_KEY_9 }}
+          DAHL_API_KEY_10: ${{ secrets.DAHL_API_KEY_10 }}
+          DAHL_API_KEY_11: ${{ secrets.DAHL_API_KEY_11 }}
+          DAHL_API_KEY_12: ${{ secrets.DAHL_API_KEY_12 }}
+          DAHL_API_KEY_13: ${{ secrets.DAHL_API_KEY_13 }}
+          DAHL_API_KEY_14: ${{ secrets.DAHL_API_KEY_14 }}
+          DAHL_API_KEY_15: ${{ secrets.DAHL_API_KEY_15 }}
+          DAHL_API_KEY_16: ${{ secrets.DAHL_API_KEY_16 }}
+          DAHL_API_KEY_17: ${{ secrets.DAHL_API_KEY_17 }}
+          DAHL_API_KEY_18: ${{ secrets.DAHL_API_KEY_18 }}
+          DAHL_API_KEY_19: ${{ secrets.DAHL_API_KEY_19 }}
           CASES: ${{ inputs.spec_probe }}
           SAMPLES: ${{ inputs.samples }}
           WHEEL: ${{ inputs.probe_wheel }}

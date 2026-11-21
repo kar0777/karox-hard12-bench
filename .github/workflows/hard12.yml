@@ -18,7 +18,7 @@ on:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
       upstream:
-        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | dahl2 (Dahl GLM, every DAHL_API_KEY[_2.._9] secret set: 3 parallel requests per key)"
+        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | dahl2 (Dahl GLM, every DAHL_API_KEY[_2.._19] secret set: 3 parallel requests per key)"
         default: "wandb"
       parallel:
         description: "max parallel jobs"
@@ -94,6 +94,16 @@ jobs:
           DAHL_API_KEY_7: ${{ secrets.DAHL_API_KEY_7 }}
           DAHL_API_KEY_8: ${{ secrets.DAHL_API_KEY_8 }}
           DAHL_API_KEY_9: ${{ secrets.DAHL_API_KEY_9 }}
+          DAHL_API_KEY_10: ${{ secrets.DAHL_API_KEY_10 }}
+          DAHL_API_KEY_11: ${{ secrets.DAHL_API_KEY_11 }}
+          DAHL_API_KEY_12: ${{ secrets.DAHL_API_KEY_12 }}
+          DAHL_API_KEY_13: ${{ secrets.DAHL_API_KEY_13 }}
+          DAHL_API_KEY_14: ${{ secrets.DAHL_API_KEY_14 }}
+          DAHL_API_KEY_15: ${{ secrets.DAHL_API_KEY_15 }}
+          DAHL_API_KEY_16: ${{ secrets.DAHL_API_KEY_16 }}
+          DAHL_API_KEY_17: ${{ secrets.DAHL_API_KEY_17 }}
+          DAHL_API_KEY_18: ${{ secrets.DAHL_API_KEY_18 }}
+          DAHL_API_KEY_19: ${{ secrets.DAHL_API_KEY_19 }}
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.nums }}

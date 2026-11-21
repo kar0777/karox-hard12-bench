@@ -31,7 +31,7 @@ elif [ "${UPSTREAM:-wandb}" = dahl ]; then
   CFG=litellm.hard12.dahl.yaml; PROF=inference_profile_hard12_dahl.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
 elif [ "${UPSTREAM:-wandb}" = dahl2 ]; then
   # Dev lane: GLM-5.3-Flash on Dahl with every key that is set (DAHL_API_KEY,
-  # DAHL_API_KEY_2..9; 3 parallel requests per key). The config is generated per job.
+  # DAHL_API_KEY_2..19; 3 parallel requests per key). The config is generated per job.
   [ -n "${DAHL_API_KEY:-}" ] || { echo "no DAHL_API_KEY"; exit 1; }
   USED=$(python3 "$ROOT/scripts/dahl_gateway.py" "$ROOT/gateway/litellm.hard12.dahlx.yaml")
   echo "dahl keys: $USED"
@@ -70,7 +70,7 @@ fi
     nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 DAHL_API_KEY_3 DAHL_API_KEY_4 DAHL_API_KEY_5 DAHL_API_KEY_6 DAHL_API_KEY_7 DAHL_API_KEY_8 DAHL_API_KEY_9 KEYVAL EXTRA
+unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 DAHL_API_KEY_3 DAHL_API_KEY_4 DAHL_API_KEY_5 DAHL_API_KEY_6 DAHL_API_KEY_7 DAHL_API_KEY_8 DAHL_API_KEY_9 DAHL_API_KEY_10 DAHL_API_KEY_11 DAHL_API_KEY_12 DAHL_API_KEY_13 DAHL_API_KEY_14 DAHL_API_KEY_15 DAHL_API_KEY_16 DAHL_API_KEY_17 DAHL_API_KEY_18 DAHL_API_KEY_19 KEYVAL EXTRA
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done
