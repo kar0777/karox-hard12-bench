@@ -21,6 +21,14 @@ bad = {p for a in arms for p in a.split("+")} - KNOWN
 if bad or not arms:
     sys.exit(f"bad arms: {sorted(bad) or 'none'}")
 chunk = max(int(os.environ.get("CHUNK", "1") or 1), 1)
+# Dahl: keys are shared by every job, 3 parallel requests each. Pack the tasks into at
+# most PARALLEL jobs per arm group, so all jobs run at once and job k can own key
+# subset k (scripts/dahl_gateway.py): no two jobs ever send on the same key.
+if os.environ.get("UPSTREAM") == "dahl2":
+    lanes = max(int(os.environ.get("PARALLEL", "1") or 1), 1)
+    n_tasks = len([1 for n, _ in enumerate(lines, 1) if not want or n in want])
+    per_group = max(lanes // max(len(arms), 1), 1)
+    chunk = max(chunk, -(-n_tasks // per_group))
 picked = [(n, slug if SET else "hard12_tasks/h12-" + slug[:40])
           for n, (_key, slug) in enumerate(lines, 1) if not want or n in want]
 include = []
@@ -33,5 +41,8 @@ for arm in arms:
             "task": " ".join(t for _, t in part),
             "arm": arm,
             "armname": arm.replace("+", "-"),
+            "slot": len(include),
         })
+for job in include:
+    job["slots"] = len(include)
 print("matrix=" + json.dumps({"include": include}))

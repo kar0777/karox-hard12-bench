@@ -53,6 +53,8 @@ jobs:
           TASKS: ${{ inputs.tasks }}
           TASKSET: ${{ inputs.taskset }}
           CHUNK: ${{ inputs.chunk }}
+          UPSTREAM: ${{ inputs.upstream }}
+          PARALLEL: ${{ inputs.parallel }}
         run: python3 scripts/plan_matrix.py >> "$GITHUB_OUTPUT"
   run:
     needs: plan
@@ -128,6 +130,8 @@ jobs:
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.nums }}
+          DAHL_SLOT: ${{ matrix.slot }}
+          DAHL_SLOTS: ${{ matrix.slots }}
           ARM: ${{ matrix.arm }}
           ATT: ${{ inputs.attempts }}
           TAG: ${{ inputs.tag }}
