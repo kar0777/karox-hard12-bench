@@ -144,6 +144,8 @@ jobs:
         if: always()
         run: |
           W="$RUNNER_TEMP/h12"; mkdir -p out
+          # Files a container left readable by root only would fail the whole upload.
+          sudo chmod -R a+rX "$W/jobs" 2>/dev/null || true
           find "$W/jobs" -name '*.log' -size +20M -delete 2>/dev/null || true
           cp -r "$W/jobs" out/ 2>/dev/null || true
           cp "$W/audit/audit.jsonl" "out/audit-${{ matrix.n }}-${{ matrix.armname }}.jsonl" 2>/dev/null || true

@@ -230,11 +230,18 @@ class CodexCli(BaseInstalledAgent):
     @override
     async def run(self, instruction: str, environment: BaseEnvironment,
                   context: AgentContext) -> None:
-        env = {KEY_ENV: _gateway_key(self), "CODEX_HOME": "/logs/agent/codex-home"}
+        # CODEX_HOME stays outside /logs: Codex keeps files only root may read there
+        # (tmp/arg0-*), Harbor walks every file of the trial directory as the runner's user
+        # and the artifact upload does the same (devc0: PermissionError, no artifact). The
+        # session files and logs are copied out afterwards, readable.
+        env = {KEY_ENV: _gateway_key(self), "CODEX_HOME": "/tmp/codex-home"}
         config = shlex.quote(codex_config(self.ALIAS))
         await self.exec_as_agent(environment, env=env, command=(
             'mkdir -p "$CODEX_HOME" && '
             f"printf '%s' {config} > \"$CODEX_HOME/config.toml\" && "
             + NVM +
             "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json "
-            f"-- {shlex.quote(instruction)} 2>&1 </dev/null | stdbuf -oL tee /logs/agent/codex.jsonl"))
+            f"-- {shlex.quote(instruction)} 2>&1 </dev/null | stdbuf -oL tee /logs/agent/codex.jsonl; "
+            "mkdir -p /logs/agent/codex-home; "
+            'cp -r "$CODEX_HOME/sessions" "$CODEX_HOME/log" /logs/agent/codex-home/ 2>/dev/null; '
+            "chmod -R a+rX /logs/agent/codex-home /logs/agent/codex.jsonl 2>/dev/null; true"))
