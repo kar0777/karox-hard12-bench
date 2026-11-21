@@ -93,13 +93,16 @@ jobs:
           DAHL_API_KEY_38: ${{ secrets.DAHL_API_KEY_38 }}
           DAHL_API_KEY_39: ${{ secrets.DAHL_API_KEY_39 }}
           DAHL_API_KEY_40: ${{ secrets.DAHL_API_KEY_40 }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CASES: ${{ inputs.spec_probe }}
           SAMPLES: ${{ inputs.samples }}
           WHEEL: ${{ inputs.probe_wheel }}
           # ReformBoss allows 4 concurrent requests per key; run nothing else meanwhile.
           PROBE_WORKERS: ${{ inputs.probe_workers }}
         run: |
-          if [ -f "probes/$CASES/.replay" ]; then
+          if [ -f "probes/$CASES/run.sh" ]; then
+            bash "probes/$CASES/run.sh"
+          elif [ -f "probes/$CASES/.replay" ]; then
             python3 scripts/replay_probe.py "probes/$CASES" out "$SAMPLES"
           elif [ -n "$WHEEL" ]; then
             python3 -m venv /tmp/kv
