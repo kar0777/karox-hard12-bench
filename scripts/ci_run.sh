@@ -13,6 +13,7 @@ mkdir -p "$WORK/jobs" "$WORK/logs" "$WORK/tasks" "$WORK/audit/context"
 RACE_GATEWAY_KEY=$(python3 -c 'import secrets;print(secrets.token_hex(24))')
 export RACE_GATEWAY_KEY
 echo "::add-mask::$RACE_GATEWAY_KEY"
+EXTRA=()  # extra KEY=value pairs for the gateway's environment
 # UPSTREAM=synthetic swaps only the provider serving the same model (same profile).
 if [ "${UPSTREAM:-wandb}" = synthetic ]; then
   [ -n "${SYNTHETIC_API_KEY:-}" ] || { echo "no SYNTHETIC_API_KEY secret"; exit 1; }
@@ -29,10 +30,13 @@ elif [ "${UPSTREAM:-wandb}" = dahl ]; then
   [ -n "${DAHL_API_KEY:-}" ] || { echo "no DAHL_API_KEY"; exit 1; }
   CFG=litellm.hard12.dahl.yaml; PROF=inference_profile_hard12_dahl.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
 elif [ "${UPSTREAM:-wandb}" = dahl2 ]; then
-  # Dev lane: GLM-5.3-Flash on Dahl with two keys (3 parallel requests each, 6 in all).
-  [ -n "${DAHL_API_KEY:-}" ] && [ -n "${DAHL_API_KEY_2:-}" ] || { echo "no DAHL_API_KEY / DAHL_API_KEY_2"; exit 1; }
-  CFG=litellm.hard12.dahl2.yaml; PROF=inference_profile_hard12_dahl2.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
-  EXTRA="DAHL_API_KEY_2=$DAHL_API_KEY_2"
+  # Dev lane: GLM-5.3-Flash on Dahl with every key that is set (DAHL_API_KEY,
+  # DAHL_API_KEY_2..9; 3 parallel requests per key). The config is generated per job.
+  [ -n "${DAHL_API_KEY:-}" ] || { echo "no DAHL_API_KEY"; exit 1; }
+  USED=$(python3 "$ROOT/scripts/dahl_gateway.py" "$ROOT/gateway/litellm.hard12.dahlx.yaml")
+  echo "dahl keys: $USED"
+  CFG=litellm.hard12.dahlx.yaml; PROF=inference_profile_hard12_dahl2.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
+  for n in $USED; do [ "$n" = DAHL_API_KEY ] || EXTRA+=("$n=${!n}"); done
 elif [ "${UPSTREAM:-wandb}" = orglm ]; then
   # Dev lane: GLM-5.3-Flash :batch on OpenRouter, the user's small balance. Print what is
   # left (never the key; each job's start is a ledger entry) and refuse below the floor.
@@ -60,13 +64,13 @@ else
 fi
 (
   cd "$ROOT/gateway"
-  env -i PATH="$PATH" HOME="$HOME" "$KEYVAR=$KEYVAL" "${EXTRA:-KAROX_NO_EXTRA=1}" \
+  env -i PATH="$PATH" HOME="$HOME" "$KEYVAR=$KEYVAL" ${EXTRA[@]+"${EXTRA[@]}"} \
     HARNESS_RACE_GATEWAY_KEY="$RACE_GATEWAY_KEY" HARNESS_RACE_AUDIT_DIR="$WORK/audit" \
     HARNESS_RACE_PROFILE="$ROOT/config/$PROF" LITELLM_TELEMETRY=False \
     nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 KEYVAL EXTRA
+unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 DAHL_API_KEY_3 DAHL_API_KEY_4 DAHL_API_KEY_5 DAHL_API_KEY_6 DAHL_API_KEY_7 DAHL_API_KEY_8 DAHL_API_KEY_9 KEYVAL EXTRA
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done

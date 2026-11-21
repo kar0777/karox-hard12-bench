@@ -55,6 +55,13 @@ jobs:
           REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
           DAHL_API_KEY: ${{ secrets.DAHL_API_KEY }}
           DAHL_API_KEY_2: ${{ secrets.DAHL_API_KEY_2 }}
+          DAHL_API_KEY_3: ${{ secrets.DAHL_API_KEY_3 }}
+          DAHL_API_KEY_4: ${{ secrets.DAHL_API_KEY_4 }}
+          DAHL_API_KEY_5: ${{ secrets.DAHL_API_KEY_5 }}
+          DAHL_API_KEY_6: ${{ secrets.DAHL_API_KEY_6 }}
+          DAHL_API_KEY_7: ${{ secrets.DAHL_API_KEY_7 }}
+          DAHL_API_KEY_8: ${{ secrets.DAHL_API_KEY_8 }}
+          DAHL_API_KEY_9: ${{ secrets.DAHL_API_KEY_9 }}
           CASES: ${{ inputs.spec_probe }}
           SAMPLES: ${{ inputs.samples }}
           WHEEL: ${{ inputs.probe_wheel }}
