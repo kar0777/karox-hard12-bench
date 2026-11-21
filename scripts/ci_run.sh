@@ -28,6 +28,17 @@ elif [ "${UPSTREAM:-wandb}" = dahl ]; then
   # Dev lane: GLM-5.3-Flash on Dahl, 3 concurrent requests per key.
   [ -n "${DAHL_API_KEY:-}" ] || { echo "no DAHL_API_KEY"; exit 1; }
   CFG=litellm.hard12.dahl.yaml; PROF=inference_profile_hard12_dahl.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
+elif [ "${UPSTREAM:-wandb}" = orglm ]; then
+  # Dev lane: GLM-5.3-Flash :batch on OpenRouter, the user's small balance. Print what is
+  # left (never the key; each job's start is a ledger entry) and refuse below 5 cents.
+  [ -n "${OPENROUTER_API_KEY:-}" ] || { echo "no OPENROUTER_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.orglm.yaml; PROF=inference_profile_hard12_orglm.json; KEYVAR=OPENROUTER_API_KEY; KEYVAL=$OPENROUTER_API_KEY
+  LEFT=$(curl -s -m 20 -H "Authorization: Bearer $OPENROUTER_API_KEY" https://openrouter.ai/api/v1/credits \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(round(d["total_credits"]-d["total_usage"],4))' 2>/dev/null || echo "?")
+  echo "openrouter credits left: $LEFT"
+  if [ "$LEFT" != "?" ] && python3 -c "import sys; sys.exit(0 if float('$LEFT') < 0.05 else 1)"; then
+    echo "openrouter balance below \$0.05: not starting"; exit 1
+  fi
 elif [ "${UPSTREAM:-wandb}" = openrouter ]; then
   # Same model on fp8 providers with caching; spend is capped by the key's own limit.
   [ -n "${OPENROUTER_API_KEY:-}" ] || { echo "no OPENROUTER_API_KEY secret"; exit 1; }
