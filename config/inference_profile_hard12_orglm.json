@@ -2,7 +2,7 @@
   "profile_id": "hard12-glm53f-orbatch-v1",
   "upstream_provider": "openrouter",
   "upstream_api_base": "https://openrouter.ai/api/v1",
-  "upstream_model": "z-ai/glm-5.3-flash:batch",
+  "upstream_model": "z-ai/glm-5.3-flash",
   "enforced": {
     "temperature": 1.0,
     "top_p": 0.95,
@@ -25,5 +25,5 @@
     "hard12-deepseek_harness": "deepseek_harness",
     "hard12-karox6b": "karox6b"
   },
-  "evidence": "Dev lane, NOT the bench model: GLM-5.3-Flash :batch on OpenRouter (2026-11-21 price $0.023/M in, $0.009/M cached, $0.068/M out); user's balance ~$1."
+  "evidence": "Dev lane, NOT the bench model: GLM-5.3-Flash on OpenRouter (2026-11-21 price $0.04/M in, $0.03/M cached, $0.078/M out; :batch is batch-only); user's balance ~$1."
 }

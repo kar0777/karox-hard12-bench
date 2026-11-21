@@ -1,11 +1,11 @@
-# HARD12 gateway (OpenRouter GLM dev lane): a DIFFERENT model, GLM-5.3-Flash :batch
-# (cheapest tier), on the user's small OpenRouter balance. Never mix its results with the
+# HARD12 gateway (OpenRouter GLM dev lane): a DIFFERENT model, GLM-5.3-Flash
+# (:batch is a batch-only API, unusable for agents), on the user's small OpenRouter balance. Never mix its results with the
 # DeepSeek-V4.1-Flash-1017 runs. Profile: config/inference_profile_hard12_orglm.json.
 # Key only from OPENROUTER_API_KEY.
 model_list:
   - model_name: hard12-karox5
     litellm_params:
-      model: openai/z-ai/glm-5.3-flash:batch
+      model: openai/z-ai/glm-5.3-flash
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       use_chat_completions_api: true
@@ -20,7 +20,7 @@ model_list:
       supports_vision: false
   - model_name: hard12-karox6
     litellm_params:
-      model: openai/z-ai/glm-5.3-flash:batch
+      model: openai/z-ai/glm-5.3-flash
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       use_chat_completions_api: true
@@ -35,7 +35,7 @@ model_list:
       supports_vision: false
   - model_name: hard12-karox6b
     litellm_params:
-      model: openai/z-ai/glm-5.3-flash:batch
+      model: openai/z-ai/glm-5.3-flash
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       use_chat_completions_api: true
@@ -50,7 +50,7 @@ model_list:
       supports_vision: false
   - model_name: hard12-opencode_v2
     litellm_params:
-      model: openai/z-ai/glm-5.3-flash:batch
+      model: openai/z-ai/glm-5.3-flash
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       use_chat_completions_api: true
@@ -65,7 +65,7 @@ model_list:
       supports_vision: false
   - model_name: hard12-deepseek_harness
     litellm_params:
-      model: openai/z-ai/glm-5.3-flash:batch
+      model: openai/z-ai/glm-5.3-flash
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
       use_chat_completions_api: true
