@@ -20,7 +20,8 @@ from collections import defaultdict
 from datetime import datetime
 
 ARM = {"karox6-hard12": "karox6", "karox6b-hard12": "karox6b", "opencode-v2-hard12": "opencode_v2",
-       "deepseek-harness-hard12": "deepseek_harness", "karo-hard12": "karox5"}
+       "deepseek-harness-hard12": "deepseek_harness", "karo-hard12": "karox5",
+       "codex-hard12": "codex"}
 
 
 def epoch(text):

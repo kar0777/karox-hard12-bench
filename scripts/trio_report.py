@@ -34,6 +34,7 @@ NAMES = {
     "karox6b-hard12": "karox6b",
     "opencode-v2-hard12": "opencode_v2",
     "deepseek-harness-hard12": "deepseek_harness",
+    "codex-hard12": "codex",
 }
 PROVIDER_WORDS = ("ratelimit", "rate_limit", "rate limit", "capacity", "apierror", "api error")
 PRICE = {"input": 0.13, "cached": 0.002, "output": 0.65}  # USD per 1M tokens

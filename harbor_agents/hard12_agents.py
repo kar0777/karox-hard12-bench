@@ -33,6 +33,7 @@ GATEWAY_BASE = "http://127.0.0.1:14000/v1"
 KEY_ENV = "RACE_GATEWAY_KEY"
 OPENCODE_VERSION = "2.3.2"
 DSH_VERSION = "0.2.2-rc.5"
+CODEX_VERSION = "0.171.0"
 PLAYWRIGHT_MCP_VERSION = "0.0.41"  # official Microsoft browser MCP, used on web-task images only
 NVM = "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; "
 
@@ -184,3 +185,56 @@ class DeepSeekHarness(BaseInstalledAgent):
         context.n_input_tokens = totals["inputTokens"] + totals["cacheReadTokens"]
         context.n_cache_tokens = totals["cacheReadTokens"]
         context.n_output_tokens = totals["outputTokens"]
+
+
+def codex_config(alias: str) -> str:
+    """Codex config.toml: the gateway as a custom provider (Responses API)."""
+    lines = [
+        f'model = "{alias}"',
+        'model_provider = "hard12"',
+        'model_reasoning_effort = "high"',
+        'approval_policy = "never"',
+        'sandbox_mode = "danger-full-access"',
+        "[model_providers.hard12]",
+        'name = "HARD12 gateway"',
+        f'base_url = "{GATEWAY_BASE}"',
+        f'env_key = "{KEY_ENV}"',
+        'wire_api = "responses"',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+class CodexCli(BaseInstalledAgent):
+    """OpenAI Codex CLI (@openai/codex) pinned, driven through the same gateway alias
+    scheme as the other arms. The gateway enforces the sampling profile (effort included)."""
+
+    ALIAS = "hard12-codex"
+    SUPPORTS_ATIF = False
+
+    @staticmethod
+    @override
+    def name() -> str:
+        return "codex-hard12"
+
+    @override
+    def get_version_command(self) -> str | None:
+        return NVM + "codex --version"
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        await self.ensure_system_dependencies(environment, ("curl", "bash", "coreutils"))
+        await self.exec_as_agent(environment, command=(
+            "set -euo pipefail; " + nvm_node_install_snippet() + " && "
+            f"npm i -g @openai/codex@{CODEX_VERSION} && codex --version"))
+
+    @override
+    async def run(self, instruction: str, environment: BaseEnvironment,
+                  context: AgentContext) -> None:
+        env = {KEY_ENV: _gateway_key(self), "CODEX_HOME": "/logs/agent/codex-home"}
+        config = shlex.quote(codex_config(self.ALIAS))
+        await self.exec_as_agent(environment, env=env, command=(
+            'mkdir -p "$CODEX_HOME" && '
+            f"printf '%s' {config} > \"$CODEX_HOME/config.toml\" && "
+            + NVM +
+            "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json "
+            f"-- {shlex.quote(instruction)} 2>&1 </dev/null | stdbuf -oL tee /logs/agent/codex.jsonl"))

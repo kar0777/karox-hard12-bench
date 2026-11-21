@@ -25,8 +25,8 @@ from pathlib import Path
 JOBS = Path(os.environ["H12_JOBS"])
 VAL = Path(os.environ["H12_VAL"])
 AUDIT = Path(os.environ["H12_AUDIT"])
-ARM = {"karo": "KaroX 5", "karox6-hard12": "KaroX 6", "karox6b-hard12": "KaroX 6 B", "opencode-v2-hard12": "OpenCode 2.2.7", "deepseek-harness-hard12": "DeepSeek Harness"}
-GW = {"KaroX 5": "karox5", "KaroX 6": "karox6", "KaroX 6 B": "karox6b", "OpenCode 2.2.7": "opencode_v2", "DeepSeek Harness": "deepseek_harness"}
+ARM = {"karo": "KaroX 5", "karox6-hard12": "KaroX 6", "karox6b-hard12": "KaroX 6 B", "opencode-v2-hard12": "OpenCode 2.2.7", "deepseek-harness-hard12": "DeepSeek Harness", "codex-hard12": "Codex CLI"}
+GW = {"KaroX 5": "karox5", "KaroX 6": "karox6", "KaroX 6 B": "karox6b", "OpenCode 2.2.7": "opencode_v2", "DeepSeek Harness": "deepseek_harness", "Codex CLI": "codex"}
 JOB_RE = re.compile(r"^hard12-(?P<tag>[a-z0-9]+)-(?P<n>\d\d)b?-(?P<name>.+)$")
 
 val = {}

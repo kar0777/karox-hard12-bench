@@ -33,6 +33,21 @@ model_list:
       supports_parallel_function_calling: true
       supports_reasoning: true
       supports_vision: false
+  - model_name: hard12-codex
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: https://freeinference.org/v1
+      api_key: os.environ/FREEINFERENCE_API_KEY
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
   - model_name: hard12-opencode_v2
     litellm_params:
       model: openai/glm-5.3-flash
