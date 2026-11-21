@@ -2,7 +2,7 @@
 
     python3 scripts/dahl_gateway.py <out.yaml>   (prints the env var names it used)
 
-Keys come from DAHL_API_KEY, DAHL_API_KEY_2 .. DAHL_API_KEY_19 (empty ones are skipped).
+Keys come from DAHL_API_KEY, DAHL_API_KEY_2 .. DAHL_API_KEY_40 (empty ones are skipped).
 Each key allows 3 parallel requests (probed 2026-11-21, `parallel_key_limit`, counted per
 key), so every alias gets one deployment per key with max_parallel_requests 3 and the
 router picks one at random and rests a key that answers 429. The model entries are those of litellm.hard12.dahl2.yaml
@@ -18,7 +18,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "..", "gateway", "litellm.hard12.dahl2.yaml")
-NAMES = ["DAHL_API_KEY"] + [f"DAHL_API_KEY_{i}" for i in range(2, 20)]
+NAMES = ["DAHL_API_KEY"] + [f"DAHL_API_KEY_{i}" for i in range(2, 41)]
 
 
 def main() -> None:

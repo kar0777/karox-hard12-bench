@@ -18,7 +18,7 @@ on:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
       upstream:
-        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | dahl2 (Dahl GLM, every DAHL_API_KEY[_2.._19] secret set: 3 parallel requests per key)"
+        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | dahl2 (Dahl GLM, every DAHL_API_KEY[_2.._40] secret set: 3 parallel requests per key)"
         default: "wandb"
       parallel:
         description: "max parallel jobs"
@@ -104,6 +104,27 @@ jobs:
           DAHL_API_KEY_17: ${{ secrets.DAHL_API_KEY_17 }}
           DAHL_API_KEY_18: ${{ secrets.DAHL_API_KEY_18 }}
           DAHL_API_KEY_19: ${{ secrets.DAHL_API_KEY_19 }}
+          DAHL_API_KEY_20: ${{ secrets.DAHL_API_KEY_20 }}
+          DAHL_API_KEY_21: ${{ secrets.DAHL_API_KEY_21 }}
+          DAHL_API_KEY_22: ${{ secrets.DAHL_API_KEY_22 }}
+          DAHL_API_KEY_23: ${{ secrets.DAHL_API_KEY_23 }}
+          DAHL_API_KEY_24: ${{ secrets.DAHL_API_KEY_24 }}
+          DAHL_API_KEY_25: ${{ secrets.DAHL_API_KEY_25 }}
+          DAHL_API_KEY_26: ${{ secrets.DAHL_API_KEY_26 }}
+          DAHL_API_KEY_27: ${{ secrets.DAHL_API_KEY_27 }}
+          DAHL_API_KEY_28: ${{ secrets.DAHL_API_KEY_28 }}
+          DAHL_API_KEY_29: ${{ secrets.DAHL_API_KEY_29 }}
+          DAHL_API_KEY_30: ${{ secrets.DAHL_API_KEY_30 }}
+          DAHL_API_KEY_31: ${{ secrets.DAHL_API_KEY_31 }}
+          DAHL_API_KEY_32: ${{ secrets.DAHL_API_KEY_32 }}
+          DAHL_API_KEY_33: ${{ secrets.DAHL_API_KEY_33 }}
+          DAHL_API_KEY_34: ${{ secrets.DAHL_API_KEY_34 }}
+          DAHL_API_KEY_35: ${{ secrets.DAHL_API_KEY_35 }}
+          DAHL_API_KEY_36: ${{ secrets.DAHL_API_KEY_36 }}
+          DAHL_API_KEY_37: ${{ secrets.DAHL_API_KEY_37 }}
+          DAHL_API_KEY_38: ${{ secrets.DAHL_API_KEY_38 }}
+          DAHL_API_KEY_39: ${{ secrets.DAHL_API_KEY_39 }}
+          DAHL_API_KEY_40: ${{ secrets.DAHL_API_KEY_40 }}
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.nums }}
