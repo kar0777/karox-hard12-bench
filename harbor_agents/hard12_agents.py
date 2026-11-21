@@ -192,6 +192,9 @@ def codex_config(alias: str) -> str:
     lines = [
         f'model = "{alias}"',
         'model_provider = "hard12"',
+        # The alias is not a model Codex knows: without this it falls back to default
+        # metadata (a smaller window). The lanes serve a 1M-token window (gateway model_info).
+        "model_context_window = 1048576",
         'model_reasoning_effort = "high"',
         'approval_policy = "never"',
         'sandbox_mode = "danger-full-access"',
@@ -232,12 +235,14 @@ class CodexCli(BaseInstalledAgent):
                   context: AgentContext) -> None:
         # CODEX_HOME stays outside /logs: Codex keeps files only root may read there
         # (tmp/arg0-*), Harbor walks every file of the trial directory as the runner's user
-        # and the artifact upload does the same (devc0: PermissionError, no artifact). The
-        # session files and logs are copied out afterwards, readable.
-        env = {KEY_ENV: _gateway_key(self), "CODEX_HOME": "/tmp/codex-home"}
+        # and the artifact upload does the same (devc0: PermissionError, no artifact). Not
+        # under /tmp either: Codex refuses to put its helper binaries (the apply_patch
+        # alias) into a temporary directory (devc1). The session files and logs are copied
+        # out afterwards, readable.
+        env = {KEY_ENV: _gateway_key(self)}
         config = shlex.quote(codex_config(self.ALIAS))
         await self.exec_as_agent(environment, env=env, command=(
-            'mkdir -p "$CODEX_HOME" && '
+            'export CODEX_HOME="${HOME:-/opt}/.codex-hard12" && mkdir -p "$CODEX_HOME" && '
             f"printf '%s' {config} > \"$CODEX_HOME/config.toml\" && "
             + NVM +
             "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json "
