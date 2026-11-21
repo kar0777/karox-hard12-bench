@@ -1,7 +1,7 @@
 # HARD12 gateway (Dahl, two keys): GLM-5.3-Flash dev lane, a DIFFERENT model from the
 # bench's DSV4.1F. Each key allows 3 parallel requests (probed 2026-11-21:
 # parallel_key_limit beyond 3, counted per key); every alias has one deployment per key
-# and least-busy routing, so up to 6 requests run at once. Keys only from DAHL_API_KEY
+# and random routing with a short rest for a key that answers 429. Keys only from DAHL_API_KEY
 # and DAHL_API_KEY_2.
 model_list:
   - model_name: hard12-karox5
@@ -179,7 +179,12 @@ router_settings:
   context_window_fallbacks: []
   content_policy_fallbacks: []
   enable_pre_call_checks: false
-  routing_strategy: least-busy
+  # Many jobs share the keys and each job's router sees only its own requests: pick a key
+  # at random, and when one answers 429 (3 parallel per key, other jobs' requests count
+  # too) rest it for a few seconds and retry on another.
+  routing_strategy: simple-shuffle
+  allowed_fails: 0
+  cooldown_time: 3
 
 general_settings:
   master_key: os.environ/HARNESS_RACE_GATEWAY_KEY

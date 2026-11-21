@@ -5,7 +5,7 @@
 Keys come from DAHL_API_KEY, DAHL_API_KEY_2 .. DAHL_API_KEY_19 (empty ones are skipped).
 Each key allows 3 parallel requests (probed 2026-11-21, `parallel_key_limit`, counted per
 key), so every alias gets one deployment per key with max_parallel_requests 3 and the
-router picks the least busy one. The model entries are those of litellm.hard12.dahl2.yaml
+router picks one at random and rests a key that answers 429. The model entries are those of litellm.hard12.dahl2.yaml
 (its DAHL_API_KEY deployments), so there is one place that defines them. Names only are
 printed, never values.
 """
