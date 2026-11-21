@@ -18,7 +18,7 @@ on:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
       upstream:
-        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash :batch on OpenRouter, small balance)"
+        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | dahl2 (Dahl GLM, two keys: 6 parallel requests)"
         default: "wandb"
       parallel:
         description: "max parallel jobs"
@@ -86,6 +86,7 @@ jobs:
           FREEINFERENCE_API_KEY: ${{ secrets.FREEINFERENCE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DAHL_API_KEY: ${{ secrets.DAHL_API_KEY }}
+          DAHL_API_KEY_2: ${{ secrets.DAHL_API_KEY_2 }}
           UPSTREAM: ${{ inputs.upstream }}
           TASK: ${{ matrix.task }}
           N: ${{ matrix.nums }}

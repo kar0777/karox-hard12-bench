@@ -1,0 +1,186 @@
+# HARD12 gateway (Dahl, two keys): GLM-5.3-Flash dev lane, a DIFFERENT model from the
+# bench's DSV4.1F. Each key allows 3 parallel requests (probed 2026-11-21:
+# parallel_key_limit beyond 3, counted per key); every alias has one deployment per key
+# and least-busy routing, so up to 6 requests run at once. Keys only from DAHL_API_KEY
+# and DAHL_API_KEY_2.
+model_list:
+  - model_name: hard12-karox5
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox5
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY_2
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox6
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox6
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY_2
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox6b
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox6b
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY_2
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-opencode_v2
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-opencode_v2
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY_2
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-deepseek_harness
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-deepseek_harness
+    litellm_params:
+      model: openai/zai-org/GLM-5.3-Flash
+      api_base: https://inference.dahl.global/v1
+      api_key: os.environ/DAHL_API_KEY_2
+      max_parallel_requests: 3
+      use_chat_completions_api: true
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+
+litellm_settings:
+  callbacks: race_audit.proxy_handler_instance
+  drop_params: false
+  num_retries: 12
+  request_timeout: 900
+  turn_off_message_logging: true
+
+router_settings:
+  num_retries: 12
+  retry_after: 1
+  fallbacks: []
+  context_window_fallbacks: []
+  content_policy_fallbacks: []
+  enable_pre_call_checks: false
+  routing_strategy: least-busy
+
+general_settings:
+  master_key: os.environ/HARNESS_RACE_GATEWAY_KEY
+  disable_spend_logs: true

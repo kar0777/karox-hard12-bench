@@ -25,6 +25,8 @@ UPSTREAMS = {
                    "deepseek-v4.1-flash-1017", "REFORMBOSS_API_KEY"),
     "dahl": ("https://inference.dahl.global/v1/chat/completions",
              "zai-org/GLM-5.3-Flash", "DAHL_API_KEY"),
+    "dahl2": ("https://inference.dahl.global/v1/chat/completions",
+              "zai-org/GLM-5.3-Flash", "DAHL_API_KEY_2"),
 }
 BASE, MODEL, KEYVAR = UPSTREAMS["reformboss"]
 EFFORT = "max"

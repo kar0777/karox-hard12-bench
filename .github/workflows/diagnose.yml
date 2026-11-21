@@ -54,6 +54,7 @@ jobs:
         env:
           REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
           DAHL_API_KEY: ${{ secrets.DAHL_API_KEY }}
+          DAHL_API_KEY_2: ${{ secrets.DAHL_API_KEY_2 }}
           CASES: ${{ inputs.spec_probe }}
           SAMPLES: ${{ inputs.samples }}
           WHEEL: ${{ inputs.probe_wheel }}

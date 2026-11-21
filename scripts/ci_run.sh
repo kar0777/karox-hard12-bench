@@ -28,6 +28,11 @@ elif [ "${UPSTREAM:-wandb}" = dahl ]; then
   # Dev lane: GLM-5.3-Flash on Dahl, 3 concurrent requests per key.
   [ -n "${DAHL_API_KEY:-}" ] || { echo "no DAHL_API_KEY"; exit 1; }
   CFG=litellm.hard12.dahl.yaml; PROF=inference_profile_hard12_dahl.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
+elif [ "${UPSTREAM:-wandb}" = dahl2 ]; then
+  # Dev lane: GLM-5.3-Flash on Dahl with two keys (3 parallel requests each, 6 in all).
+  [ -n "${DAHL_API_KEY:-}" ] && [ -n "${DAHL_API_KEY_2:-}" ] || { echo "no DAHL_API_KEY / DAHL_API_KEY_2"; exit 1; }
+  CFG=litellm.hard12.dahl2.yaml; PROF=inference_profile_hard12_dahl2.json; KEYVAR=DAHL_API_KEY; KEYVAL=$DAHL_API_KEY
+  EXTRA="DAHL_API_KEY_2=$DAHL_API_KEY_2"
 elif [ "${UPSTREAM:-wandb}" = orglm ]; then
   # Dev lane: GLM-5.3-Flash :batch on OpenRouter, the user's small balance. Print what is
   # left (never the key; each job's start is a ledger entry) and refuse below the floor.
@@ -55,13 +60,13 @@ else
 fi
 (
   cd "$ROOT/gateway"
-  env -i PATH="$PATH" HOME="$HOME" "$KEYVAR=$KEYVAL" \
+  env -i PATH="$PATH" HOME="$HOME" "$KEYVAR=$KEYVAL" "${EXTRA:-KAROX_NO_EXTRA=1}" \
     HARNESS_RACE_GATEWAY_KEY="$RACE_GATEWAY_KEY" HARNESS_RACE_AUDIT_DIR="$WORK/audit" \
     HARNESS_RACE_PROFILE="$ROOT/config/$PROF" LITELLM_TELEMETRY=False \
     nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY KEYVAL
+unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 KEYVAL EXTRA
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done
