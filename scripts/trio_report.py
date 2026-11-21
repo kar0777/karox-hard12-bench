@@ -128,6 +128,8 @@ def main() -> None:
     use: dict[str, dict[str, collections.Counter]] = collections.defaultdict(
         lambda: collections.defaultdict(collections.Counter))
     seen_calls: set[tuple] = set()
+    ttft: dict[str, dict[str, list[float]]] = collections.defaultdict(
+        lambda: collections.defaultdict(list))
     for root in roots:
         for path in glob.glob(os.path.join(root, "**", "*audit*.jsonl"), recursive=True):
             with open(path, encoding="utf-8") as f:
@@ -148,12 +150,15 @@ def main() -> None:
                         for k in TOKEN_KEYS:
                             c[k] += e.get(k) or 0
                         c["model_s"] += e.get("latency_s") or 0
+                        if e.get("ttft_s"):
+                            ttft[str(e.get("task_id", ""))][str(e.get("harness"))].append(e["ttft_s"])
 
     arms = sorted({a for t in trials.values() for a in t})
     solved_all, solved_valid = collections.Counter(), collections.Counter()
     totals: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     valid: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     valid_tasks, rows = 0, []
+    first_token: dict[tuple[str, str], list[float]] = collections.defaultdict(list)
     for task in sorted(trials):
         t, u = trials[task], use.get(task, {})
         void = []
@@ -174,10 +179,12 @@ def main() -> None:
             solved_all[a] += got
             totals[a].update(u.get(a, {}))
             totals[a]["agent_s"] += t.get(a, {}).get("agent_s", 0.0)
+            first_token[("all tasks", a)] += ttft.get(task, {}).get(a, [])
             if ok:
                 solved_valid[a] += got
                 valid[a].update(u.get(a, {}))
                 valid[a]["agent_s"] += t.get(a, {}).get("agent_s", 0.0)
+                first_token[("valid tasks", a)] += ttft.get(task, {}).get(a, [])
         rows.append({
             "task": task,
             **{a: int(t.get(a, {}).get("reward", 0) >= 1) for a in arms},
@@ -211,12 +218,30 @@ def main() -> None:
                 "agent_min": round(c["agent_s"] / 60, 1),
                 "cost_usd": round(_cost(c), 3),
             }
+            n_tasks = max(valid_tasks if scope == "valid tasks" else len(trials), 1)
+            waits = sorted(first_token[(scope, a)])
+            line.update({
+                "ttft_median_s": round(waits[len(waits) // 2], 2) if waits else None,
+                "per_task": {
+                    "calls": round(c["ok"] / n_tasks, 1),
+                    "input_M": round(c["input_tokens"] / 1e6 / n_tasks, 2),
+                    "output_k": round(c["output_tokens"] / 1e3 / n_tasks, 1),
+                    "agent_min": round(c["agent_s"] / 60 / n_tasks, 1),
+                    "cost_usd": round(_cost(c) / n_tasks, 4),
+                },
+            })
             summary.setdefault(scope, {})[a] = line
             print(
                 f"{a:17} ok calls {c['ok']:5} (refused {refused:.0%})  in {line['input_M']:6.1f}M "
                 f"(cached {cached:.0%})  out {line['output_k']:6.0f}k  reasoning "
                 f"{line['reasoning_k']:6.0f}k  model {line['model_h']:5.2f} h  agent "
                 f"{line['agent_min']:6.1f} min  cost ${line['cost_usd']:.3f}"
+            )
+            per = line["per_task"]
+            print(
+                f"{'':17} per task: {per['calls']} calls, {per['input_M']}M in, {per['output_k']}k out, "
+                f"{per['agent_min']} min, ${per['cost_usd']}; time to first token (median) "
+                f"{line['ttft_median_s']} s"
             )
     if _flag("--json"):
         with open(str(_flag("--json")), "w", encoding="utf-8") as f:
@@ -236,12 +261,15 @@ def main() -> None:
             for scope, per_arm in summary.items():
                 f.write(f"\nUsage on {scope} ({valid_tasks if scope == 'valid tasks' else len(trials)}):\n\n")
                 f.write("| arm | solved | ok calls | refused | input M | cached | output k | "
-                        "reasoning k | model h | agent min | cost $ |\n|---|---|---|---|---|---|---|---|---|---|---|\n")
+                        "reasoning k | TTFT s | model h | agent min | cost $ | per task: calls / "
+                        "min / $ |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
                 for a, s in per_arm.items():
+                    per = s["per_task"]
                     f.write(f"| {a} | {s['solved']} | {s['ok_calls']} | {s['refused']:.0%} | "
                             f"{s['input_M']} | {s['cached']:.0%} | {s['output_k']} | "
-                            f"{s['reasoning_k']} | {s['model_h']} | {s['agent_min']} | "
-                            f"{s['cost_usd']} |\n")
+                            f"{s['reasoning_k']} | {s['ttft_median_s']} | {s['model_h']} | "
+                            f"{s['agent_min']} | {s['cost_usd']} | {per['calls']} / "
+                            f"{per['agent_min']} / {per['cost_usd']} |\n")
 
 
 if __name__ == "__main__":
