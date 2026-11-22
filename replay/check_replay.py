@@ -6,6 +6,7 @@ Exit 1 on any failed expectation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 
@@ -29,6 +30,16 @@ for name in scenario.get("tools_present", []):
 for name in scenario.get("tools_absent", []):
     if name in tools:
         failures.append(f"tool {name} advertised but should be hidden")
+
+# Which prompt ran: the system message up to its environment block is the same for every
+# task, so its digest names the wheel's prompt (and any appended variant).
+system = next((m["content"] or "" for m in requests[0]["messages"] if m["role"] == "system"), "")
+base = system.split("\n\nEnvironment:", 1)[0]
+print(f"system prompt: {len(base.split())} words before the environment block, "
+      f"sha256 {hashlib.sha256(base.encode('utf-8')).hexdigest()[:12]}")
+for needle in scenario.get("system_has", []):
+    if needle not in system:
+        failures.append(f"system prompt lacks {needle!r}")
 
 readonly = False
 for index, turn in enumerate(turns):

@@ -25,5 +25,7 @@ No model calls, nothing is written.
 | `requests.py` | requests per task and arm, refused ones included (a provider's daily allowance) |
 | `karox_ends.py` | one line per KaroX trial: ending, steps, usage, tools, retries and notices |
 | `compactions.py` | per KaroX trial: each compaction, the request after it, peak context |
+| `dshcmp.py` | KaroX vs DSH per task: explore / work / tail around the first and last source edit, tests, probes, test-file edits, diff, missed hidden tests |
+| `scopewords.py` | how often an arm's reasoning argues about the scope of its fix (the prompt's own words and the general ones) |
 
 `stepcmp.py`, `buckets.py`: run from this directory (buckets imports stepcmp's parsers).
