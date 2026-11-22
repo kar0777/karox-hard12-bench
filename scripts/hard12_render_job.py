@@ -59,13 +59,16 @@ job = {
         # Codex CLI through the same gateway (Responses API bridged by litellm); opt-in.
         {"name": "hard12_agents:CodexCli", "model_name": "hard12-codex",
          "kwargs": {}, "env": key_env},
+        # Claude Code through the same gateway (Anthropic Messages protocol); opt-in.
+        {"name": "hard12_agents:ClaudeCode", "model_name": "hard12-claude_code",
+         "kwargs": {}, "env": key_env},
         # Reference solution (task solution/solve.sh): proves a task is solvable on this runner.
         {"name": "oracle", "model_name": "hard12-oracle", "kwargs": {}},
     ],
     "tasks": [{"path": task_path}],
 }
 all_agents = job["agents"]
-job["agents"] = [a for a in all_agents if a["name"] not in ("oracle", "karox6_agent:KaroX6B", "hard12_agents:CodexCli")]  # opt-in only
+job["agents"] = [a for a in all_agents if a["name"] not in ("oracle", "karox6_agent:KaroX6B", "hard12_agents:CodexCli", "hard12_agents:ClaudeCode")]  # opt-in only
 job["n_concurrent_trials"] = len(job["agents"])
 # HARD12_ARMS (optional, comma list of model aliases' arm names) reruns only
 # arms that did not finish (e.g. after a host reboot); default = all arms.

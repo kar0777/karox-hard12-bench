@@ -14,8 +14,8 @@ arms = [a.strip() for a in os.environ.get("ARMS", "").split(",") if a.strip()]
 # karox6+opencode_v2+deepseek_harness): identical conditions, one runner IP.
 # CHUNK > 1: one job runs that many tasks one after another (the runner, and so its IP,
 # stays the same for hours: providers that limit IPs per key refuse fresh runners).
-KNOWN = {"karox5", "karox6", "karox6b", "opencode_v2", "deepseek_harness", "codex", "oracle"}
-GROUPS = {"trio": "karox6+opencode_v2+deepseek_harness"}
+KNOWN = {"karox5", "karox6", "karox6b", "opencode_v2", "deepseek_harness", "codex", "claude_code", "oracle"}
+GROUPS = {"trio": "karox6+opencode_v2+deepseek_harness", "trioc": "karox6+opencode_v2+claude_code"}
 arms = [GROUPS.get(a, a) for a in arms]
 bad = {p for a in arms for p in a.split("+")} - KNOWN
 if bad or not arms:

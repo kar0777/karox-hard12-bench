@@ -34,6 +34,7 @@ KEY_ENV = "RACE_GATEWAY_KEY"
 OPENCODE_VERSION = "2.3.2"
 DSH_VERSION = "0.2.2-rc.5"
 CODEX_VERSION = "0.171.0"
+CLAUDE_CODE_VERSION = "2.1.329"
 PLAYWRIGHT_MCP_VERSION = "0.0.41"  # official Microsoft browser MCP, used on web-task images only
 NVM = "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; "
 
@@ -250,3 +251,54 @@ class CodexCli(BaseInstalledAgent):
             "mkdir -p /logs/agent/codex-home; "
             'cp -r "$CODEX_HOME/sessions" "$CODEX_HOME/log" /logs/agent/codex-home/ 2>/dev/null; '
             "chmod -R a+rX /logs/agent/codex-home /logs/agent/codex.jsonl 2>/dev/null; true"))
+
+
+class ClaudeCode(BaseInstalledAgent):
+    """Anthropic Claude Code (@anthropic-ai/claude-code) pinned, headless, through the same
+    gateway on the Anthropic Messages protocol (litellm /v1/messages, no format
+    translation). Every model role (main, small/fast) uses the one race alias."""
+
+    ALIAS = "hard12-claude_code"
+    SUPPORTS_ATIF = False
+
+    @staticmethod
+    @override
+    def name() -> str:
+        return "claude-code-hard12"
+
+    @override
+    def get_version_command(self) -> str | None:
+        return NVM + "claude --version"
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        await self.ensure_system_dependencies(environment, ("curl", "bash", "coreutils"))
+        await self.exec_as_agent(environment, command=(
+            "set -euo pipefail; " + nvm_node_install_snippet() + " && "
+            f"npm i -g @anthropic-ai/claude-code@{CLAUDE_CODE_VERSION} && claude --version"))
+
+    @override
+    async def run(self, instruction: str, environment: BaseEnvironment,
+                  context: AgentContext) -> None:
+        env = {
+            "ANTHROPIC_BASE_URL": GATEWAY_BASE.removesuffix("/v1"),
+            "ANTHROPIC_AUTH_TOKEN": _gateway_key(self),
+            "ANTHROPIC_MODEL": self.ALIAS,
+            "ANTHROPIC_SMALL_FAST_MODEL": self.ALIAS,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.ALIAS,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": self.ALIAS,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": self.ALIAS,
+            "CLAUDE_CODE_SUBAGENT_MODEL": self.ALIAS,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
+            "DISABLE_TELEMETRY": "1",
+            "IS_SANDBOX": "1",
+            "CLAUDE_CONFIG_DIR": "/logs/agent/claude-home",
+        }
+        await self.exec_as_agent(environment, env=env, command=(
+            "mkdir -p /logs/agent/claude-home && " + NVM +
+            f"claude -p {shlex.quote(instruction)} --model {self.ALIAS} "
+            "--dangerously-skip-permissions --output-format stream-json --verbose "
+            "2>&1 </dev/null | stdbuf -oL tee /logs/agent/claude-code.jsonl; "
+            "chmod -R a+rX /logs/agent/claude-home /logs/agent/claude-code.jsonl 2>/dev/null; true"))
+
