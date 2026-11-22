@@ -67,8 +67,14 @@ def main():
     trials = collections.defaultdict(list)
     for run in runs:
         for trial_dir in sorted(glob.glob(os.path.join(run, "trial-*", "jobs", "*", "*__*"))):
-            if os.path.exists(os.path.join(trial_dir, "agent", "karox6.jsonl")):
-                arm, blocks = "karox6", karox_blocks(trial_dir)
+            log = os.path.join(trial_dir, "agent", "karox6.jsonl")
+            if os.path.exists(log):
+                try:  # karox6 or karox6b: the model alias of the run
+                    first = json.loads(open(log, encoding="utf-8", errors="replace").readline())
+                except ValueError:
+                    first = {}
+                arm = str(first.get("model") or "hard12-karox6").removeprefix("hard12-")
+                blocks = karox_blocks(trial_dir)
             elif os.path.exists(os.path.join(trial_dir, "agent", "dsh.jsonl")):
                 arm, blocks = "deepseek_harness", dsh_blocks(trial_dir)
             else:
@@ -78,7 +84,7 @@ def main():
             job = os.path.basename(os.path.dirname(trial_dir))
             hits = {name: sum(len(rx.findall(b)) for b in blocks) for name, rx in GROUPS.items()}
             trials[arm].append((job, len(blocks), sum(len(b) for b in blocks), hits))
-            if show and arm == "karox6":
+            if show and arm.startswith("karox6"):
                 for i, block in enumerate(blocks, 1):
                     for name in PROMPT_WORDS:
                         for m in GROUPS[name].finditer(block):

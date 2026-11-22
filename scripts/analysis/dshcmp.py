@@ -1,7 +1,7 @@
-"""KaroX vs DSH, trial by trial: when the first edit comes, how the change is checked, how
-the run ends, and what the diff holds.
+"""Two arms, trial by trial: when the first edit comes, how the change is checked, how the
+run ends, and what the diff holds. Default: karox6 against deepseek_harness.
 
-    python dshcmp.py <run dir> [<run dir> ...] [--tasks]
+    python dshcmp.py <run dir> [<run dir> ...] [--tasks] [--arms karox6,karox6b]
 
 A run is split at its first and its last edit of a source file: explore (before the first),
 work (first to last), tail (after the last). Steps come from each trial's agent log
@@ -9,7 +9,9 @@ work (first to last), tail (after the last). Steps come from each trial's agent 
 the diff from verifier/agent.diff, missed hidden tests from the verifier. Sizes are never
 taken from the logs: DSH's log cuts every tool result at 8k characters. DSH's one request
 for a session title is counted as a model call and left out of the phases.
-Prints group means; --tasks adds one line per task. No model calls, nothing is written.
+Prints group means; --tasks adds one line per task. `--arms a,b` names the two arms (a KaroX
+arm is told from its run_started model alias, so an A/B of two wheels reads the same way).
+No model calls, nothing is written.
 """
 import collections
 import glob
@@ -19,7 +21,7 @@ import re
 import statistics
 import sys
 
-ARMS = {"karox6": "karox6.jsonl", "deepseek_harness": "dsh.jsonl"}
+ARMS = ["karox6", "deepseek_harness"]  # the two arms compared; --arms replaces them
 EDIT_TOOLS = {"edit", "write", "multiedit", "apply_patch", "patch"}
 LOOK_TOOLS = {"read", "grep", "glob", "list", "ls"}
 TEST_RE = re.compile(
@@ -171,9 +173,23 @@ def step_rows(rows, steps):
     return rows
 
 
-def trial(agent_dir, arm, audit):
-    steps, final = (karox_steps if arm == "karox6" else dsh_steps)(
-        os.path.join(agent_dir, ARMS[arm]))
+def arm_of(agent_dir):
+    """(arm, log file) of a trial: DSH by its log, a KaroX arm by its model alias."""
+    if os.path.exists(os.path.join(agent_dir, "dsh.jsonl")):
+        return "deepseek_harness", "dsh.jsonl"
+    path = os.path.join(agent_dir, "karox6.jsonl")
+    if not os.path.exists(path):
+        return None, None
+    try:
+        first = json.loads(open(path, encoding="utf-8", errors="replace").readline())
+    except ValueError:
+        first = {}
+    return str(first.get("model") or "hard12-karox6").removeprefix("hard12-"), "karox6.jsonl"
+
+
+def trial(agent_dir, arm, log, audit):
+    steps, final = (dsh_steps if log == "dsh.jsonl" else karox_steps)(
+        os.path.join(agent_dir, log))
     trial_dir = os.path.dirname(agent_dir)
     job = os.path.basename(os.path.dirname(trial_dir))
     all_rows = audit.get((job, arm), [])
@@ -239,9 +255,10 @@ def load(run_dirs):
                     audit[(job, harness)].append(row)
             for rows in audit.values():
                 rows.sort(key=lambda r: r.get("start_epoch") or 0)
-            for arm, log in ARMS.items():
-                for path in sorted(glob.glob(os.path.join(chunk, "jobs", "*", "*", "agent", log))):
-                    trials.append(trial(os.path.dirname(path), arm, audit))
+            for agent_dir in sorted(glob.glob(os.path.join(chunk, "jobs", "*", "*", "agent"))):
+                arm, log = arm_of(agent_dir)
+                if arm in ARMS:
+                    trials.append(trial(agent_dir, arm, log, audit))
     return trials
 
 
@@ -270,7 +287,7 @@ FIELDS = [
 
 
 def table(title, pairs):
-    print(f"\n{title} ({len(pairs)} tasks; mean per task, KaroX / DSH, ratio)")
+    print(f"\n{title} ({len(pairs)} tasks; mean per task, {ARMS[0]} / {ARMS[1]}, ratio)")
     for key, label in FIELDS:
         cols = []
         for arm in ARMS:
@@ -285,6 +302,8 @@ def table(title, pairs):
 
 
 def main():
+    if "--arms" in sys.argv:
+        ARMS[:] = sys.argv.pop(sys.argv.index("--arms") + 1).split(",")
     by_task = collections.defaultdict(dict)
     for t in load([a for a in sys.argv[1:] if not a.startswith("--")]):
         by_task[t["task"]][t["arm"]] = t
@@ -293,7 +312,7 @@ def main():
     valid = [p for p in pairs if all(p[arm]["steps"] > 5 for arm in ARMS)]
     k_arm, d_arm = ARMS
     if "--tasks" in sys.argv:
-        print("task | solved K/D | calls | first edit step | steps after the last edit | "
+        print(f"task | solved {k_arm}/{d_arm} | calls | first edit step | tail steps | "
               "tests | probes | test-file edits | output k | diff: source files (+lines) | "
               "diff: test lines | hidden tests missed")
         for p in sorted(valid, key=lambda p: p[k_arm]["task"]):
@@ -314,12 +333,12 @@ def main():
         return p[arm]["reward"] == 1.0
 
     table("All valid tasks", valid)
-    table("Tasks DSH solved and KaroX did not",
+    table(f"Tasks {d_arm} solved and {k_arm} did not",
           [p for p in valid if solved(p, d_arm) and not solved(p, k_arm)])
-    table("Tasks KaroX solved and DSH did not",
+    table(f"Tasks {k_arm} solved and {d_arm} did not",
           [p for p in valid if solved(p, k_arm) and not solved(p, d_arm)])
     table("Tasks both solved", [p for p in valid if solved(p, k_arm) and solved(p, d_arm)])
-    table("KaroX's five dearest tasks (output tokens)",
+    table(f"The five dearest tasks of {k_arm} (output tokens)",
           sorted(valid, key=lambda p: -p[k_arm]["out"])[:5])
     table("Short tasks (both arms <= 60 calls)",
           [p for p in valid if max(p[arm]["calls"] for arm in ARMS) <= 60])
