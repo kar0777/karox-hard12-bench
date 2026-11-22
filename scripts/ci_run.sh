@@ -50,6 +50,10 @@ elif [ "${UPSTREAM:-wandb}" = orglm ]; then
   if [ "$LEFT" != "?" ] && python3 -c "import sys; sys.exit(0 if float('$LEFT') < float('$FLOOR') else 1)"; then
     echo "openrouter balance below the floor \$$FLOOR: not starting"; exit 1
   fi
+elif [ "${UPSTREAM:-wandb}" = orfree ]; then
+  # Free lane: particle-ai/particle-1:free on OpenRouter ($0; 20 req/min, 1000 req/day).
+  [ -n "${OPENROUTER_API_KEY:-}" ] || { echo "no OPENROUTER_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.orfree.yaml; PROF=inference_profile_hard12_orfree.json; KEYVAR=OPENROUTER_API_KEY; KEYVAL=$OPENROUTER_API_KEY
 elif [ "${UPSTREAM:-wandb}" = openrouter ]; then
   # Same model on fp8 providers with caching; spend is capped by the key's own limit.
   [ -n "${OPENROUTER_API_KEY:-}" ] || { echo "no OPENROUTER_API_KEY secret"; exit 1; }
