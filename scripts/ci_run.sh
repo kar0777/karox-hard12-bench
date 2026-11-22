@@ -50,6 +50,10 @@ elif [ "${UPSTREAM:-wandb}" = orglm ]; then
   if [ "$LEFT" != "?" ] && python3 -c "import sys; sys.exit(0 if float('$LEFT') < float('$FLOOR') else 1)"; then
     echo "openrouter balance below the floor \$$FLOOR: not starting"; exit 1
   fi
+elif [ "${UPSTREAM:-wandb}" = anthropic ]; then
+  # Anthropic lane: claude-haiku-5-5 on the user's API credit (a different model: own baselines).
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "no ANTHROPIC_API_KEY secret"; exit 1; }
+  CFG=litellm.hard12.anthropic.yaml; PROF=inference_profile_hard12_anthropic.json; KEYVAR=ANTHROPIC_API_KEY; KEYVAL=$ANTHROPIC_API_KEY
 elif [ "${UPSTREAM:-wandb}" = orfree ]; then
   # Free lane: particle-ai/particle-1:free on OpenRouter ($0; 20 req/min, 1000 req/day).
   [ -n "${OPENROUTER_API_KEY:-}" ] || { echo "no OPENROUTER_API_KEY secret"; exit 1; }
@@ -74,7 +78,7 @@ fi
     nohup litellm --config "$CFG" --host 0.0.0.0 --port 4100 --num_workers 1 \
     >"$WORK/logs/litellm.log" 2>&1 &
 )
-unset WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 DAHL_API_KEY_3 DAHL_API_KEY_4 DAHL_API_KEY_5 DAHL_API_KEY_6 DAHL_API_KEY_7 DAHL_API_KEY_8 DAHL_API_KEY_9 DAHL_API_KEY_10 DAHL_API_KEY_11 DAHL_API_KEY_12 DAHL_API_KEY_13 DAHL_API_KEY_14 DAHL_API_KEY_15 DAHL_API_KEY_16 DAHL_API_KEY_17 DAHL_API_KEY_18 DAHL_API_KEY_19 DAHL_API_KEY_20 DAHL_API_KEY_21 DAHL_API_KEY_22 DAHL_API_KEY_23 DAHL_API_KEY_24 DAHL_API_KEY_25 DAHL_API_KEY_26 DAHL_API_KEY_27 DAHL_API_KEY_28 DAHL_API_KEY_29 DAHL_API_KEY_30 DAHL_API_KEY_31 DAHL_API_KEY_32 DAHL_API_KEY_33 DAHL_API_KEY_34 DAHL_API_KEY_35 DAHL_API_KEY_36 DAHL_API_KEY_37 DAHL_API_KEY_38 DAHL_API_KEY_39 DAHL_API_KEY_40 KEYVAL EXTRA
+unset ANTHROPIC_API_KEY WANDB_API_KEY SYNTHETIC_API_KEY RUNCRATE_API_KEY REFORMBOSS_API_KEY FREEINFERENCE_API_KEY OPENROUTER_API_KEY DAHL_API_KEY DAHL_API_KEY_2 DAHL_API_KEY_3 DAHL_API_KEY_4 DAHL_API_KEY_5 DAHL_API_KEY_6 DAHL_API_KEY_7 DAHL_API_KEY_8 DAHL_API_KEY_9 DAHL_API_KEY_10 DAHL_API_KEY_11 DAHL_API_KEY_12 DAHL_API_KEY_13 DAHL_API_KEY_14 DAHL_API_KEY_15 DAHL_API_KEY_16 DAHL_API_KEY_17 DAHL_API_KEY_18 DAHL_API_KEY_19 DAHL_API_KEY_20 DAHL_API_KEY_21 DAHL_API_KEY_22 DAHL_API_KEY_23 DAHL_API_KEY_24 DAHL_API_KEY_25 DAHL_API_KEY_26 DAHL_API_KEY_27 DAHL_API_KEY_28 DAHL_API_KEY_29 DAHL_API_KEY_30 DAHL_API_KEY_31 DAHL_API_KEY_32 DAHL_API_KEY_33 DAHL_API_KEY_34 DAHL_API_KEY_35 DAHL_API_KEY_36 DAHL_API_KEY_37 DAHL_API_KEY_38 DAHL_API_KEY_39 DAHL_API_KEY_40 KEYVAL EXTRA
 (cd "$ROOT" && nohup python3 gateway/race_unwrap.py 4110:127.0.0.1:4100 >"$WORK/logs/unwrap.log" 2>&1 &)
 health() { python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:4100/health/liveliness',timeout=5)" 2>/dev/null; }
 for _ in $(seq 1 120); do health && break; sleep 2; done

@@ -18,7 +18,7 @@ on:
         description: "data/sets/<name>.txt (empty = HARD12 night_tasks)"
         default: ""
       upstream:
-        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | orfree (particle-1:free on OpenRouter, $0, 20 req/min) | dahl2 (Dahl GLM, every DAHL_API_KEY[_2.._40] secret set: 3 parallel requests per key)"
+        description: "model provider: wandb | synthetic | runcrate | reformboss (same model DSV4.1F-1017; reformboss: parallel <= 3) | openrouter (same model, fp8 providers, cached) | freeinference (D-026: GLM-5.3-Flash, a different model, dev lane only) | dahl (GLM-5.3-Flash dev lane, 3 concurrent: parallel <= 3) | orglm (GLM-5.3-Flash on OpenRouter, small balance) | orfree (particle-1:free on OpenRouter, $0, 20 req/min) | dahl2 (Dahl GLM, every DAHL_API_KEY[_2.._40] secret set: 3 parallel requests per key) | anthropic (claude-haiku-5-5, user API credit, a different model)"
         default: "wandb"
       parallel:
         description: "max parallel jobs"
@@ -87,6 +87,7 @@ jobs:
           REFORMBOSS_API_KEY: ${{ secrets.REFORMBOSS_API_KEY }}
           FREEINFERENCE_API_KEY: ${{ secrets.FREEINFERENCE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DAHL_API_KEY: ${{ secrets.DAHL_API_KEY }}
           DAHL_API_KEY_2: ${{ secrets.DAHL_API_KEY_2 }}
           DAHL_API_KEY_3: ${{ secrets.DAHL_API_KEY_3 }}
