@@ -106,7 +106,9 @@ def main() -> None:
                 continue
             c = u.get(a, collections.Counter())
             refused = (c["calls"] - c["ok"]) / c["calls"] if c["calls"] else 0.0
-            if t[a]["provider_end"]:
+            if t[a]["reward"] < 1 and not c["calls"]:  # never reached the model: setup/infra
+                void.append(f"{a}:no-calls")
+            elif t[a]["provider_end"]:
                 void.append(f"{a}:provider-end")
             elif refused > 0.5 and t[a]["timed_out"]:
                 void.append(f"{a}:waited+timeout")
