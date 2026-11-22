@@ -149,6 +149,93 @@ def responses_request_for_chat_upstream(data: dict) -> list[str]:
     return changed
 
 
+# Fields of a Responses request that LiteLLM's bridge passes on to the chat upstream as they
+# are. ReformBoss answers such a request with 400 invalid_parameter_error (devc2).
+CODEX_ONLY_FIELDS = ("client_metadata", "prompt_cache_key", "parallel_tool_calls", "store",
+                     "include", "previous_response_id", "truncation", "text", "service_tier",
+                     "safety_identifier", "user")
+_TEXT_PARTS = ("text", "input_text", "output_text")
+
+
+def _as_text(content: Any) -> Any:
+    """A list of text parts as one string; any other content is left as it is."""
+    if not isinstance(content, list):
+        return content
+    texts = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") not in _TEXT_PARTS:
+            return content
+        if part.get("text"):
+            texts.append(str(part["text"]))
+    return "\n\n".join(texts)
+
+
+def chat_request_for_plain_upstream(kwargs: dict) -> list[str]:
+    """The `codex` arm's request after LiteLLM bridged it from the Responses API, made
+    into one a plain chat-completions upstream accepts. Seen with Codex CLI 0.171.0
+    against a strict local upstream: the bridge forwards Responses-only fields; gives
+    content as a list of text parts; sends two system messages; and splits one reply into
+    an assistant message with the tool calls and another with the text, which then sits
+    between a call and its result. Here those fields are dropped, text parts become a
+    string, system messages become one, the pieces of one reply become one assistant
+    message and empty assistant messages go. Returns what was changed."""
+    changed: list[str] = []
+    for holder, label in ((kwargs, ""), (kwargs.get("extra_body"), "extra_body.")):
+        if isinstance(holder, dict):
+            for field in CODEX_ONLY_FIELDS:
+                if field in holder:
+                    holder.pop(field)
+                    changed.append(f"-{label}{field}")
+    if kwargs.get("tool_choice") == "auto":  # the default; the other arms do not send it
+        kwargs.pop("tool_choice")
+        changed.append("-tool_choice")
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list):
+        return changed
+    out: list[Any] = []
+    merged = dropped = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        m = dict(message)
+        if m.get("role") == "developer":
+            m["role"] = "system"
+        if "content" in m:
+            m["content"] = _as_text(m["content"])
+        role, text = m.get("role"), m.get("content")
+        prev = out[-1] if out and isinstance(out[-1], dict) else None
+        same = prev is not None and prev.get("role") == role
+        plain = isinstance(text or "", str) and (prev is None or isinstance(prev.get("content") or "", str))
+        if role == "assistant" and not text and not m.get("tool_calls"):
+            dropped += 1
+            continue
+        if same and plain and role in ("system", "assistant"):
+            both = [t for t in (prev.get("content"), text) if t]
+            prev["content"] = "\n\n".join(both) if both else prev.get("content")
+            calls = [*(prev.get("tool_calls") or []), *(m.get("tool_calls") or [])]
+            if calls:
+                prev["tool_calls"] = calls
+            merged += 1
+            continue
+        out.append(m)
+    kwargs["messages"] = out
+    if merged or dropped:
+        changed.append(f"messages: {merged} merged, {dropped} empty dropped")
+    return changed
+
+
+def _deployment_alias(kwargs: dict) -> Optional[str]:
+    """The public alias of the request a deployment hook sees (bridged calls carry it in
+    litellm_metadata, with metadata None)."""
+    for key in ("litellm_metadata", "metadata"):
+        meta = kwargs.get(key)
+        if isinstance(meta, dict) and meta.get("model_group"):
+            return str(meta["model_group"])
+    group = kwargs.get("model_group")
+    return str(group) if group else None
+
+
 def write_record(record: dict) -> None:
     path = audit_dir() / "audit.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,7 +319,13 @@ class RaceAudit(CustomLogger):
         return data
 
     async def async_pre_call_deployment_hook(self, kwargs: dict, call_type):  # noqa: ANN001
-        return enforce_profile(kwargs)
+        kwargs = enforce_profile(kwargs)
+        try:  # the codex arm only; every other arm's request leaves as it came
+            if ALIASES.get(_deployment_alias(kwargs) or "") == "codex":
+                chat_request_for_plain_upstream(kwargs)
+        except Exception:  # noqa: BLE001 - a fault of this adapter must not refuse a request
+            pass
+        return kwargs
 
     def _record(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any, status: str) -> None:
         slo = kwargs.get("standard_logging_object") or {}
