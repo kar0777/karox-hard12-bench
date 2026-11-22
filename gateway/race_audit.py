@@ -189,6 +189,10 @@ def chat_request_for_plain_upstream(kwargs: dict) -> list[str]:
     if kwargs.get("tool_choice") == "auto":  # the default; the other arms do not send it
         kwargs.pop("tool_choice")
         changed.append("-tool_choice")
+    for tool in kwargs.get("tools") or []:  # the bridge adds "strict": false to every function
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("strict") is False:
+            function.pop("strict")
     messages = kwargs.get("messages")
     if not isinstance(messages, list):
         return changed
