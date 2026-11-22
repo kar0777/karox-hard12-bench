@@ -21,5 +21,9 @@ No model calls, nothing is written.
 | `ends.py` | how each KaroX run ended (status, steps, cuts, notices, reason) |
 | `errs.py` | tool errors and tool time in KaroX runs |
 | `lat.py` | latency percentiles and failed calls per arm |
+| `thirds.py` | where in a run the output tokens go: thirds of each run's calls, per arm |
+| `requests.py` | requests per task and arm, refused ones included (a provider's daily allowance) |
+| `karox_ends.py` | one line per KaroX trial: ending, steps, usage, tools, retries and notices |
+| `compactions.py` | per KaroX trial: each compaction, the request after it, peak context |
 
 `stepcmp.py`, `buckets.py`: run from this directory (buckets imports stepcmp's parsers).
