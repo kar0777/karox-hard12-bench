@@ -27,5 +27,6 @@ No model calls, nothing is written.
 | `compactions.py` | per KaroX trial: each compaction, the request after it, peak context |
 | `dshcmp.py` | KaroX vs DSH per task: explore / work / tail around the first and last source edit, tests, probes, test-file edits, diff, missed hidden tests |
 | `scopewords.py` | how often an arm's reasoning argues about the scope of its fix (the prompt's own words and the general ones) |
+| `scope_probe_read.py` | the scope probe (`probes/scope1`, built by `scripts/build_scope_cases.py`): the model's next step at a recorded scope decision, old prompt against new |
 
 `stepcmp.py`, `buckets.py`: run from this directory (buckets imports stepcmp's parsers).

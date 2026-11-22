@@ -6,7 +6,7 @@ Reads CASES_DIR/cases.json and CASES_DIR/<case>/request.json.gz (an OpenAI chat 
 frozen sampling profile is enforced (same as the hard12 gateway). Key only from
 REFORMBOSS_API_KEY; it is never printed. A request that was sent and failed is not
 retried (a paid call may have run); only 429 refusals are retried. Output per sample:
-tool call names, text, finish_reason, usage, seconds.
+tool call names, text, reasoning, finish_reason, usage, seconds.
 """
 
 import concurrent.futures
@@ -93,6 +93,7 @@ def main():
             rec["tool_calls"] = [c["function"]["name"] for c in msg.get("tool_calls") or []]
             rec["tool_args"] = [c["function"]["arguments"][:400] for c in msg.get("tool_calls") or []]
             rec["content"] = (msg.get("content") or "")[:3000]
+            rec["reasoning"] = (msg.get("reasoning_content") or msg.get("reasoning") or "")[:8000]
             rec["finish_reason"] = out["choices"][0].get("finish_reason")
             rec["usage"] = out.get("usage")
         with open(path, "w", encoding="utf-8") as f:
