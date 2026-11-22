@@ -93,7 +93,8 @@ model_list:
       supports_reasoning: true
       supports_vision: false
   # Claude Code sets its own cache breakpoints: no injection (max 4 per request).
-  - model_name: hard12-claude_code
+  # Served under the real model id: Claude Code picks prompts/tools/thinking by model name.
+  - model_name: claude-haiku-5-5
     litellm_params:
       model: anthropic/claude-haiku-5-5
       api_key: os.environ/ANTHROPIC_API_KEY

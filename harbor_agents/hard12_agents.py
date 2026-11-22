@@ -258,7 +258,7 @@ class ClaudeCode(BaseInstalledAgent):
     gateway on the Anthropic Messages protocol (litellm /v1/messages, no format
     translation). Every model role (main, small/fast) uses the one race alias."""
 
-    ALIAS = "hard12-claude_code"
+    ALIAS = "claude-haiku-5-5"  # the real id: Claude Code tunes itself by model name
     SUPPORTS_ATIF = False
 
     @staticmethod
