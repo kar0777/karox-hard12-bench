@@ -47,6 +47,7 @@ PY = VENV + "/bin/python"
 HOME = "/logs/agent/karox6"
 EVENTS = "/logs/agent/karox6.jsonl"
 STDERR = "/logs/agent/karox6.stderr.txt"
+LOGS = "/logs/agent"
 
 #: A venv for KaroX only (the task's own python stays untouched). KaroX 6 needs
 #: Python >= 3.12: older images get a standalone 3.12 through uv. Images without
@@ -76,6 +77,16 @@ fi
 """
 
 
+INTERVIEW = (
+    "The task is over. Do not call any tools now; answer in plain text only. This is "
+    "feedback for the developers of the agent harness you just worked in (KaroX), not a "
+    "grade. Briefly: 1) Which tools did you use most, and why those rather than the other "
+    "available tools (read, edit, write, grep, glob, bash)? 2) What in the tools, their "
+    "descriptions or the instructions slowed you down, confused you or was missing? "
+    "3) Which single change to the harness would have helped you most?"
+)
+
+
 class KaroX6Options(InstalledAgentOptions):
     wheel_path: Annotated[str | None, Cli("--wheel-path")] = Field(
         default=None, description="Host path of the karox6 wheel to install in the container."
@@ -100,6 +111,12 @@ class KaroX6Options(InstalledAgentOptions):
     )
     extra_flags: Annotated[str | None, Cli("--extra-flags")] = Field(
         default=None, description="Extra `karox run` flags for A/B arms (shell words)."
+    )
+    interview: Annotated[bool, Cli("--interview")] = Field(
+        default=False,
+        description="After the run, ask the model (same session, own gateway alias so the arm's "
+        "accounting stays clean) why it chose its tools and what KaroX lacked. The workspace "
+        "is snapshotted first and restored if the interview changed anything.",
     )
 
 
@@ -182,6 +199,35 @@ class KaroX6(BaseInstalledAgent):
             raise ValueError(f"{KEY_ENV} missing: pass it via agents[].env")
         await self.exec_as_agent(
             environment, env={KEY_ENV: key}, command=self.build_command(instruction)
+        )
+        options: KaroX6Options = self.options  # type: ignore[assignment]
+        if options.interview:
+            await self.exec_as_agent(
+                environment, env={KEY_ENV: key}, command=self.interview_command()
+            )
+
+    def interview_command(self) -> str:
+        """One resumed turn with a neutral feedback question; never changes the result:
+        the task directory is copied first and put back if the turn touched it."""
+        options: KaroX6Options = self.options  # type: ignore[assignment]
+        task_dir = shlex.quote(options.task_dir or "/app")
+        flags = [
+            "--json", "--provider", "openai-chat", "--base-url", GATEWAY_BASE,
+            "--api-key-env", KEY_ENV, "--model", "hard12-interview",
+            "--context-window", str(int(options.context_window)),
+            "--max-output-tokens", str(int(options.max_output_tokens)),
+            "--home", HOME, "--cwd", task_dir, "--approve-dangerous", "deny",
+            "--resume", "last", "--max-steps", "2", "--max-seconds", "90",
+        ]
+        snap = "/tmp/karox6-interview-snapshot"
+        return (
+            f"rm -rf {snap} && cp -a {task_dir} {snap} && cd {task_dir} && "
+            f"timeout 100 {PY} -m karox6 run {' '.join(flags)} -- {shlex.quote(INTERVIEW)} "
+            f"</dev/null 2>>{STDERR} > {LOGS}/interview.jsonl; "
+            f"if ! diff -rq {snap} {task_dir} >/dev/null 2>&1; then "
+            f"echo restored > {LOGS}/interview-restored.txt; "
+            f"find {task_dir} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} + && "
+            f"cp -a {snap}/. {task_dir}/; fi; rm -rf {snap}; true"
         )
 
     @override

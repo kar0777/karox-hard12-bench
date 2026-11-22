@@ -107,6 +107,25 @@ model_list:
       supports_parallel_function_calling: true
       supports_reasoning: true
       supports_vision: false
+  # Post-run interview turns (own alias: kept out of the arms' accounting).
+  - model_name: hard12-interview
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
 
 litellm_settings:
   callbacks: race_audit.proxy_handler_instance

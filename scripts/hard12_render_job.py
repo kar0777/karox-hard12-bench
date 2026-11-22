@@ -18,6 +18,10 @@ _K6 = sorted((RACE / "wheels").glob("karox6-*.whl"),
              key=lambda w: [int(n) for n in re.findall(r"[0-9]+", w.name)])  # dev13 > dev9
 WHEEL6 = os.environ.get("HARD12_KAROX6_WHEEL") or (str(_K6[-1]) if _K6 else "")
 WRAPUP = 50
+# Anthropic lane: a post-run feedback turn per KaroX trial (karox6_agent.interview_command),
+# with its own time slice taken from both KaroX arms alike.
+INTERVIEW = os.environ.get("UPSTREAM") == "anthropic"
+INTERVIEW_S = 120
 
 name, task_path, out = sys.argv[1:4]
 task = RACE / name if "/" in name else RACE / "hard12_tasks" / name
@@ -40,7 +44,8 @@ job = {
         # KaroX 6 gets only the task directory: no verification command, no hidden checks.
         {"name": "karox6_agent:KaroX6", "model_name": "hard12-karox6",
          "kwargs": {"wheel_path": WHEEL6, "model_alias": "hard12-karox6",
-                    "max_seconds": timeout - WRAPUP, "task_dir": opts.get("task_dir", "/app"),
+                    "max_seconds": timeout - WRAPUP - (INTERVIEW_S if INTERVIEW else 0),
+                    "task_dir": opts.get("task_dir", "/app"), "interview": INTERVIEW,
                     **({"extra_flags": os.environ["HARD12_KAROX6_FLAGS"]}
                        if os.environ.get("HARD12_KAROX6_FLAGS") else {})},
          "env": key_env},
@@ -48,7 +53,8 @@ job = {
         {"name": "karox6_agent:KaroX6B", "model_name": "hard12-karox6b",
          "kwargs": {"wheel_path": os.environ.get("HARD12_KAROX6B_WHEEL") or WHEEL6,
                     "model_alias": "hard12-karox6b",
-                    "max_seconds": timeout - WRAPUP, "task_dir": opts.get("task_dir", "/app"),
+                    "max_seconds": timeout - WRAPUP - (INTERVIEW_S if INTERVIEW else 0),
+                    "task_dir": opts.get("task_dir", "/app"), "interview": INTERVIEW,
                     **({"extra_flags": os.environ["HARD12_KAROX6B_FLAGS"]}
                        if os.environ.get("HARD12_KAROX6B_FLAGS") else {})},
          "env": key_env},

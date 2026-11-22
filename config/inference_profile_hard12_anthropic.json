@@ -24,7 +24,8 @@
     "hard12-opencode_v2": "opencode_v2",
     "hard12-deepseek_harness": "deepseek_harness",
     "hard12-karox6b": "karox6b",
-    "claude-haiku-5-5": "claude_code"
+    "claude-haiku-5-5": "claude_code",
+    "hard12-interview": "interview"
   },
   "evidence": "Anthropic lane: claude-haiku-5-5 on the user's API credit; model defaults (adaptive thinking, effort medium); sampling params stripped (non-default values are rejected). Separate model: its own baselines only."
 }
