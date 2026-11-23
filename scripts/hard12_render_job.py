@@ -20,7 +20,7 @@ WHEEL6 = os.environ.get("HARD12_KAROX6_WHEEL") or (str(_K6[-1]) if _K6 else "")
 WRAPUP = 50
 # Anthropic lane: a post-run feedback turn per KaroX trial (karox6_agent.interview_command),
 # with its own time slice taken from both KaroX arms alike.
-INTERVIEW = os.environ.get("UPSTREAM") == "anthropic"
+INTERVIEW = os.environ.get("UPSTREAM") in ("anthropic", "tokenharbor")
 INTERVIEW_S = 120
 
 name, task_path, out = sys.argv[1:4]

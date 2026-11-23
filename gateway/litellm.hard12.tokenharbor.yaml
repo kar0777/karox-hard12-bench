@@ -1,0 +1,154 @@
+# HARD12 gateway (Token Harbor lane): claude-haiku-5.5 through tokenharbor.ai (Anthropic /v1/messages),
+# covered by the user's Agent Pass ($2.50/week window; balance $0, so overrun fails instead of billing).
+# Same model and caching as the anthropic lane. Key only from TOKENHARBOR_API_KEY.
+model_list:
+  - model_name: hard12-karox5
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox6
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-karox6b
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-opencode_v2
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  - model_name: hard12-deepseek_harness
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  # Claude Code sets its own cache breakpoints: no injection (max 4 per request).
+  # Served under the real model id: Claude Code picks prompts/tools/thinking by model name.
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+  # Post-run interview turns (own alias: kept out of the arms' accounting).
+  - model_name: hard12-interview
+    litellm_params:
+      model: anthropic/claude-haiku-5.5
+      api_key: os.environ/TOKENHARBOR_API_KEY
+      api_base: https://tokenharbor.ai
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      timeout: 900
+      stream_timeout: 900
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 32768
+      supports_function_calling: true
+      supports_parallel_function_calling: true
+      supports_reasoning: true
+      supports_vision: false
+
+litellm_settings:
+  callbacks: race_audit.proxy_handler_instance
+  drop_params: false
+  num_retries: 12
+  request_timeout: 900
+  turn_off_message_logging: true
+
+router_settings:
+  num_retries: 12
+  retry_after: 1
+  fallbacks: []
+  context_window_fallbacks: []
+  content_policy_fallbacks: []
+  enable_pre_call_checks: false
+
+general_settings:
+  master_key: os.environ/HARNESS_RACE_GATEWAY_KEY
+  disable_spend_logs: true
