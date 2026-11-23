@@ -7,19 +7,12 @@ jobs:
   list:
     runs-on: ubuntu-latest
     steps:
-      - name: List Token Harbor models (ids and pricing only)
+      - name: Enable free models (user consent 2026-11-23) and test one free call
         env:
           TH_KEY: ${{ secrets.TOKENHARBOR_API_KEY }}
         run: |
-          curl -sS -H "Authorization: Bearer $TH_KEY" https://tokenharbor.ai/v1/models -o models.json
-          python3 - <<'PY'
-          import json
-          d = json.load(open("models.json"))
-          items = d.get("data", d if isinstance(d, list) else [])
-          print("count", len(items))
-          for m in items:
-              keep = {k: m.get(k) for k in ("id", "pricing", "context_length", "owned_by") if k in m}
-              print(json.dumps(keep, ensure_ascii=False)[:300])
-          if not items:
-              print(json.dumps(d)[:500])
-          PY
+          echo "privacy:"; curl -sS -X POST -H "Authorization: Bearer $TH_KEY" -H "Content-Type: application/json" \
+            -d '{"free_models_enabled": true}' https://tokenharbor.ai/api/me/privacy | head -c 400; echo
+          echo "free call:"; curl -sS -H "Authorization: Bearer $TH_KEY" -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-v4.1-flash:free","messages":[{"role":"user","content":"Say OK"}],"max_tokens":5}' \
+            https://tokenharbor.ai/v1/chat/completions | head -c 400; echo
