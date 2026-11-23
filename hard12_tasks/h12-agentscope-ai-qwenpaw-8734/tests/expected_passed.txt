@@ -1,0 +1,1 @@
+tests/unit/plugins/test_legacy_cloudpaw_compat.py::test_legacy_cloudpaw_json_io_pins_utf8_encoding

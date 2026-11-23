@@ -1,0 +1,13 @@
+diff --git a/test/integration/command/export_pkg_test.py b/test/integration/command/export_pkg_test.py
+index edd936e6f33..6f8d88715cd 100644
+--- a/test/integration/command/export_pkg_test.py
++++ b/test/integration/command/export_pkg_test.py
+@@ -47,7 +47,7 @@ def test_package_folder_errors(self):
+         client = TestClient()
+         client.save({CONANFILE: GenConanfile()})
+         client.run("export-pkg --name=hello --version=0.1 --user=lasote --channel=stable")
+-        assert "package(): WARN: No files in this package!" in client.out
++        assert "package(): No files in this package!" in client.out
+ 
+     def test_options(self):
+         # https://github.com/conan-io/conan/issues/2242

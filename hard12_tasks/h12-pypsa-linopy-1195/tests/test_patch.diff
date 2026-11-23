@@ -1,0 +1,207 @@
+diff --git a/test/test_quadratic_expression.py b/test/test_quadratic_expression.py
+index 2a61e4f41..c241804d0 100644
+--- a/test/test_quadratic_expression.py
++++ b/test/test_quadratic_expression.py
+@@ -193,6 +193,27 @@ def test_quadratic_expression_rsubtraction(x: Variable, y: Variable) -> None:
+     assert expr2.nterm == 1
+ 
+ 
++@pytest.mark.parametrize("method", ["add", "sub"])
++@pytest.mark.parametrize("linear_first", [True, False])
++def test_mixing_linear_and_quadratic_with_join(
++    x: Variable, y: Variable, method: str, linear_first: bool
++) -> None:
++    lin, quad = 2 * x, x * y
++    a, b = (lin, quad) if linear_first else (quad, lin)
++    res = getattr(a, method)(b, join="outer")
++    want = getattr(a, f"__{method}__")(b)
++    assert isinstance(res, QuadraticExpression)
++    cols = list(res.flat.columns)
++    pd.testing.assert_frame_equal(
++        res.flat.sort_values(cols, ignore_index=True),
++        want.flat.sort_values(cols, ignore_index=True),
++    )
++
++    left = getattr(a, method)(b.sel(dim_0=[0]), join="left")
++    assert isinstance(left, QuadraticExpression)
++    assert list(left.indexes["dim_0"]) == [0, 1]
++
++
+ def test_quadratic_expression_sum(x: Variable, y: Variable) -> None:
+     base_expr = x * y + x + 5
+ 
+diff --git a/test/test_spec_builder.py b/test/test_spec_builder.py
+index f42404e49..9a9a0e3c9 100644
+--- a/test/test_spec_builder.py
++++ b/test/test_spec_builder.py
+@@ -51,6 +51,7 @@
+     assert_conequal,
+     assert_linequal,
+     assert_model_equal,
++    assert_quadequal,
+     synthetic_sources,
+ )
+ 
+@@ -1272,24 +1273,35 @@ def test_an_objective_is_quadratic_only_where_the_data_keeps_a_product(
+     assert isinstance(m.objective.expression, linopy.QuadraticExpression) is quadratic
+ 
+ 
+-@pytest.mark.parametrize("product", ["x * y * k", "k * (x * y)"])
+-def test_a_product_the_data_zeroes_keeps_a_sparse_objective_sparse(
+-    backend: Model, product: str
++@pytest.mark.parametrize("product", ["k * x * y", "x * y * k", "k * (x * y)"])
++@pytest.mark.parametrize(
++    ("k", "quadratic"),
++    [
++        pytest.param([0.0, 0.0, 0.0], False, id="zeroed"),
++        pytest.param([0.0, 1.0, 2.0], True, id="kept"),
++    ],
++)
++def test_a_sparse_objective_builds_without_a_densify_notice(
++    backend: Model, product: str, k: list[float], quadratic: bool
+ ) -> None:
+-    """A product the data zeroes stayed a quadratic, which has no sparse backing, so every term it met densified."""
++    """A linear term met a quadratic one, which has no sparse backing, and warned of densifying."""
+     spec = with_(
+         QUADRATIC_SPEC,
+         constraints={"cap": {"dims": ["t"], "expression": "x + y <= 5"}},
+         objective={"sense": "maximize", "expression": f"sum({product} + x, over=t)"},
+     )
+-    data = {"t": T, "k": xr.DataArray([0.0, 0.0, 0.0], coords=[T])}
++    data = {"t": T, "k": xr.DataArray(k, coords=[T])}
+     with warnings.catch_warnings():
+         warnings.simplefilter("error", linopy.PerformanceWarning)
+         m = Model.from_spec(spec, data, sparse=backend.sparse)
+     objective = m.objective.expression
+-    assert isinstance(objective, linopy.LinearExpression)
+-    assert objective.is_sparse == backend.sparse
+-    assert_linequal(objective, Model.from_spec(spec, data).objective.expression)
++    want = Model.from_spec(spec, data).objective.expression
++    assert isinstance(objective, linopy.QuadraticExpression) is quadratic
++    if quadratic:
++        assert_quadequal(objective, want)
++    else:
++        assert objective.is_sparse == backend.sparse
++        assert_linequal(objective, want)
+ 
+ 
+ def test_a_named_expression_reading_a_dual_is_not_built() -> None:
+diff --git a/test/test_store_conformance.py b/test/test_store_conformance.py
+index a935d900e..cc155390a 100644
+--- a/test/test_store_conformance.py
++++ b/test/test_store_conformance.py
+@@ -1,7 +1,8 @@
+ """
+ Conformance of the dense and the sparse (CSR) backend: every operation either
+-keeps the sparse backing or names why it falls back to dense, and both
+-backends agree on the result.
++keeps the sparse backing, names why it falls back to dense, or converts to a
++quadratic expression, which has no sparse backing. Both backends agree on the
++result.
+ """
+ 
+ from __future__ import annotations
+@@ -27,9 +28,9 @@
+ from linopy.testing import assert_equivalent, assert_quadequal
+ 
+ KEPT = "kept"
++CONVERTED = "converted"
+ ELLIPSIS: Any = ...
+ DATA_READ = "data(read)"
+-QUADRATIC = "mul(quadratic product)"
+ RENAME = "rename(non-dimension names)"
+ DROP_VARS = "drop_vars(dimension or data variable)"
+ ASSIGNMENT = "assignment(const)"
+@@ -353,7 +354,7 @@ class Case(NamedTuple):
+     "merge-factor-dim": Case(
+         grid,
+         lambda e: linopy.merge([e, e], dim="_factor", cls=QuadraticExpression),
+-        "merge(into a QuadraticExpression)",
++        CONVERTED,
+     ),
+     "to-constraint-scalar": Case(grid, lambda e: e.to_constraint("<=", 1), KEPT),
+     "to-constraint-array": Case(grid, lambda e: e.to_constraint(">=", OVER_A), KEPT),
+@@ -415,7 +416,9 @@ class Case(NamedTuple):
+     ),
+     "coeffs": Case(grid, lambda e: e.coeffs.sum(TERM_DIM), DATA_READ),
+     "vars": Case(grid, lambda e: e.vars.max(TERM_DIM), DATA_READ),
+-    "to-quadexpr": Case(grid, lambda e: e.to_quadexpr(), DATA_READ),
++    "to-quadexpr": Case(grid, lambda e: e.to_quadexpr(), CONVERTED),
++    "add-quadratic": Case(grid, lambda e: e + var(e, "y") * var(e, "y"), CONVERTED),
++    "quadratic-sub": Case(grid, lambda e: var(e, "y") * var(e, "y") - e, CONVERTED),
+     "simplify": Case(grid, lambda e: e.simplify(), DATA_READ),
+     "densify-terms": Case(grid, lambda e: (e + 0 * e).densify_terms(), KEPT),
+     "reset-const": Case(grid, lambda e: (e + 1).where(COND).reset_const(), KEPT),
+@@ -452,8 +455,8 @@ class Case(NamedTuple):
+     "cumsum": Case(grid, lambda e: e.cumsum("a"), DATA_READ),
+     "rolling": Case(grid, lambda e: e.rolling(a=2).sum(), DATA_READ),
+     "diff": Case(grid, lambda e: e.diff("a"), KEPT),
+-    "mul-variable": Case(grid, lambda e: e * var(e, "y"), QUADRATIC),
+-    "pow": Case(single, lambda e: e**2, QUADRATIC),
++    "mul-variable": Case(grid, lambda e: e * var(e, "y"), CONVERTED),
++    "pow": Case(single, lambda e: e**2, CONVERTED),
+     "to-polars": Case(
+         grid, lambda e: frame(pd.DataFrame(e.to_polars().to_dict())), KEPT
+     ),
+@@ -526,7 +529,7 @@ def test_operation(backend: Model, case: str) -> None:
+     want = op(build(Model()))
+     expr = build(backend)
+     assert expr.is_sparse == backend.sparse
+-    if not backend.sparse or expected == KEPT:
++    if not backend.sparse or expected in (KEPT, CONVERTED):
+         with no_densify():
+             res = op(expr)
+     else:
+@@ -537,6 +540,8 @@ def test_operation(backend: Model, case: str) -> None:
+     assert_same(res, want)
+     if backend.sparse and expected not in (ASSIGNMENT, ASSIGN_COEFFS):
+         assert expr.is_sparse
++    if expected == CONVERTED:
++        assert isinstance(res, QuadraticExpression)
+     if backend.sparse and expected in (KEPT, SPARSIFIED):
+         if isinstance(res, LinearExpression):
+             assert res.is_sparse
+@@ -655,21 +660,14 @@ def test_sum_over_missing_dim_raises_without_densifying(
+ 
+ 
+ def _squared(sparse: bool) -> LinearExpression | QuadraticExpression:
+-    m = Model(sparse=sparse)
+-    x = m.add_variables(coords=[A], name="x")
+-    with warnings.catch_warnings():
+-        warnings.simplefilter("ignore", linopy.PerformanceWarning)
+-        return x * x
++    x = Model(sparse=sparse).add_variables(coords=[A], name="x")
++    return x * x
+ 
+ 
+-def test_quadratic_groupby_sum_densifies() -> None:
++def test_quadratic_groupby_sum_is_dense_without_a_notice() -> None:
+     group = pd.Series(SERIES)
+     with no_densify():
+         dense = _squared(False).groupby(group).sum()
+-    with pytest.warns(
+-        linopy.PerformanceWarning,
+-        match=re.escape("groupby.sum(grouper without a sparse path)"),
+-    ):
+         sparse = _squared(True).groupby(group).sum()
+ 
+     assert isinstance(dense, QuadraticExpression)
+@@ -682,6 +680,18 @@ def test_quadratic_groupby_sum_densifies() -> None:
+     assert set(labels[1][labels[1] >= 0].tolist()) == {1}
+ 
+ 
++def test_dense_linear_groupby_without_a_sparse_path_names_it() -> None:
++    m = Model(sparse=True)
++    x = m.add_variables(coords=[A, B], name="x")
++    group = xr.DataArray([[0, 1], [1, 0], [0, 0]], coords=[A, B], name="g")
++    with pytest.warns(
++        linopy.PerformanceWarning,
++        match=re.escape("groupby.sum(grouper without a sparse path)"),
++    ):
++        res = dense_linexpr(x).groupby(group).sum()
++    assert not res.is_sparse
++
++
+ DIFFERENCES: dict[str, Callable[[LinearExpression], LinearExpression]] = {
+     "coeffs": lambda e: e * 2,
+     "const": lambda e: e + 1,

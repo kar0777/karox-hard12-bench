@@ -1,0 +1,14 @@
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[-1
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[-1-args2-kwargs2]
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[-1.5
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[-5
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[1
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_slice
+tests/test_bind_kwargs.py::test_kwargs_explicit_numeric_option_still_matches
+tests/test_bind_kwargs.py::test_kwargs_negative_number_without_positional_is_unused
+tests/test_bind_kwargs.py::test_meta_kwargs_do_not_capture_negative_numbers
+tests/test_bind_kwargs.py::test_args_and_kwargs_int
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[--5
+tests/test_bind_kwargs.py::test_kwargs_do_not_capture_negative_numbers[-5=a-args8-kwargs8]
+tests/test_bind_kwargs.py::test_kwargs_int
+tests/test_bind_kwargs.py::test_kwargs_list_int

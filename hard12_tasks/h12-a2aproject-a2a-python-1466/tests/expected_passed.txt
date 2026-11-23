@@ -1,0 +1,6 @@
+tests/compat/v0_3/test_grpc_transport.py::test_compat_grpc_error_mapped_from_error_info_reason
+tests/compat/v0_3/test_grpc_transport.py::test_compat_grpc_error_mapped_from_class_name_message
+tests/compat/v0_3/test_grpc_transport.py::test_compat_grpc_error_unmapped_stays_client_error
+tests/compat/v0_3/test_grpc_transport.py::test_compat_grpc_transport_mirrors_extension_metadata
+tests/compat/v0_3/test_grpc_transport.py::test_compat_grpc_transport_no_extension_metadata
+tests/compat/v0_3/test_grpc_transport.py::test_compat_grpc_transport_send_message_response_msg_parsing

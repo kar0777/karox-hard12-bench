@@ -1,0 +1,4 @@
+test/rules/std_RF01_test.py::test_rf01_dbt_bigquery_context[bigquery-sql0-dbt_references0-other_references0]
+test/rules/std_RF01_test.py::test_rf01_dbt_bigquery_context[bigquery-sql1-dbt_references1-other_references1]
+test/rules/std_RF01_test.py::test_rf01_dbt_bigquery_context[bigquery-SELECT
+test/rules/std_RF01_test.py::test_rf01_dbt_bigquery_context[postgres-SELECT

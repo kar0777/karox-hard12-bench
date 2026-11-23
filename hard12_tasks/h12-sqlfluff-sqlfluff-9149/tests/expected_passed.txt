@@ -1,0 +1,1 @@
+test/utils/rustify_test.py::test_generator_imports_checkout_when_another_sqlfluff_is_on_path

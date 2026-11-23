@@ -1,0 +1,7 @@
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_crop_to_match_day_of_week
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_find_relevant_timestamp_attributes
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_invalid_required_matches[required_matches0]
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_invalid_required_matches[required_matches1]
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_periodic_series_is_predicted_exactly[D-7-required_matches0]
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_periodic_series_is_predicted_exactly[MS-12-required_matches1]
+darts/tests/models/forecasting/test_fft.py::TestFFT::test_weekly_seasonality_is_aligned

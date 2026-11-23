@@ -1,0 +1,4 @@
+test/integration/configuration/proxies_conf_test.py::TestProxiesConfTest::test_environ_removed
+test/integration/configuration/proxies_conf_test.py::TestProxiesConfTest::test_environ_kept
+test/integration/configuration/proxies_conf_test.py::TestProxiesConfTest::test_new_proxy_exclude
+test/integration/configuration/proxies_conf_test.py::TestProxiesConfTest::test_requester_with_host_specific_proxies

@@ -1,0 +1,17 @@
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator0--Received
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator1---car
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator2---no-car-Received
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator3---car-Received
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator4---car
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator5---car
+tests/validators/test_validator_group.py::test_limited_choice_count_error_message[validator6---truck-Received
+tests/validators/test_validator_group.py::test_bind_group_validator_limited_choice
+tests/validators/test_validator_group.py::test_bind_group_validator_limited_choice_name_override
+tests/validators/test_validator_group.py::test_group_validator_complete_argument_collection
+tests/validators/test_validator_group.py::test_limited_choice_all_or_none
+tests/validators/test_validator_group.py::test_limited_choice_default_min_max
+tests/validators/test_validator_group.py::test_limited_choice_default_success
+tests/validators/test_validator_group.py::test_limited_choice_failure_1
+tests/validators/test_validator_group.py::test_limited_choice_failure_2
+tests/validators/test_validator_group.py::test_limited_choice_invalid_min_max
+tests/validators/test_validator_group.py::test_limited_choice_negative_flag_error_message
