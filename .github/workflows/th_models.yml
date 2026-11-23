@@ -1,5 +1,8 @@
 name: th-models
-on: workflow_dispatch
+on:
+  push:
+    branches: [devin/bench]
+    paths: [".github/workflows/th_models.yml"]
 jobs:
   list:
     runs-on: ubuntu-latest
