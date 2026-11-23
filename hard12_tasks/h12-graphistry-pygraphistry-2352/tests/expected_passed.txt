@@ -1,0 +1,3 @@
+graphistry/tests/compute/gfql/cypher/test_with_where_quantifier_scope_2338.py::test_with_where_list_comprehension_variable_shadows_match_alias[pandas]
+graphistry/tests/compute/gfql/cypher/test_with_where_quantifier_scope_2338.py::test_with_where_quantifier_variable_shadows_match_alias[pandas]
+graphistry/tests/compute/gfql/cypher/test_with_where_quantifier_scope_2338.py::test_with_where_unshadowed_outer_output_stays_visible[pandas]

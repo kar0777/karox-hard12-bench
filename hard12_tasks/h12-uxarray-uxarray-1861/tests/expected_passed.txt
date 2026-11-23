@@ -1,0 +1,11 @@
+test/io/test_geos.py::test_geos_cs_dataarray_from_xarray[dims0-n_face]
+test/io/test_geos.py::test_geos_cs_dataarray_from_xarray[dims1-n_node]
+test/io/test_geos.py::test_geos_cs_dataarray_from_xarray_lazy
+test/io/test_geos.py::test_geos_cs_dataarray_matches_dataset
+test/io/test_geos.py::test_geos_cs_from_xarray_leaves_input_unchanged
+test/io/test_geos.py::test_geos_cs_from_xarray_partial_tiles_raise[dims0-n_face-False]
+test/io/test_geos.py::test_geos_cs_from_xarray_partial_tiles_raise[dims0-n_face-True]
+test/io/test_geos.py::test_geos_cs_from_xarray_partial_tiles_raise[dims1-n_node-False]
+test/io/test_geos.py::test_geos_cs_from_xarray_partial_tiles_raise[dims1-n_node-True]
+test/io/test_geos.py::test_read_geos_cs_grid
+test/io/test_geos.py::test_read_geos_cs_uxds

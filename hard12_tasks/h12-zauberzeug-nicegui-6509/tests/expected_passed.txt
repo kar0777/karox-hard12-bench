@@ -1,0 +1,14 @@
+tests/test_awaitable_response.py::test_awaitable_response[False]
+tests/test_awaitable_response.py::test_awaitable_response[True]
+tests/test_background_tasks.py::test_awaiting_background_tasks_on_shutdown[direct]
+tests/test_background_tasks.py::test_create_outside_the_app[closed]
+tests/test_background_tasks.py::test_create_outside_the_app[unset]
+tests/test_background_tasks.py::test_create_tasks
+tests/test_awaitable_response.py::test_null_response
+tests/test_background_tasks.py::test_awaiting_background_tasks_on_shutdown[click]
+tests/test_background_tasks.py::test_awaiting_background_tasks_on_shutdown[system]
+tests/test_background_tasks.py::test_awaiting_task_created_with_context
+tests/test_background_tasks.py::test_inner_async_function_is_awaited_on_shutdown[create]
+tests/test_background_tasks.py::test_inner_async_function_is_awaited_on_shutdown[create_lazy]
+tests/test_background_tasks.py::test_protected_timer_callback_is_awaited_on_shutdown
+tests/test_background_tasks.py::test_queued_lazy_task_is_awaited_on_shutdown

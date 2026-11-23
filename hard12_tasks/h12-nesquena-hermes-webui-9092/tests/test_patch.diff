@@ -1,0 +1,471 @@
+diff --git a/tests/test_goal_command_js_behaviour.py b/tests/test_goal_command_js_behaviour.py
+index 80bb1d17219..77e37048638 100644
+--- a/tests/test_goal_command_js_behaviour.py
++++ b/tests/test_goal_command_js_behaviour.py
+@@ -128,6 +128,8 @@
+   return src.slice(start, i);
+ }
+ eval(extractFunc('cmdGoal'));
++eval(extractFunc('parseCommand'));
++eval(extractFunc('cmdPersonality'));
+ 
+ // ---- scenario state ----
+ const SID = 'sid-6705-behaviour';
+@@ -189,6 +191,42 @@
+     await cmdGoal('ship it');
+     out.payload = _apiCalls[0].body;
+     out.markerAfter = readPending(SID);
++  } else if (scenario === 'gate_refused_shows_message') {
++    // The server refuses /goal gate with HTTP 400; api() throws with the body.
++    _nextResponse = () => {
++      const body = JSON.stringify({ ok: false, error: 'unsupported_gate', message: 'gate refused, goal unchanged' });
++      const err = new Error('unsupported_gate');
++      err.status = 400;
++      err.body = body;
++      throw err;
++    };
++    await cmdGoal('gate add uv run pytest');
++    out.lastMessage = S.messages[S.messages.length - 1];
++  } else if (scenario === 'kickoff_failed_shows_error') {
++    // Goal set succeeded, the kickoff was refused and rolled back: the body still
++    // carries the goal-set `message`, and api() throws with `error` as e.message.
++    _nextResponse = () => {
++      const body = JSON.stringify({
++        ok: false, action: 'set', message: 'Goal set (20-turn budget)', kickoff_prompt: 'ship it',
++        error: 'This model alias needs the in-process backend', type: 'provider_unroutable',
++      });
++      const parsed = JSON.parse(body);
++      const err = new Error(parsed.error || parsed.message || body);
++      err.status = 400;
++      err.body = body;
++      throw err;
++    };
++    await cmdGoal('ship it');
++    out.lastMessage = S.messages[S.messages.length - 1];
++  } else if (scenario === 'parse_multiline_goal') {
++    out.parsed = parseCommand('/goal  Ship it\noutcome: CSV\n\nstop when:  a migration');
++    out.singleLine = parseCommand('/goal   ship   the feature ');
++    out.personality = parseCommand('/personality Alpha\nBeta');
++  } else if (scenario === 'personality_multiline_name') {
++    _nextResponse = () => ({ ok: true });
++    const parsed = parseCommand('/personality Alpha\nBeta');
++    await cmdPersonality(parsed.args);
++    out.calls = _apiCalls;
+   } else {
+     throw new Error('unknown scenario: ' + scenario);
+   }
+@@ -258,3 +296,35 @@ def test_goal_kickoff_without_marker_sends_no_explicit_pick(driver_path):
+     out = _run_scenario(driver_path, "no_marker_no_pick")
+     assert "explicit_model_pick" not in out["payload"]
+     assert out["markerAfter"] is None
++
++
++def test_goal_refusal_shows_server_message_not_error_code(driver_path):
++    """A refused /goal gate shows the server's explanation, not the bare error code."""
++    out = _run_scenario(driver_path, "gate_refused_shows_message")
++    assert out["lastMessage"]["content"] == "**Goal command failed:** gate refused, goal unchanged"
++
++
++def test_goal_failed_kickoff_shows_error_not_goal_set_message(driver_path):
++    """A failed kickoff shows the runtime's error, not the stale goal-set message."""
++    out = _run_scenario(driver_path, "kickoff_failed_shows_error")
++    assert out["lastMessage"]["content"] == (
++        "**Goal command failed:** This model alias needs the in-process backend"
++    )
++
++
++def test_parse_command_keeps_line_boundaries_for_goal_contract_lines(driver_path):
++    """The /goal contract parser works line by line, so parseCommand must not flatten newlines."""
++    out = _run_scenario(driver_path, "parse_multiline_goal")
++    assert out["parsed"] == {"name": "goal", "args": "Ship it\noutcome: CSV\nstop when: a migration"}
++    # Single-line arguments are still whitespace-collapsed as before.
++    assert out["singleLine"] == {"name": "goal", "args": "ship the feature"}
++    # Other commands keep the old normalization, so a multi-word name still matches its config key.
++    assert out["personality"] == {"name": "personality", "args": "Alpha Beta"}
++
++
++def test_personality_multiline_name_reaches_set_endpoint_normalized(driver_path):
++    """`/personality Alpha\\nBeta` still selects the configured `Alpha Beta` personality."""
++    out = _run_scenario(driver_path, "personality_multiline_name")
++    assert out["calls"] == [
++        {"url": "/api/personality/set", "body": {"session_id": "sid-6705-behaviour", "name": "Alpha Beta"}}
++    ]
+diff --git a/tests/test_goal_command_webui.py b/tests/test_goal_command_webui.py
+index 651d15f94c7..b8ca9e740db 100644
+--- a/tests/test_goal_command_webui.py
++++ b/tests/test_goal_command_webui.py
+@@ -1069,3 +1069,274 @@ def test_frontend_goal_control_command_keeps_pending_marker():
+     assert re.search(r"_stillPending\.model\s*===\s*_goalModel", post_request)
+     assert re.search(r"_stillPending\.model_provider", post_request)
+     assert re.search(r"_clearPendingSessionModel\(activeSid\)", post_request)
++
++
++_CONTRACT_GOAL_TEXT = (
++    "Ship the export endpoint\n"
++    "outcome: GET /export returns CSV for every active account\n"
++    "verification: uv run pytest tests/test_export.py passes and the response shows a CSV header\n"
++    "constraints: existing export tests stay unchanged\n"
++    "boundaries: api/export.py and tests/test_export.py only\n"
++    "stop when: the schema needs a migration"
++)
++
++
++def test_goal_command_payload_parses_inline_contract_fields(monkeypatch, tmp_path):
++    """Inline contract lines become the goal's contract, not part of the goal text."""
++    from api import goals as webui_goals
++    pytest.importorskip("hermes_cli.goals", reason="hermes-agent not installed")
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++
++    payload = webui_goals.goal_command_payload("sid-contract", _CONTRACT_GOAL_TEXT)
++    state = webui_goals._manager("sid-contract").state
++
++    assert payload["ok"] is True
++    assert payload["kickoff_prompt"] == _CONTRACT_GOAL_TEXT
++    assert state.goal == "Ship the export endpoint"
++    assert state.contract.outcome == "GET /export returns CSV for every active account"
++    assert state.contract.verification.startswith("uv run pytest tests/test_export.py passes")
++    assert state.contract.constraints == "existing export tests stay unchanged"
++    assert state.contract.boundaries == "api/export.py and tests/test_export.py only"
++    assert state.contract.stop_when == "the schema needs a migration"
++
++
++def test_goal_command_payload_keeps_plain_goal_without_contract(monkeypatch):
++    """Plain goal text is still passed through unchanged with no contract."""
++    from api import goals as webui_goals
++
++    calls = []
++
++    class FakeGoalManager:
++        def __init__(self, session_id, default_max_turns=20):
++            self.state = None
++
++        def set(self, goal, **kwargs):
++            calls.append((goal, kwargs))
++            return SimpleNamespace(goal=goal, max_turns=20)
++
++    monkeypatch.setattr(webui_goals, "GoalManager", FakeGoalManager)
++    monkeypatch.setattr(webui_goals, "_default_max_turns", lambda: 20)
++
++    payload = webui_goals.goal_command_payload("sid-plain", "fix: the flaky test")
++
++    assert payload["kickoff_prompt"] == "fix: the flaky test"
++    assert calls == [("fix: the flaky test", {})]
++
++
++def test_goal_gate_command_is_refused_and_keeps_goal(monkeypatch, tmp_path):
++    """/goal gate … never replaces the goal, adds a gate, or kicks off a turn."""
++    from api import goals as webui_goals
++    pytest.importorskip("hermes_cli.goals", reason="hermes-agent not installed")
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++
++    webui_goals.goal_command_payload("sid-gate", "ship the feature")
++    for args in ("gate add uv run pytest", "gate", "GATE list"):
++        payload = webui_goals.goal_command_payload("sid-gate", args)
++        assert payload["ok"] is False
++        assert payload["error"] == "unsupported_gate"
++        assert "kickoff_prompt" not in payload or not payload["kickoff_prompt"]
++
++    state = webui_goals._manager("sid-gate").state
++    assert state.goal == "ship the feature"
++    assert not state.gates
++
++
++def test_goal_command_payload_keeps_contract_of_long_goal(monkeypatch, tmp_path):
++    """Contract lines after a long headline still reach the contract, not the truncated goal."""
++    from api import goals as webui_goals
++    pytest.importorskip("hermes_cli.goals", reason="hermes-agent not installed")
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    headline = "Ship the export endpoint " + "with careful detail " * 120
++
++    webui_goals.goal_command_payload("sid-long", headline + "\nverification: pytest passes")
++    state = webui_goals._manager("sid-long").state
++
++    assert state.goal == headline.strip()
++    assert "verification:" not in state.goal
++    assert state.contract.verification == "pytest passes"
++
++
++def test_legacy_profile_goal_manager_stores_inline_contract(monkeypatch, tmp_path):
++    """The explicit-DB fallback manager keeps the parsed contract too."""
++    from api import goals as webui_goals
++    pytest.importorskip("hermes_cli.goals", reason="hermes-agent not installed")
++    monkeypatch.setattr(webui_goals, "_native_profile_context_api", lambda _home: None)
++
++    webui_goals.goal_command_payload("sid-legacy", _CONTRACT_GOAL_TEXT, profile_home=tmp_path)
++    mgr = webui_goals._manager("sid-legacy", profile_home=tmp_path)
++
++    assert isinstance(mgr, webui_goals._LegacyProfileGoalManager)
++    assert mgr.state.goal == "Ship the export endpoint"
++    assert mgr.state.contract.stop_when == "the schema needs a migration"
++
++
++def test_legacy_profile_goal_manager_judges_and_continues_with_contract(monkeypatch, tmp_path):
++    """The fallback manager's judge and continuation prompt both see every contract field."""
++    from api import goals as webui_goals
++    pytest.importorskip("hermes_cli.goals", reason="hermes-agent not installed")
++    monkeypatch.setattr(webui_goals, "_native_profile_context_api", lambda _home: None)
++    judged = []
++
++    def fake_judge(goal, response, **kwargs):
++        judged.append((goal, kwargs.get("contract")))
++        return "continue", "not yet", False, None, False
++
++    monkeypatch.setattr(webui_goals, "judge_goal", fake_judge)
++    webui_goals.goal_command_payload("sid-legacy-judge", _CONTRACT_GOAL_TEXT, profile_home=tmp_path)
++    mgr = webui_goals._manager("sid-legacy-judge", profile_home=tmp_path)
++
++    result = mgr.evaluate_after_turn("working on it")
++
++    goal, contract = judged[0]
++    assert goal == "Ship the export endpoint"
++    assert contract.outcome == "GET /export returns CSV for every active account"
++    assert contract.verification.startswith("uv run pytest tests/test_export.py passes")
++    assert contract.constraints == "existing export tests stay unchanged"
++    assert contract.boundaries == "api/export.py and tests/test_export.py only"
++    assert contract.stop_when == "the schema needs a migration"
++    prompt = result["continuation_prompt"]
++    for line in _CONTRACT_GOAL_TEXT.splitlines()[1:]:
++        assert line.split(": ", 1)[1] in prompt
++
++
++def test_goal_command_payload_double_dash_sets_goal_starting_with_control_word(monkeypatch):
++    """`/goal -- <text>` sets goal text that starts with gate or another control word."""
++    from api import goals as webui_goals
++
++    calls = []
++
++    class FakeGoalManager:
++        def __init__(self, session_id, default_max_turns=20):
++            self.state = None
++
++        def set(self, goal, **kwargs):
++            calls.append(goal)
++            return SimpleNamespace(goal=goal, max_turns=20)
++
++    monkeypatch.setattr(webui_goals, "GoalManager", FakeGoalManager)
++    monkeypatch.setattr(webui_goals, "_default_max_turns", lambda: 20)
++
++    gate_goal = webui_goals.goal_command_payload("sid-dash", "-- gate the release behind a flag")
++    pause_goal = webui_goals.goal_command_payload("sid-dash", "-- pause the cron")
++
++    assert gate_goal["ok"] is True and gate_goal["kickoff_prompt"] == "gate the release behind a flag"
++    assert pause_goal["ok"] is True and pause_goal["kickoff_prompt"] == "pause the cron"
++    assert calls == ["gate the release behind a flag", "pause the cron"]
++
++
++@pytest.mark.parametrize("adapter_mode", ["", "legacy-journal", "runner-local"])
++def test_goal_endpoint_refuses_gate_without_kickoff_or_goal_change(monkeypatch, tmp_path, adapter_mode):
++    """POST /api/goal `gate add …` is a 400 refusal before any kickoff setup, in every adapter mode."""
++    from api import goals as webui_goals
++    from api import routes
++
++    existing = SimpleNamespace(
++        goal="ship the feature", status="active", turns_used=0, max_turns=20,
++        last_verdict=None, last_reason=None, paused_reason=None, gates=[],
++    )
++    set_calls = []
++
++    class FakeGoalManager:
++        def __init__(self, session_id, default_max_turns=20):
++            self.state = existing
++
++        def set(self, goal, **kwargs):
++            set_calls.append(goal)
++            raise AssertionError("a gate command must not set the goal")
++
++    class FakeSession:
++        session_id = "sid-goal-route"
++        profile = "default"
++        workspace = str(tmp_path)
++        model = "gpt-5.5"
++        model_provider = "openai-codex"
++        messages = []
++        context_messages = []
++        pending_user_message = None
++        active_stream_id = None
++
++    def fail(*_args, **_kwargs):
++        raise AssertionError("kickoff setup must not run for /goal gate")
++
++    session = FakeSession()
++    monkeypatch.setenv("HERMES_WEBUI_RUNTIME_ADAPTER", adapter_mode)
++    monkeypatch.setattr(webui_goals, "GoalManager", FakeGoalManager)
++    monkeypatch.setattr(routes, "get_session", lambda sid: session)
++    monkeypatch.setattr(routes, "resolve_trusted_workspace", fail)
++    monkeypatch.setattr(routes, "_resolve_compatible_session_model_state", fail)
++    monkeypatch.setattr(routes, "_start_chat_stream_for_session", fail)
++    monkeypatch.setattr(routes, "build_runtime_adapter", fail, raising=False)
++    monkeypatch.setattr(routes, "j", lambda handler, payload, status=200, **kwargs: {"status": status, "payload": payload})
++
++    result = routes._handle_goal_command(
++        object(),
++        {
++            "session_id": "sid-goal-route",
++            "args": "gate add uv run pytest tests/test_export.py",
++            "workspace": str(tmp_path),
++            "model": "gpt-5.5",
++            "model_provider": "openai-codex",
++            "explicit_model_pick": True,
++        },
++    )
++
++    assert result["status"] == 400
++    assert result["payload"]["ok"] is False
++    assert result["payload"]["error"] == "unsupported_gate"
++    assert "/goal gate is not supported" in result["payload"]["message"]
++    assert "stream_id" not in result["payload"]
++    assert "kickoff_prompt" not in result["payload"]
++    assert set_calls == []
++    assert existing.goal == "ship the feature" and existing.gates == []
++    assert not hasattr(session, "model_explicit_pick_signature")
++
++
++def test_goal_endpoint_stores_inline_contract_and_kicks_off_with_contract(monkeypatch, tmp_path):
++    """POST /api/goal with contract lines stores the contract and starts the first turn with it."""
++    from api import goals as webui_goals
++    from api import routes
++    pytest.importorskip("hermes_cli.goals", reason="hermes-agent not installed")
++
++    class FakeSession:
++        session_id = "sid-goal-contract-route"
++        profile = "default"
++        workspace = str(tmp_path)
++        model = "gpt-5.5"
++        model_provider = "openai-codex"
++        messages = []
++        context_messages = []
++        pending_user_message = None
++        active_stream_id = None
++
++    started = []
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.delenv("HERMES_WEBUI_RUNTIME_ADAPTER", raising=False)
++    monkeypatch.setattr("api.profiles.get_hermes_home_for_profile", lambda _profile: None)
++    monkeypatch.setattr(routes, "get_session", lambda sid: FakeSession())
++    monkeypatch.setattr(routes, "resolve_trusted_workspace", lambda workspace, **_kw: tmp_path)
++    monkeypatch.setattr(routes, "webui_gateway_chat_enabled", lambda _cfg: False)
++    monkeypatch.setattr(routes, "get_config", lambda: {})
++    monkeypatch.setattr(
++        routes,
++        "_resolve_compatible_session_model_state",
++        lambda model, provider, **_: (model, provider, False),
++    )
++
++    def fake_start(session, **kwargs):
++        started.append(kwargs)
++        return {"stream_id": "goal-stream", "session_id": session.session_id, "pending_started_at": 123.0}
++
++    monkeypatch.setattr(routes, "_start_chat_stream_for_session", fake_start)
++    monkeypatch.setattr(routes, "j", lambda handler, payload, status=200, **kwargs: {"status": status, "payload": payload})
++
++    result = routes._handle_goal_command(
++        object(),
++        {"session_id": "sid-goal-contract-route", "args": _CONTRACT_GOAL_TEXT, "workspace": str(tmp_path)},
++    )
++    state = webui_goals._manager("sid-goal-contract-route").state
++
++    assert result["status"] == 200
++    assert started and started[0]["msg"] == _CONTRACT_GOAL_TEXT
++    assert state.goal == "Ship the export endpoint"
++    assert state.contract.verification.startswith("uv run pytest tests/test_export.py passes")
++    assert state.contract.stop_when == "the schema needs a migration"
+diff --git a/tests/test_goal_gate_refusal_copy.py b/tests/test_goal_gate_refusal_copy.py
+new file mode 100644
+index 00000000000..fb5a3121e31
+--- /dev/null
++++ b/tests/test_goal_gate_refusal_copy.py
+@@ -0,0 +1,94 @@
++"""The /goal gate refusal tells users how to set a literal "gate ..." goal.
++
++The refusal message is shown twice: as a plain-text toast, and as a chat
++transcript message rendered by ``renderMd`` (``**Goal command failed:** <msg>``).
++An angle-bracket placeholder such as ``<text>`` survives the toast but the
++Markdown renderer consumes it as markup, so the transcript used to read
++"use /goal -- ." with the argument gone. The guidance must be plain text that
++reads the same on both surfaces.
++"""
++
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++import pytest
++
++from api import goals
++
++REPO_ROOT = Path(__file__).parent.parent.resolve()
++NODE = shutil.which("node")
++
++_EXPECTED = "use /goal -- followed by your goal text."
++
++_DRIVER_SRC = r"""
++const fs = require('fs');
++const vm = require('vm');
++const src = fs.readFileSync(process.argv[2], 'utf8');
++global.window = {};
++global.document = { createElement: () => ({ innerHTML: '', textContent: '' }), baseURI: 'http://127.0.0.1:8787/' };
++global.esc = s => String(s ?? '').replace(/[&<>"']/g, c => (
++  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
++global._mediaKindForName = () => '';
++global._mediaPlayerHtml = (k, s) => `<${k} src="${global.esc(s)}"></${k}>`;
++global.t = k => k;
++global.S = {};
++for (const name of ['_IMAGE_EXTS', '_SVG_EXTS', '_AUDIO_EXTS', '_VIDEO_EXTS', '_PDF_EXTS', '_HTML_EXTS',
++                    '_CSV_EXTS', '_EXCALIDRAW_EXTS', '_DATA_IMAGE_RE', '_DATA_IMAGE_SVG_RE', '_DATA_IMAGE_MAX_LEN']) {
++  const m = src.match(new RegExp('const ' + name + '=([^\\n]*);'));
++  if (m) globalThis[name] = vm.runInThisContext('(' + m[1] + ')');
++}
++function extractFunc(name) {
++  const start = src.search(new RegExp('function\\s+' + name + '\\s*\\('));
++  if (start < 0) throw new Error(name + ' not found');
++  let i = src.indexOf('{', start);
++  let depth = 1; i++;
++  while (depth > 0 && i < src.length) {
++    if (src[i] === '{') depth++;
++    else if (src[i] === '}') depth--;
++    i++;
++  }
++  return src.slice(start, i);
++}
++for (const name of ['_isSafeDataImageUri', '_dataImageHtml', '_mdImageHtml', '_inlineMediaHtmlForRef',
++                    '_matchBacktickFenceLine', '_isBacktickFenceClose', '_mediaTokenParts', 'renderMd']) {
++  vm.runInThisContext(extractFunc(name));
++}
++let buf = '';
++process.stdin.setEncoding('utf8');
++process.stdin.on('data', c => { buf += c; });
++process.stdin.on('end', () => { process.stdout.write(JSON.stringify({ html: renderMd(buf) })); });
++"""
++
++
++def _refusal_message() -> str:
++    return goals.goal_gate_refusal_payload()["message"]
++
++
++def test_refusal_guidance_is_plain_text_without_a_markup_placeholder():
++    message = _refusal_message()
++    assert _EXPECTED in message
++    assert "<" not in message and ">" not in message
++
++
++@pytest.mark.skipif(NODE is None, reason="node not on PATH")
++def test_rendered_refusal_transcript_keeps_the_literal_goal_guidance(tmp_path):
++    driver = tmp_path / "render_driver.js"
++    driver.write_text(_DRIVER_SRC, encoding="utf-8")
++    # The exact transcript content static/commands.js builds for a refused /goal.
++    transcript = "**Goal command failed:** " + _refusal_message()
++    result = subprocess.run(
++        [NODE, str(driver), str(REPO_ROOT / "static" / "ui.js")],
++        input=transcript,
++        capture_output=True,
++        text=True,
++        timeout=30,
++        env={"PATH": "/usr/bin:/bin"},
++    )
++    assert result.returncode == 0, result.stderr
++    html = json.loads(result.stdout)["html"]
++    assert "/goal -- followed by your goal text." in html
++    assert "/goal -- ." not in html

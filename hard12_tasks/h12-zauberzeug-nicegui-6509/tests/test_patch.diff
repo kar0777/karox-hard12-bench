@@ -1,0 +1,77 @@
+diff --git a/tests/test_awaitable_response.py b/tests/test_awaitable_response.py
+index 7dab3e461d..e265f743df 100644
+--- a/tests/test_awaitable_response.py
++++ b/tests/test_awaitable_response.py
+@@ -2,13 +2,11 @@
+ 
+ import pytest
+ 
+-from nicegui import core
+ from nicegui.awaitable_response import AwaitableResponse, NullResponse
+ 
+ 
+ @pytest.mark.parametrize('with_fire_and_forget', [True, False])
+ async def test_awaitable_response(with_fire_and_forget: bool):
+-    core.loop = asyncio.get_event_loop()
+     actions = []
+ 
+     def do_something() -> AwaitableResponse:
+@@ -43,5 +41,4 @@ async def wait_for_result() -> str:
+ async def test_null_response():
+     NullResponse()
+ 
+-    core.loop = asyncio.get_event_loop()
+     await NullResponse()
+diff --git a/tests/test_background_tasks.py b/tests/test_background_tasks.py
+index 629368e816..e4fc60e9b7 100644
+--- a/tests/test_background_tasks.py
++++ b/tests/test_background_tasks.py
+@@ -4,7 +4,7 @@
+ 
+ import pytest
+ 
+-from nicegui import app, background_tasks, ui
++from nicegui import app, background_tasks, core, ui
+ from nicegui.testing import Screen, User
+ 
+ # pylint: disable=missing-function-docstring
+@@ -182,10 +182,10 @@ async def async_function(name: str) -> None:
+         await asyncio.sleep(1.0)
+ 
+     # create before loop started
+-    with pytest.raises(AssertionError):
++    with pytest.raises(RuntimeError, match='No running event loop'):
+         background_tasks.create(a := async_function('A'))
+     a.close()
+-    with pytest.raises(AssertionError):
++    with pytest.raises(RuntimeError, match='No running event loop'):
+         background_tasks.create_lazy(b := async_function('B'), name='B')
+     b.close()
+ 
+@@ -218,3 +218,26 @@ def page():
+         'G1', 'G2',
+         'H1',
+     ]
++
++
++@pytest.mark.parametrize('app_loop', ['unset', 'closed'])
++async def test_create_outside_the_app(app_loop: str):
++    """A background task runs in async tests that never started the app (#6508).
++
++    ``core.loop`` is set explicitly, because whether it is unset or the closed loop of a previous run
++    would otherwise depend on the order of the tests.
++    """
++    events: list[str] = []
++
++    async def async_function() -> None:
++        events.append('ran')
++
++    closed_loop = asyncio.new_event_loop()
++    closed_loop.close()
++    original_loop = core.loop
++    core.loop = {'unset': None, 'closed': closed_loop}[app_loop]
++    try:
++        await background_tasks.create(async_function())
++    finally:
++        core.loop = original_loop
++    assert events == ['ran']

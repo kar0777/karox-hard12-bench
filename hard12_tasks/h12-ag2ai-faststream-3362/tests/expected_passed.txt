@@ -1,0 +1,13 @@
+tests/brokers/redis/test_parser.py::test_binary_message_headers_encode_parse[headers3]
+tests/brokers/redis/test_parser.py::test_binary_message_headers_encode_parse[headers4]
+tests/brokers/redis/test_parser.py::test_binary_message_headers_encode_parse[headers5]
+tests/brokers/redis/test_parser.py::TestTestBrokerFormats::test_formats[binary]
+tests/brokers/redis/test_parser.py::TestTestBrokerFormats::test_parse_json_with_binary_format
+tests/brokers/redis/test_parser.py::test_binary_message_encode_parse[UTF-8
+tests/brokers/redis/test_parser.py::test_binary_message_encode_parse[complex
+tests/brokers/redis/test_parser.py::test_binary_message_encode_parse[empty]
+tests/brokers/redis/test_parser.py::test_binary_message_encode_parse[plain
+tests/brokers/redis/test_parser.py::test_binary_message_headers_encode_parse[None]
+tests/brokers/redis/test_parser.py::test_binary_message_headers_encode_parse[headers1]
+tests/brokers/redis/test_parser.py::test_binary_message_headers_encode_parse[headers2]
+tests/brokers/redis/test_parser.py::test_parse_json_with_binary_format

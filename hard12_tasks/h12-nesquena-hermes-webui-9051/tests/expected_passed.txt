@@ -1,0 +1,3 @@
+tests/test_btw_409_lock_scope.py::test_duplicate_stream_409_is_written_outside_streams_lock
+tests/test_btw_409_lock_scope.py::test_no_active_stream_still_reaches_ephemeral_session_creation
+tests/test_btw_409_lock_scope.py::test_stale_stream_id_is_cleared_and_flow_continues

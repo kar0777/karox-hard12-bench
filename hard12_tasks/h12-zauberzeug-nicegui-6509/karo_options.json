@@ -1,0 +1,15 @@
+{
+  "task_dir": "/testbed",
+  "verify_command": [
+    [
+      "/usr/local/bin/python",
+      "-m",
+      "pytest",
+      "*"
+    ],
+    [
+      "/usr/local/bin/python",
+      "*"
+    ]
+  ]
+}

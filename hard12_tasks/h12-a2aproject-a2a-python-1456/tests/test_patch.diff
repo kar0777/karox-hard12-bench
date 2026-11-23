@@ -1,0 +1,210 @@
+diff --git a/tests/client/transports/test_http_helpers.py b/tests/client/transports/test_http_helpers.py
+index ddda42adb..86d9591d1 100644
+--- a/tests/client/transports/test_http_helpers.py
++++ b/tests/client/transports/test_http_helpers.py
+@@ -1,3 +1,5 @@
++from collections.abc import AsyncIterator
++
+ import httpx
+ import pytest
+ 
+@@ -21,7 +23,7 @@ def test_default_sse_error_handler():
+ 
+ @pytest.mark.asyncio
+ async def test_parse_sse_stream_edge_cases():
+-    async def mock_aiter_lines():
++    async def mock_aiter_text():
+         yield ': comment line (should be ignored)\n'
+         yield 'event: custom_event\n'
+         yield 'data:  hello\n'
+@@ -32,7 +34,7 @@ async def mock_aiter_lines():
+         yield '\n'
+ 
+     response = httpx.Response(200)
+-    response.aiter_lines = mock_aiter_lines  # type: ignore
++    response.aiter_text = mock_aiter_text  # type: ignore
+ 
+     events = [e async for e in parse_sse_stream(response)]
+     assert events == [
+@@ -41,6 +43,60 @@ async def mock_aiter_lines():
+     ]
+ 
+ 
++async def _byte_chunks(chunks: list[bytes]) -> AsyncIterator[bytes]:
++    for chunk in chunks:
++        yield chunk
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    ('chunks', 'expected'),
++    [
++        pytest.param(
++            ['data: a b c\x85d\n\n'.encode()],
++            [('message', 'a b c\x85d')],
++            id='unicode-line-separators-stay-in-data',
++        ),
++        pytest.param(
++            [b'data: a\xe2\x80', b'\xa8b\r', b'\ndata: c\r\r'],
++            [('message', 'a b\nc')],
++            id='crlf-and-character-split-across-chunks',
++        ),
++        pytest.param(
++            [b'data: a\r'],
++            [],
++            id='event-without-blank-line-is-not-dispatched',
++        ),
++    ],
++)
++async def test_parse_sse_stream_ends_lines_only_at_cr_or_lf(
++    chunks: list[bytes], expected: list[tuple[str, str]]
++) -> None:
++    """Only CRLF, LF and CR end a line, as the SSE specification requires."""
++    response = httpx.Response(200, content=_byte_chunks(chunks))
++
++    events = [e async for e in parse_sse_stream(response)]
++
++    assert events == expected
++
++
++@pytest.mark.asyncio
++@pytest.mark.timeout(10)
++async def test_parse_sse_stream_long_data_line_over_many_chunks() -> None:
++    """A multi-megabyte data: line read in small chunks stays linear."""
++    payload = 'x' * (2 * 1024 * 1024)
++    body = f'data: {payload}\r\n\r\n'.encode()
++    chunk_size = 512
++    chunks = [body[i : i + chunk_size] for i in range(0, len(body), chunk_size)]
++    response = httpx.Response(200, content=_byte_chunks(chunks))
++
++    # Re-joining and re-scanning the whole line on every chunk took tens of
++    # seconds here; the linear version takes well under a second.
++    events = [e async for e in parse_sse_stream(response)]
++
++    assert events == [('message', payload)]
++
++
+ @pytest.mark.asyncio
+ async def test_send_http_stream_request_non_sse(mocker):
+     client = httpx.AsyncClient()
+diff --git a/tests/client/transports/test_jsonrpc_client.py b/tests/client/transports/test_jsonrpc_client.py
+index 287198a81..0f49fbb7a 100644
+--- a/tests/client/transports/test_jsonrpc_client.py
++++ b/tests/client/transports/test_jsonrpc_client.py
+@@ -451,12 +451,8 @@ async def test_send_message_streaming_sse_error(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.raise_for_status = MagicMock()
+         mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(
+-            [
+-                'event: error',
+-                'data: Simulated SSE error',
+-                '',
+-            ]
++        mock_response.aiter_text.return_value = async_iterable_from_list(
++            ['event: error\ndata: Simulated SSE error\n\n']
+         )
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+ 
+@@ -475,7 +471,7 @@ async def test_send_message_streaming_request_error(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.raise_for_status = MagicMock()
+         mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.side_effect = httpx.RequestError(
++        mock_response.aiter_text.side_effect = httpx.RequestError(
+             'Simulated request error', request=MagicMock()
+         )
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+@@ -495,9 +491,7 @@ async def test_send_message_streaming_timeout(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.raise_for_status = MagicMock()
+         mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.side_effect = httpx.TimeoutException(
+-            'Timeout'
+-        )
++        mock_response.aiter_text.side_effect = httpx.TimeoutException('Timeout')
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+ 
+         with pytest.raises(A2AClientError, match='timed out'):
+@@ -581,7 +575,7 @@ async def test_send_message_streaming_server_error_propagates(
+             request=httpx.Request('POST', 'http://test.url'),
+             response=mock_response,
+         )
+-        mock_response.aiter_lines.return_value = async_iterable_from_list([])
++        mock_response.aiter_text.return_value = async_iterable_from_list([])
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+ 
+         with pytest.raises(A2AClientError) as exc_info:
+@@ -813,8 +807,8 @@ async def test_send_message_streaming_ignores_unrecognized_fields(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.raise_for_status = MagicMock()
+         mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(
+-            [f'data: {json.dumps(payload)}', '']
++        mock_response.aiter_text.return_value = async_iterable_from_list(
++            [f'data: {json.dumps(payload)}\n\n']
+         )
+         mock_sse_source.return_value.__aenter__.return_value = mock_response
+ 
+@@ -969,7 +963,9 @@ async def test_streaming_malformed_event_raises_a2a_error(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.raise_for_status = MagicMock()
+         mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(lines)
++        mock_response.aiter_text.return_value = async_iterable_from_list(
++            [f'{line}\n' for line in lines]
++        )
+         mock_sse_source.return_value.__aenter__.return_value = mock_response
+ 
+         with pytest.raises(expected_error):
+diff --git a/tests/client/transports/test_rest_client.py b/tests/client/transports/test_rest_client.py
+index 2ecf8c880..11208ebe2 100644
+--- a/tests/client/transports/test_rest_client.py
++++ b/tests/client/transports/test_rest_client.py
+@@ -109,7 +109,7 @@ async def test_send_message_streaming_timeout(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.headers = {'content-type': 'text/event-stream'}
+         mock_response.raise_for_status.return_value = None
+-        mock_response.aiter_lines.side_effect = httpx.TimeoutException(
++        mock_response.aiter_text.side_effect = httpx.TimeoutException(
+             'Read timed out'
+         )
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+@@ -348,7 +348,7 @@ async def test_send_message_streaming_with_new_extensions(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.headers = {'content-type': 'text/event-stream'}
+         mock_response.raise_for_status.return_value = None
+-        mock_response.aiter_lines.return_value = async_iterable_from_list([])
++        mock_response.aiter_text.return_value = async_iterable_from_list([])
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+ 
+         context = ClientCallContext(
+@@ -398,7 +398,7 @@ async def test_send_message_streaming_server_error_propagates(
+             request=httpx.Request('POST', 'http://test.url'),
+             response=mock_response,
+         )
+-        mock_response.aiter_lines.return_value = async_iterable_from_list([])
++        mock_response.aiter_text.return_value = async_iterable_from_list([])
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+ 
+         with pytest.raises(A2AClientError) as exc_info:
+@@ -752,7 +752,7 @@ async def test_rest_streaming_methods_prepend_tenant(  # noqa: PLR0913
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.headers = {'content-type': 'text/event-stream'}
+         mock_response.raise_for_status.return_value = None
+-        mock_response.aiter_lines.return_value = async_iterable_from_list([])
++        mock_response.aiter_text.return_value = async_iterable_from_list([])
+         mock_aconnect_sse.return_value.__aenter__.return_value = mock_response
+ 
+         # 3. Call the method
+@@ -905,8 +905,8 @@ async def test_send_message_streaming_ignores_unrecognized_fields(
+         mock_response = AsyncMock(spec=httpx.Response)
+         mock_response.raise_for_status = MagicMock()
+         mock_response.headers = {'content-type': 'text/event-stream'}
+-        mock_response.aiter_lines.return_value = async_iterable_from_list(
+-            [f'data: {json.dumps(payload)}', '']
++        mock_response.aiter_text.return_value = async_iterable_from_list(
++            [f'data: {json.dumps(payload)}\n\n']
+         )
+         mock_sse_source.return_value.__aenter__.return_value = mock_response
+ 

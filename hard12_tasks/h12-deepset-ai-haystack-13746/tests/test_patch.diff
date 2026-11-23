@@ -1,0 +1,15 @@
+diff --git a/test/components/evaluators/test_llm_evaluator.py b/test/components/evaluators/test_llm_evaluator.py
+index adc5de14f87..7e6c831de88 100644
+--- a/test/components/evaluators/test_llm_evaluator.py
++++ b/test/components/evaluators/test_llm_evaluator.py
+@@ -337,6 +337,10 @@ def test_invalid_input_parameters(self, monkeypatch):
+         with pytest.raises(ValueError):
+             component.validate_input_parameters(expected={"questions": list[str]}, received={"questions": str})
+ 
++        # Received inputs are empty lists
++        with pytest.raises(ValueError, match="non-empty input lists"):
++            component.validate_input_parameters(expected={"questions": list[str]}, received={"questions": []})
++
+     def test_invalid_outputs(self, monkeypatch):
+         monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
+         component = LLMEvaluator(
