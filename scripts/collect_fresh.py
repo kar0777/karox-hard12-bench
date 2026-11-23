@@ -115,7 +115,7 @@ def ensure_git_exclude() -> None:
             fh.write(f"{sep}.cache_pool3/\n")
 
 
-def load_recipes_and_exclusions() -> tuple[dict[str, dict[str, Any]], set[tuple[str, int]], set[tuple[str, int]]]:
+def load_recipes_and_exclusions(out_path: Path) -> tuple[dict[str, dict[str, Any]], set[tuple[str, int]], set[tuple[str, int]]]:
     cands2 = json.loads(CANDIDATES2_PATH.read_text(encoding="utf-8"))
     recipes: dict[str, dict[str, Any]] = {}
     excluded_prs: set[tuple[str, int]] = set()
@@ -132,6 +132,15 @@ def load_recipes_and_exclusions() -> tuple[dict[str, dict[str, Any]], set[tuple[
         excluded_prs.add((repo.lower(), int(r["pr"])))
         if r.get("issue") is not None:
             excluded_issues.add((repo.lower(), int(r["issue"])))
+
+    # Later pools also skip every earlier pool's candidates (valid or not).
+    for extra in sorted((ROOT / "data").glob("candidates[3-9].json")):
+        if extra.resolve() == out_path.resolve():
+            continue
+        for r in json.loads(extra.read_text(encoding="utf-8")):
+            excluded_prs.add((r["repo"].lower(), int(r["pr"])))
+            if r.get("issue") is not None:
+                excluded_issues.add((r["repo"].lower(), int(r["issue"])))
 
     if NIGHT_TASKS_PATH.exists():
         for line in NIGHT_TASKS_PATH.read_text(encoding="utf-8").splitlines():
@@ -576,7 +585,7 @@ def main() -> int:
         return 2
     ensure_git_exclude()
 
-    recipes, excluded_prs, excluded_issues = load_recipes_and_exclusions()
+    recipes, excluded_prs, excluded_issues = load_recipes_and_exclusions(Path(args.out))
     repos = sorted(recipes.keys(), key=lambda s: s.lower())
 
     client = GitHubClient(CACHE_DIR, sleep_sec=args.sleep)
