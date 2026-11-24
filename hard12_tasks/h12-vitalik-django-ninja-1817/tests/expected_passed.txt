@@ -1,0 +1,2 @@
+tests/test_alias.py::test_numeric_alias_from_object
+tests/test_alias.py::test_alias

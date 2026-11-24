@@ -1,0 +1,56 @@
+diff --git a/tests/test_background_tasks.py b/tests/test_background_tasks.py
+index 7d7d8cfe41..629368e816 100644
+--- a/tests/test_background_tasks.py
++++ b/tests/test_background_tasks.py
+@@ -152,6 +152,28 @@ async def run() -> None:
+     caplog.records.pop(0)
+ 
+ 
++async def test_protected_timer_callback_is_awaited_on_shutdown(user: User):
++    events: list[str] = []
++
++    @background_tasks.await_on_shutdown
++    async def work() -> None:
++        ui.label('added by protected timer')  # needs the timer's context
++        try:
++            await asyncio.sleep(0.1)
++            events.append('done')
++        except asyncio.CancelledError:
++            events.append('cancelled')
++
++    @ui.page('/')
++    def page():
++        ui.timer(0.01, work, once=True)
++
++    await user.open('/')
++    await user.should_see('added by protected timer')  # the invocation is in flight now
++    await background_tasks.teardown()
++    assert events == ['done']
++
++
+ def test_create_tasks(screen: Screen) -> None:
+     events: list[str] = []
+ 
+diff --git a/tests/test_timer.py b/tests/test_timer.py
+index ba236829d5..dff90e605a 100644
+--- a/tests/test_timer.py
++++ b/tests/test_timer.py
+@@ -191,13 +191,17 @@ def page():
+     assert counter.value > value, 'timer is also incrementing when opening another page'
+ 
+ 
+-def test_cancel_current_invocation(screen: Screen):
++@pytest.mark.parametrize('protected', [False, True])
++def test_cancel_current_invocation(screen: Screen, protected: bool):
+     counter = Counter()
+ 
+     async def update():
+         await asyncio.sleep(1.0)
+         counter.increment()
+ 
++    if protected:
++        update = background_tasks.await_on_shutdown(update)
++
+     @ui.page('/')
+     def page():
+         t = ui.timer(0, update, once=True)

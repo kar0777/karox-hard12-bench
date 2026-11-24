@@ -1,0 +1,10 @@
+tests/test_forms_and_files.py::test_multipart_scalar_body_types
+tests/test_forms_and_files.py::test_multipart_str_body_passed_unchanged["quoted"]
+tests/test_forms_and_files.py::test_multipart_str_body_passed_unchanged[5'10"]
+tests/test_forms_and_files.py::test_multipart_str_body_passed_unchanged[a\\nb]
+tests/test_forms_and_files.py::test_multipart_str_body_passed_unchanged[line1\nline2]
+tests/test_forms_and_files.py::test_multipart_str_body_passed_unchanged[say
+tests/test_forms_and_files.py::test_empty_multipart_body_field
+tests/test_forms_and_files.py::test_files
+tests/test_forms_and_files.py::test_multipart_json_body_parts
+tests/test_forms_and_files.py::test_multipart_str_body_passed_unchanged[hello]

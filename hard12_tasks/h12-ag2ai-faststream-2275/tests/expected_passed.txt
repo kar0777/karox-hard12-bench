@@ -1,0 +1,2 @@
+tests/docs/getting_started/prometheus/test_kafka_multiprocess.py::test_kafka_multiprocess_metrics
+tests/docs/getting_started/prometheus/test_kafka_multiprocess.py::test_kafka_single_process_metrics

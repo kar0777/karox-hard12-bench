@@ -1,0 +1,85 @@
+diff --git a/toqito/channel_metrics/tests/test_channel_relative_entropy.py b/toqito/channel_metrics/tests/test_channel_relative_entropy.py
+index b5fa782284..10a9470f06 100644
+--- a/toqito/channel_metrics/tests/test_channel_relative_entropy.py
++++ b/toqito/channel_metrics/tests/test_channel_relative_entropy.py
+@@ -8,6 +8,7 @@
+ from scipy.linalg import LinAlgError
+ 
+ from toqito.channel_metrics.channel_relative_entropy import channel_relative_entropy
++from toqito.channel_ops import kraus_to_choi
+ from toqito.channels import depolarizing, pauli_channel
+ from toqito.perms import swap_operator
+ from toqito.state_props.integral_relative_entropy import _sandwich_parameters
+@@ -157,6 +158,21 @@ def test_channel_1_must_be_quantum_channel():
+         )
+ 
+ 
++def test_channel_1_with_unequal_input_output_dimensions():
++    """A channel from a qubit to a qutrit is accepted as channel_1 when in_dim is given."""
++    # channel_1 embeds a qubit into a qutrit with the isometry V = |0><0| + |1><1|. channel_2 mixes it equally with
++    # the replacement channel rho -> Tr(rho) I_3 / 3. For a maximally entangled input, the output of channel_1 is
++    # pure and is an eigenvector of the output of channel_2 with eigenvalue 1/2 + 1/12 = 7/12, so the relative
++    # entropy there is -ln(7/12).
++    isometry = np.array([[1, 0], [0, 1], [0, 0]])
++    choi_1 = kraus_to_choi([isometry])
++    choi_2 = (choi_1 + np.kron(np.identity(2), np.identity(3) / 3)) / 2
++
++    avg = channel_relative_entropy(choi_1, choi_2, in_dim=2, mean=True)
++
++    assert avg == pytest.approx(-np.log(7 / 12), abs=2e-2)
++
++
+ def test_channel_2_must_be_completely_positive():
+     """A non-CP second argument should raise a clear ValueError."""
+     good_channel = np.eye(4, dtype=complex) / 2
+diff --git a/toqito/channel_props/tests/test_is_quantum_channel.py b/toqito/channel_props/tests/test_is_quantum_channel.py
+index d525efd0ed..33f981a65e 100644
+--- a/toqito/channel_props/tests/test_is_quantum_channel.py
++++ b/toqito/channel_props/tests/test_is_quantum_channel.py
+@@ -5,6 +5,7 @@
+ import numpy as np
+ import pytest
+ 
++from toqito.channel_ops import kraus_to_choi
+ from toqito.channel_props import is_quantum_channel
+ from toqito.channels import depolarizing
+ 
+@@ -52,3 +53,38 @@ def test_is_quantum_channel_invalid_types_raise(bad_phi):
+ def test_is_quantum_channel_flat_kraus_format():
+     """A flat list of Kraus operators is accepted (e.g. the identity channel)."""
+     assert is_quantum_channel([np.eye(2)]) is True
++
++
++# Isometric embedding of a qubit into a qutrit, V = |0><0| + |1><1|, which satisfies V^* V = I_2.
++_ISOMETRY_2_TO_3 = np.array([[1, 0], [0, 1], [0, 0]])
++# Kraus operators of the partial trace over the first qubit of a two-qubit system, <i| (x) I_2.
++_PARTIAL_TRACE_KRAUS = [np.kron(np.identity(2)[[i]], np.identity(2)) for i in range(2)]
++
++
++@pytest.mark.parametrize(
++    "kraus_ops, expected_result",
++    [
++        # Channel from a qubit to a qutrit given by a single isometry.
++        ([_ISOMETRY_2_TO_3], True),
++        # Partial trace from two qubits down to one qubit.
++        (_PARTIAL_TRACE_KRAUS, True),
++        # Same channels in the [A, B] pair format.
++        ([[_ISOMETRY_2_TO_3, _ISOMETRY_2_TO_3]], True),
++        ([[k, k] for k in _PARTIAL_TRACE_KRAUS], True),
++        # Completely positive but not trace preserving.
++        ([_ISOMETRY_2_TO_3 / 2], False),
++        ([k / 2 for k in _PARTIAL_TRACE_KRAUS], False),
++    ],
++)
++def test_is_quantum_channel_kraus_unequal_dimensions(kraus_ops, expected_result):
++    """Kraus operators of channels whose input and output dimensions differ."""
++    assert is_quantum_channel(kraus_ops) is expected_result
++
++
++def test_is_quantum_channel_choi_unequal_dimensions():
++    """The Choi matrix of a channel with different input and output dimensions needs `dim`."""
++    choi = kraus_to_choi([_ISOMETRY_2_TO_3])
++    assert is_quantum_channel(choi, dim=[2, 3]) is True
++    assert is_quantum_channel(choi / 2, dim=[2, 3]) is False
++    # Without `dim` a 6x6 Choi matrix cannot be split into equal subsystems.
++    assert is_quantum_channel(choi) is False

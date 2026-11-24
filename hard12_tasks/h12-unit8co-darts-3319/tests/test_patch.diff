@@ -1,0 +1,28 @@
+diff --git a/darts/tests/metrics/test_metrics.py b/darts/tests/metrics/test_metrics.py
+index ee08a1cff8..eff944f9cd 100644
+--- a/darts/tests/metrics/test_metrics.py
++++ b/darts/tests/metrics/test_metrics.py
+@@ -45,10 +45,11 @@ def metric_smape(y_true, y_pred, **kwargs):
+     )
+ 
+ 
+-def metric_ope(y_true, y_pred, **kwargs):
++def metric_ope(y_true, y_pred, signed: bool = False):
+     y_true = y_true[:, 0]
+     y_pred = y_pred[:, 0]
+-    return 100.0 * np.abs((np.sum(y_true) - np.sum(y_pred)) / np.sum(y_true))
++    ope_ = 100.0 * (np.sum(y_true) - np.sum(y_pred)) / np.sum(y_true)
++    return ope_ if signed else np.abs(ope_)
+ 
+ 
+ def metric_cov(y_true, y_pred, **kwargs):
+@@ -1953,7 +1954,8 @@ def test_multiple_ts(self, config):
+             (metrics.mape, sklearn_mape, {}, {}),
+             (metrics.wmape, metric_wmape, {}, {}),
+             (metrics.smape, metric_smape, {}, {}),
+-            (metrics.ope, metric_ope, {}, {}),
++            (metrics.ope, metric_ope, {"signed": False}, {"signed": False}),
++            (metrics.ope, metric_ope, {"signed": True}, {"signed": True}),
+             (metrics.marre, metric_marre, {}, {}),
+             (metrics.autc, metric_autc, {}, {}),
+             (metrics.r2_score, sklearn.metrics.r2_score, {}, {}),

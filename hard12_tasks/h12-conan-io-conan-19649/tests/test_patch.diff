@@ -1,0 +1,215 @@
+diff --git a/test/functional/toolchains/env/test_virtualenv_powershell.py b/test/functional/toolchains/env/test_virtualenv_powershell.py
+index d5288a644fa..85cbcfaec48 100644
+--- a/test/functional/toolchains/env/test_virtualenv_powershell.py
++++ b/test/functional/toolchains/env/test_virtualenv_powershell.py
+@@ -53,10 +53,6 @@ def build(self):
+     client.save({"conanfile.py": conanfile})
+     client.run("install . -s:b os=Windows -s:h os=Windows")
+ 
+-    assert not os.path.exists(os.path.join(client.current_folder, "conanbuildenv.sh"))
+-    assert not os.path.exists(os.path.join(client.current_folder, "conanbuildenv.bat"))
+-    assert not os.path.exists(os.path.join(client.current_folder, "conanrunenv.sh"))
+-    assert not os.path.exists(os.path.join(client.current_folder, "conanrunenv.bat"))
+     with open(os.path.join(client.current_folder, "conanbuildenv.ps1"), "r", encoding="utf-16") as f:
+         buildenv = f.read()
+     assert '$env:MYPATH1="c:/path/to/ar"' in buildenv
+@@ -99,23 +95,26 @@ def test(self):
+                 self.run('mkdir "hello world"')
+                 self.run("dir")
+                 self.run('cd "hello world"')
+-                self.run("set MYVC_CUSTOMVAR1")
+-                self.run("set MYVC_CUSTOMVAR2")
++                if self.conf.get("tools.env.virtualenv:powershell"):
++                    self.run("set MYVC_CUSTOMVAR2")
++                else:
++                    self.run("set MYVC_CUSTOMVAR1")
+             """)
+     client.save({"conanfile.py": GenConanfile("pkg", "1.0"),
+                  "test_package/conanfile.py": test_package})
+     client.run("create .")
+     assert "hello world" in client.out
+     assert "MYENV!!!" in client.out
+-    assert "MYPS1!!!!" in client.out
++    # The .ps1 is not used by default, only with the powershell conf
++    assert "MYPS1!!!!" not in client.out
+     assert "MYVC_CUSTOMVAR1=PATATA1" in client.out
+-    assert "MYVC_CUSTOMVAR2=PATATA2" in client.out
++    assert "MYVC_CUSTOMVAR2" not in client.out
+     # This was crashing because the .ps1 of test_package was not being cleaned
+     client.run(f"create . -c tools.env.virtualenv:powershell={powershell}")
+     assert "hello world" in client.out
+-    assert "MYENV!!!" in client.out
++    # Only the .ps1 are used, the .bat are not
++    assert "MYENV!!!" not in client.out
+     assert "MYPS1!!!!" in client.out
+-    assert "MYVC_CUSTOMVAR1=PATATA1" in client.out
+     assert "MYVC_CUSTOMVAR2=PATATA2" in client.out
+ 
+ @pytest.mark.skipif(platform.system() != "Windows", reason="Requires Windows powershell")
+@@ -247,7 +246,7 @@ def test_powershell_deactivation():
+     c.save({"conanfile.txt": ""})
+     c.run('install . -c tools.env.virtualenv:powershell=!')
+     files = os.listdir(c.current_folder)
+-    assert "conanrun.ps1" not in files
+-    assert "conanbuild.ps1" not in files
+-    assert "conanrunenv.ps1" not in files
+-    assert "conanbuildenv.ps1" not in files
++    # The .ps1 are always generated, but the unset conf must not break the .bat/.sh being used
++    ext = ".bat" if platform.system() == "Windows" else ".sh"
++    assert "conanrun" + ext in files
++    assert "conanbuild" + ext in files
+diff --git a/test/integration/environment/test_env.py b/test/integration/environment/test_env.py
+index fabf7323e78..168dcbf8f90 100644
+--- a/test/integration/environment/test_env.py
++++ b/test/integration/environment/test_env.py
+@@ -691,9 +691,9 @@ class Pkg(ConanFile):
+     client.save({"conanfile.py": conanfile}, clean_first=True)
+     client.run("install . -c tools.env.virtualenv:powershell=True")
+     assert os.path.isfile(os.path.join(client.current_folder, "conanrunenv.ps1"))
+-    assert not os.path.isfile(os.path.join(client.current_folder, "conanrunenv.bat"))
++    assert os.path.isfile(os.path.join(client.current_folder, "conanrunenv.bat"))
+     for i in range(num_deps):
+-        cmd = environment_wrap_command(ConanFileMock(), "conanrunenv", client.current_folder,
++        cmd = environment_wrap_command(ConanFileMock(), "conanrunenv.ps1", client.current_folder,
+                                        "mycompiler{}.bat".format(i))
+         # if num_deps > 50:  # to be safe if we change the "num_deps" number
+         #    client.run_command(cmd, assert_error=True)
+@@ -704,7 +704,6 @@ class Pkg(ConanFile):
+     # Test .bats now
+     client.save({"conanfile.py": conanfile}, clean_first=True)
+     client.run("install .")
+-    assert not os.path.isfile(os.path.join(client.current_folder, "conanrunenv.ps1"))
+     assert os.path.isfile(os.path.join(client.current_folder, "conanrunenv.bat"))
+     for i in range(num_deps):
+         cmd = environment_wrap_command(ConanFileMock(), "conanrunenv", client.current_folder,
+diff --git a/test/integration/environment/test_env_ps1.py b/test/integration/environment/test_env_ps1.py
+new file mode 100644
+index 00000000000..e991e40744f
+--- /dev/null
++++ b/test/integration/environment/test_env_ps1.py
+@@ -0,0 +1,79 @@
++import os
++import platform
++import textwrap
++
++from conan.test.utils.mocks import ConanFileMock
++from conan.test.utils.tools import TestClient, GenConanfile
++from conan.tools.env.environment import environment_wrap_command
++
++script_ext = ".bat" if platform.system() == "Windows" else ".sh"
++
++
++def test_ps1_consumer_and_test_package():
++    c = TestClient()
++    c.save({"tool/conanfile.py": GenConanfile("tool", "0.1"),
++            "conanfile.txt": "[tool_requires]\ntool/0.1\n[generators]\nVirtualBuildEnv\n",
++            "profile": "[buildenv]\nMYVAR=1\n"})
++    c.run("create tool")
++    c.run("install . -pr=profile")
++    files = sorted(f for f in os.listdir(c.current_folder) if f.startswith("conan"))
++    assert "conanbuild.ps1" in files
++    assert "conanbuild" + script_ext in files
++    ps1s = [f for f in files if f.endswith(".ps1")]
++    assert "conanbuildenv.ps1" in ps1s
++    for f in ps1s:  # all .ps1 have the equivalent .bat/.sh
++        assert (os.path.splitext(f)[0] + ".bat" in files
++                or os.path.splitext(f)[0] + ".sh" in files)
++
++
++def test_ps1_not_in_cache_but_in_test_package():
++    c = TestClient()
++    test_package = textwrap.dedent("""
++        import os
++        from conan import ConanFile
++        class Test(ConanFile):
++            generators = "VirtualRunEnv"
++            def requirements(self):
++                self.requires(self.tested_reference_str)
++            def test(self):
++                files = sorted(f for f in os.listdir(self.generators_folder) if "conan" in f)
++                self.output.info(f"TEST: {files}")
++        """)
++    pkg = textwrap.dedent("""
++        import os
++        from conan import ConanFile
++        class Pkg(ConanFile):
++            name = "pkg"
++            version = "0.1"
++            generators = "VirtualBuildEnv"
++            def build(self):
++                files = sorted(f for f in os.listdir(self.generators_folder) if "conan" in f)
++                self.output.info(f"BUILD: {files}")
++        """)
++    c.save({"conanfile.py": pkg, "test_package/conanfile.py": test_package})
++    c.run("create .")
++    build = [line for line in c.out.splitlines() if "BUILD:" in line][0]
++    test = [line for line in c.out.splitlines() if "TEST:" in line][0]
++    assert ".ps1" not in build
++    assert "conanrun.ps1" in test
++    # With the conf, they are generated also for the dependencies
++    c.run("create . -c tools.env.virtualenv:powershell=powershell.exe")
++    build = [line for line in c.out.splitlines() if "BUILD:" in line][0]
++    assert "conanbuild.ps1" in build
++
++
++def test_ps1_only_used_with_powershell_conf():
++    c = TestClient()
++    c.save({"conanfile.txt": "[generators]\nVirtualBuildEnv\n",
++            "profile": "[buildenv]\nMYVAR=1\n"})
++    c.run("install . -pr=profile")
++    # By default, Conan commands use the .bat/.sh
++    cmd = environment_wrap_command(ConanFileMock(), "conanbuild", c.current_folder, "echo hello")
++    assert "conanbuild" + script_ext in cmd
++    assert ".ps1" not in cmd
++    # Only if defined, it will use the .ps1
++    conanfile = ConanFileMock()
++    conanfile.conf.define("tools.env.virtualenv:powershell", "powershell.exe")
++    cmd = environment_wrap_command(conanfile, "conanbuild", c.current_folder, "echo hello")
++    assert "conanbuild.ps1" in cmd
++    assert script_ext not in cmd  # only the .ps1, not both
+diff --git a/test/integration/environment/test_virtualrunenv_runtime_copy.py b/test/integration/environment/test_virtualrunenv_runtime_copy.py
+index 748f65aedc7..3d756ab422f 100644
+--- a/test/integration/environment/test_virtualrunenv_runtime_copy.py
++++ b/test/integration/environment/test_virtualrunenv_runtime_copy.py
+@@ -49,7 +49,7 @@ def test_win_copy_folder(self):
+         assert not os.path.exists(os.path.join(c.current_folder, "consumer",
+                                                "myruntime", "dep_lib.so"))
+ 
+-        runenv_files = glob.glob(os.path.join(c.current_folder, "consumer", "conanrunenv.*"))
++        runenv_files = glob.glob(os.path.join(c.current_folder, "consumer", "conanrunenv.[bs][ah]*"))
+         assert len(runenv_files) == 1
+         runenv = c.load(runenv_files[0])
+         assert "myruntime" in runenv
+@@ -79,7 +79,7 @@ def test_win_copy_folder_with_full_deploy(self):
+         assert c.load("deployed/full_deploy/host/dep/1.0/bin/dep_app.exe") == "APP_CONTENT"
+         assert c.load("consumer/myruntime/dep_app.exe") == "APP_CONTENT"
+ 
+-        runenv_files = glob.glob(os.path.join(c.current_folder, "consumer", "conanrunenv.*"))
++        runenv_files = glob.glob(os.path.join(c.current_folder, "consumer", "conanrunenv.[bs][ah]*"))
+         assert len(runenv_files) == 1
+         runenv = c.load(runenv_files[0])
+         # PATH points to the deployed copy folder, not the cache or the deploy source
+diff --git a/test/integration/toolchains/microsoft/vcvars_test.py b/test/integration/toolchains/microsoft/vcvars_test.py
+index b3c04f1be88..15fc4b3f984 100644
+--- a/test/integration/toolchains/microsoft/vcvars_test.py
++++ b/test/integration/toolchains/microsoft/vcvars_test.py
+@@ -35,6 +35,19 @@ def generate(self):
+         assert "conanvcvars.bat" in bat_contents
+ 
+ 
++@pytest.mark.skipif(platform.system() != "Windows", reason="Requires Windows")
++def test_vcvars_generator_ps1():
++    client = TestClient(path_with_spaces=False)
++    client.save({"conanfile.txt": ""})
++    client.run('install . -g VCVars -s os=Windows -s compiler="msvc" -s compiler.version=191 '
++               '-s compiler.cppstd=14 -s compiler.runtime=static')
++
++    # The .bat is always generated and used by Conan
++    assert "conanvcvars.bat" in client.load("conanbuild.bat")
++    assert "conanvcvars.bat&set" in client.load("conanvcvars.ps1")
++    assert "conanvcvars.ps1" in client.load("conanbuild.ps1")
++
++
+ @pytest.mark.skipif(platform.system() not in ["Windows"], reason="Requires Windows")
+ def test_vcvars_generator_skip():
+     """

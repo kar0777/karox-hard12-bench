@@ -1,0 +1,123 @@
+diff --git a/tests/unit/app/mail/test_driver_config.py b/tests/unit/app/mail/test_driver_config.py
+index 6b80ac4e5de..72592e5dd72 100644
+--- a/tests/unit/app/mail/test_driver_config.py
++++ b/tests/unit/app/mail/test_driver_config.py
+@@ -7,6 +7,7 @@
+ import yaml
+ 
+ from qwenpaw.app.mail import driver_config
++from qwenpaw.config.config import AgentMailConfig, AgentMailCredential
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -42,3 +43,28 @@ def test_frozen_driver_card_preserves_python_override(monkeypatch):
+ 
+     assert command == "/custom/bin/python"
+     assert args == ["-m", "qwenpawmail_mcp"]
++
++
++@pytest.mark.parametrize(
++    ("name", "domain", "expected"),
++    [
++        ("tester", "163.com", "tester@163.com"),
++        (
++            "3855686217@qq.com",
++            "qq.com",
++            "3855686217@qq.com",
++        ),
++    ],
++)
++def test_build_qwenpawmail_env_login_address(name, domain, expected):
++    """A name that is already a full address must not gain another domain."""
++    mail = AgentMailConfig(
++        is_new_account=False,
++        credential=AgentMailCredential(
++            name=name,
++            domain=domain,
++            auth_code="a" * 16,
++        ),
++    )
++    env = driver_config.build_qwenpawmail_env(mail)
++    assert env["QWENPAWMAIL_EMAIL"] == expected
+diff --git a/tests/unit/app/mail/test_monitor.py b/tests/unit/app/mail/test_monitor.py
+index 59bf2d8feaf..f402a0377ac 100644
+--- a/tests/unit/app/mail/test_monitor.py
++++ b/tests/unit/app/mail/test_monitor.py
+@@ -2187,6 +2187,36 @@ def test_mailbox_credential_rotation_keeps_watermark(tmp_path):
+     assert rotated._last_uid == 42
+ 
+ 
++@pytest.mark.parametrize(
++    ("name", "domain", "expected"),
++    [
++        ("tester", "163.com", "tester@163.com"),
++        (
++            "3855686217@qq.com",
++            "qq.com",
++            "3855686217@qq.com",
++        ),
++        ("user@qq.com", "163.com", "user@qq.com"),
++    ],
++)
++def test_monitor_login_address_keeps_full_address(
++    tmp_path,
++    name,
++    domain,
++    expected,
++):
++    """IMAP login uses name as-is when it already contains '@'."""
++    config = _mail_config()
++    config.credential.name = name
++    config.credential.domain = domain
++    service = MailMonitorService(
++        agent_id="test-agent",
++        workspace=FakeWorkspace(tmp_path),
++        mail_config=config,
++    )
++    assert service.email_address == expected
++
++
+ def test_empty_mailbox_persists_zero_baseline(tmp_path):
+     service, _ = _service(tmp_path)
+     service._current_uidvalidity = 1
+diff --git a/tests/unit/routers/test_agents_mail_validation.py b/tests/unit/routers/test_agents_mail_validation.py
+index 23390663fe9..8f8f630ddca 100644
+--- a/tests/unit/routers/test_agents_mail_validation.py
++++ b/tests/unit/routers/test_agents_mail_validation.py
+@@ -62,6 +62,36 @@ def test_valid_config_without_push_passes():
+     _validate_mail_config(_valid_mail())
+ 
+ 
++def test_conflicting_account_name_domain_rejected():
++    """Reject a full address whose domain differs from credential.domain."""
++    mail = _valid_mail()
++    mail.credential.name = "user@qq.com"
++    mail.credential.domain = "163.com"
++    with pytest.raises(HTTPException) as exc_info:
++        _validate_mail_config(mail)
++    assert exc_info.value.status_code == 400
++    detail = str(exc_info.value.detail)
++    assert "qq.com" in detail
++    assert "163.com" in detail
++    assert "credential.domain" in detail
++
++
++@pytest.mark.parametrize(
++    ("name", "domain"),
++    [
++        ("user@qq.com", "qq.com"),
++        ("User@QQ.COM", "qq.com"),
++        ("tester", "163.com"),
++    ],
++)
++def test_consistent_account_name_domain_passes(name, domain):
++    """Matching full addresses and local-part names stay valid."""
++    mail = _valid_mail()
++    mail.credential.name = name
++    mail.credential.domain = domain
++    _validate_mail_config(mail)
++
++
+ def test_valid_push_config_passes():
+     push = AgentMailPushConfig(
+         mode="rules_then_agent",

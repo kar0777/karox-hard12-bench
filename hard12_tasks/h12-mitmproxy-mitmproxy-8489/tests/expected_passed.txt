@@ -1,0 +1,11 @@
+test/mitmproxy/net/http/test_cookies.py::test_parse_set_cookie_header
+test/mitmproxy/net/http/test_cookies.py::test_cookie_roundtrips
+test/mitmproxy/net/http/test_cookies.py::test_get_expiration_ts
+test/mitmproxy/net/http/test_cookies.py::test_group_cookies
+test/mitmproxy/net/http/test_cookies.py::test_is_expired
+test/mitmproxy/net/http/test_cookies.py::test_pairs_roundtrips
+test/mitmproxy/net/http/test_cookies.py::test_parse_set_cookie_pairs
+test/mitmproxy/net/http/test_cookies.py::test_read_cookie_pairs
+test/mitmproxy/net/http/test_cookies.py::test_read_key
+test/mitmproxy/net/http/test_cookies.py::test_read_quoted_string
+test/mitmproxy/net/http/test_cookies.py::test_refresh_cookie

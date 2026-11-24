@@ -1,0 +1,161 @@
+diff --git a/test/fixtures/rules/std_rule_cases/CV06.yml b/test/fixtures/rules/std_rule_cases/CV06.yml
+index 2f3889ab90..81d89f26fc 100644
+--- a/test/fixtures/rules/std_rule_cases/CV06.yml
++++ b/test/fixtures/rules/std_rule_cases/CV06.yml
+@@ -751,3 +751,93 @@ test_fail_bigquery_procedure_missing_semicolon:
+     rules:
+       convention.terminator:
+         require_final_semicolon: true
++
++# The newline terminating a detached line comment must survive moving its
++# following semicolon. Otherwise code or another comment can be swallowed.
++test_fail_newline_detached_comment_followed_by_statement:
++  fail_str: "SELECT\n1\n-- c\n;SELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- c\nSELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_detached_comment_multiple_blank_lines:
++  fail_str: "SELECT\n1\n-- c\n  \n  ;  SELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- c\n  SELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_detached_comment_followed_by_inline_comment:
++  fail_str: "SELECT\n1\n-- first\n;-- second\nSELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- first\n-- second\nSELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_detached_comment_followed_by_block_comment:
++  fail_str: "SELECT\n1\n-- first\n;/* block\n comment */SELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- first\n/* block\n comment */SELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_attached_and_detached_comments_followed_by_statement:
++  fail_str: "SELECT\n1 -- attached\n-- detached\n;SELECT 2;"
++  fix_str: "SELECT\n1 -- attached\n;\n-- detached\nSELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_attached_comment_keeps_existing_spacing:
++  fail_str: "SELECT\n1 -- attached\n\n;SELECT 2;"
++  fix_str: "SELECT\n1 -- attached\n;SELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_detached_comment_with_existing_following_newline:
++  fail_str: "SELECT\n1\n-- detached\n\n;\nSELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- detached\nSELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_detached_comment_with_only_trailing_whitespace:
++  fail_str: "SELECT\n1\n-- detached\n\n;  "
++  fix_str: "SELECT\n1\n;\n-- detached  "
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_block_then_inline_comment:
++  fail_str: "SELECT\n1\n/* block */\n-- detached\n;SELECT 2;"
++  fix_str: "SELECT\n1\n;\n/* block */\n-- detached\nSELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_inline_then_block_comment:
++  fail_str: "SELECT\n1\n-- detached\n/* block */\n;SELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- detached\n/* block */SELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
++
++test_fail_newline_detached_comment_crlf:
++  fail_str: "SELECT\r\n1\r\n-- c\r\n;SELECT 2;"
++  fix_str: "SELECT\n1\n;\n-- c\nSELECT 2;"
++  configs:
++    rules:
++      convention.terminator:
++        multiline_newline: true
+diff --git a/test/rules/std_CV06_test.py b/test/rules/std_CV06_test.py
+new file mode 100644
+index 0000000000..62cd8f06b5
+--- /dev/null
++++ b/test/rules/std_CV06_test.py
+@@ -0,0 +1,57 @@
++"""Execution-level regressions for CV06 semicolon placement."""
++
++import sqlite3
++from contextlib import closing
++
++import pytest
++
++from sqlfluff.core import FluffConfig, Linter
++
++
++@pytest.mark.parametrize("dialect", ["ansi", "sqlite"])
++@pytest.mark.parametrize(
++    "sql,expected",
++    [
++        ("SELECT\n17\n-- comment\n;SELECT 29;", [[(17,)], [(29,)]]),
++        (
++            "CREATE TABLE t (v INTEGER);\n"
++            "INSERT INTO t\nVALUES (17)\n-- comment\n;"
++            "INSERT INTO t VALUES (29);SELECT v FROM t ORDER BY v;",
++            [[], [], [], [(17,), (29,)]],
++        ),
++        (
++            "CREATE TABLE t (v INTEGER);INSERT INTO t VALUES (17), (29);\n"
++            "DELETE FROM t\nWHERE v = 17\n-- comment\n;"
++            "DELETE FROM t WHERE v = 29;SELECT v FROM t;",
++            [[], [], [], [], []],
++        ),
++    ],
++    ids=["select", "insert", "delete"],
++)
++def test__rules__CV06_newline_preserves_execution(
++    sql: str, expected: list[list[tuple[int, ...]]], dialect: str
++) -> None:
++    """Moving a terminator must not extend a line comment over the next SQL."""
++    config = FluffConfig(
++        configs={"rules": {"convention.terminator": {"multiline_newline": True}}},
++        overrides={"dialect": dialect, "rules": "CV06", "templater": "raw"},
++    )
++    linter = Linter(config=config)
++    fixed = linter.lint_string(sql, fix=True).fix_string()[0]
++
++    assert not linter.parse_string(fixed).violations
++    assert not linter.lint_string(fixed).violations
++    assert linter.lint_string(fixed, fix=True).fix_string()[0] == fixed
++
++    # Both dialect configurations use the same SQLite engine. These flat,
++    # trigger-free statements need no external database or real data.
++    for script in (sql, fixed):
++        with closing(sqlite3.connect(":memory:")) as connection:
++            results = []
++            statement = ""
++            for char in script:
++                statement += char
++                if sqlite3.complete_statement(statement):
++                    results.append(connection.execute(statement).fetchall())
++                    statement = ""
++            assert results == expected

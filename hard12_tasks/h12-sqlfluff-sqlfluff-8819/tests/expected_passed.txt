@@ -1,0 +1,6 @@
+test/rules/std_CV06_test.py::test__rules__CV06_newline_preserves_execution[delete-ansi]
+test/rules/std_CV06_test.py::test__rules__CV06_newline_preserves_execution[delete-sqlite]
+test/rules/std_CV06_test.py::test__rules__CV06_newline_preserves_execution[insert-ansi]
+test/rules/std_CV06_test.py::test__rules__CV06_newline_preserves_execution[insert-sqlite]
+test/rules/std_CV06_test.py::test__rules__CV06_newline_preserves_execution[select-ansi]
+test/rules/std_CV06_test.py::test__rules__CV06_newline_preserves_execution[select-sqlite]

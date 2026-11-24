@@ -1,0 +1,4 @@
+graphistry/tests/compute/gfql/test_issue_2034_id_contracts.py::test_seeded_typed_hop_duplicate_seed_rows_match_the_general_path[pandas]
+graphistry/tests/compute/gfql/test_issue_2034_id_contracts.py::test_seeded_typed_hop_trace_reports_duplicate_decline_and_unique_serve[pandas]
+graphistry/tests/compute/gfql/test_issue_2034_id_contracts.py::test_node_lookup_duplicate_and_null_ids_follow_the_row_contract[pandas]
+graphistry/tests/compute/gfql/test_issue_2034_id_contracts.py::test_seeded_typed_hop_null_seed_ids_do_not_link[pandas]

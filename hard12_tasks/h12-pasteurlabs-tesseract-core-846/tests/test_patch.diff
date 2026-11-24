@@ -1,0 +1,232 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 1f177edda..d125c1577 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -281,52 +281,69 @@ def serve_in_subprocess():
+     environment. The server is torn down and its output printed on exit.
+     """
+     from contextlib import contextmanager
++    from tempfile import TemporaryFile
+ 
+     @contextmanager
+     def serve(api_file, port, num_workers=1, timeout=30.0, env=None):
+-        proc = None
+-        try:
+-            proc = subprocess.Popen(
+-                [
+-                    sys.executable,
+-                    "-c",
+-                    (
+-                        "from tesseract_core.runtime.serve import serve; "
+-                        f"serve(host='localhost', port={port}, num_workers={num_workers})"
+-                    ),
+-                ],
+-                env={**os.environ, "TESSERACT_API_PATH": str(api_file), **(env or {})},
+-                stdout=subprocess.PIPE,
+-                stderr=subprocess.PIPE,
+-            )
++        # Undrained pipes can fill with tracebacks and block the server, especially
++        # on Windows where the pipe buffer is small. Retain logs in a file instead.
++        with TemporaryFile() as server_log:
++            proc = None
++            try:
++                proc = subprocess.Popen(
++                    [
++                        sys.executable,
++                        "-c",
++                        (
++                            "from tesseract_core.runtime.serve import serve; "
++                            f"serve(host='localhost', port={port}, num_workers={num_workers})"
++                        ),
++                    ],
++                    env={
++                        **os.environ,
++                        "TESSERACT_API_PATH": str(api_file),
++                        **(env or {}),
++                    },
++                    stdout=server_log,
++                    stderr=subprocess.STDOUT,
++                )
+ 
+-            deadline = time.monotonic() + timeout
+-            while time.monotonic() < deadline:
+-                if proc.poll() is not None:
+-                    out, err = proc.communicate()
+-                    raise RuntimeError(
+-                        f"server exited early (code {proc.returncode}):\n"
+-                        f"{out.decode()}{err.decode()}"
+-                    )
+-                try:
+-                    resp = requests.get(f"http://localhost:{port}/health")
+-                except requests.exceptions.ConnectionError:
+-                    time.sleep(0.1)
++                deadline = time.monotonic() + timeout
++                while time.monotonic() < deadline:
++                    if proc.poll() is not None:
++                        server_log.seek(0)
++                        raise RuntimeError(
++                            f"server exited early (code {proc.returncode}):\n"
++                            f"{server_log.read().decode()}"
++                        )
++                    try:
++                        resp = requests.get(
++                            f"http://localhost:{port}/health", timeout=1
++                        )
++                    except (
++                        requests.exceptions.ConnectionError,
++                        requests.exceptions.Timeout,
++                    ):
++                        time.sleep(0.1)
++                    else:
++                        if resp.status_code == 200:
++                            break
+                 else:
+-                    if resp.status_code == 200:
+-                        break
+-            else:
+-                raise TimeoutError("Server did not start in time")
+-
+-            yield f"http://localhost:{port}"
+-
+-        finally:
+-            if proc is not None:
+-                proc.terminate()
+-                stdout, stderr = proc.communicate()
+-                print(stdout.decode())
+-                print(stderr.decode())
+-                proc.wait(timeout=5)
++                    raise TimeoutError("Server did not start in time")
++
++                yield f"http://localhost:{port}"
++
++            finally:
++                if proc is not None:
++                    if proc.poll() is None:
++                        proc.terminate()
++                        try:
++                            proc.wait(timeout=5)
++                        except subprocess.TimeoutExpired:
++                            proc.kill()
++                            proc.wait(timeout=5)
++                    server_log.seek(0)
++                    print(server_log.read().decode())
+ 
+     return serve
+ 
+diff --git a/tests/runtime_tests/test_serve.py b/tests/runtime_tests/test_serve.py
+index 2a02326dc..f4ff87601 100644
+--- a/tests/runtime_tests/test_serve.py
++++ b/tests/runtime_tests/test_serve.py
+@@ -539,7 +539,8 @@ def apply(input: InputSchema) -> OutputSchema:
+         assert len(pids) > 1, "All requests were handled by the same worker"
+ 
+ 
+-def test_debug_mode(dummy_tesseract_module, monkeypatch):
++@pytest.mark.parametrize("accept", ["application/json", "text/html, application/json"])
++def test_debug_mode(dummy_tesseract_module, monkeypatch, accept):
+     from tesseract_core.runtime.config import update_config
+ 
+     def apply_that_raises(inputs):
+@@ -553,6 +554,7 @@ def apply_that_raises(inputs):
+ 
+     response = http_client.post(
+         "/apply",
++        headers={"Accept": accept},
+         json={
+             "inputs": model_to_json(
+                 dummy_tesseract_module.InputSchema.model_validate(test_input)
+@@ -560,7 +562,12 @@ def apply_that_raises(inputs):
+         },
+     )
+     assert response.status_code == 500, response.text
+-    assert response.text == "Internal Server Error"
++    assert response.headers["content-type"] == "text/plain; charset=utf-8"
++    assert response.text.startswith("Internal Server Error.")
++    assert "server log" in response.text
++    assert "TESSERACT_DEBUG=1" in response.text
++    assert "content/how-to/debugging.html#debug-mode" in response.text
++    assert "Traceback" not in response.text
+     assert "This is a test error" not in response.text
+     assert "/test" not in rest_api.openapi()["paths"]
+ 
+@@ -570,6 +577,7 @@ def apply_that_raises(inputs):
+ 
+     response = http_client.post(
+         "/apply",
++        headers={"Accept": accept},
+         json={
+             "inputs": model_to_json(
+                 dummy_tesseract_module.InputSchema.model_validate(test_input)
+@@ -578,10 +586,71 @@ def apply_that_raises(inputs):
+     )
+     assert response.status_code == 500, response.text
+     assert "This is a test error" in response.text
+-    assert "Traceback" in response.text
++    if "text/html" in accept:
++        assert response.headers["content-type"] == "text/html; charset=utf-8"
++    else:
++        assert response.headers["content-type"] == "text/plain; charset=utf-8"
++        assert "Traceback" in response.text
++    assert "TESSERACT_DEBUG=1" not in response.text
+     assert "/test" in rest_api.openapi()["paths"]
+ 
+ 
++@pytest.mark.parametrize("debug", [False, True])
++@pytest.mark.parametrize("error_size", [0, 128 * 1024])
++def test_server_error_over_http(
++    tmp_path, free_port, serve_in_subprocess, capsys, debug, error_size
++):
++    """Real HTTP errors give guidance without losing tracebacks in server logs."""
++    from tesseract_core import Tesseract
++
++    api_file = tmp_path / "tesseract_api.py"
++    api_file.write_text(
++        dedent(
++            f"""\
++            from pydantic import BaseModel
++
++            class InputSchema(BaseModel):
++                x: float
++
++            class OutputSchema(BaseModel):
++                y: float
++
++            def apply(inputs: InputSchema) -> OutputSchema:
++                raise ValueError("boom" + "x" * {error_size})
++            """
++        ),
++        encoding="utf-8",
++    )
++    with serve_in_subprocess(
++        api_file,
++        free_port,
++        env={"TESSERACT_DEBUG": str(int(debug))},
++    ) as url:
++        response = requests.post(f"{url}/apply", json={"inputs": {"x": 1}}, timeout=10)
++        assert response.status_code == 500
++        assert response.headers["content-type"] == "text/plain; charset=utf-8"
++        if debug:
++            assert "Traceback" in response.text
++            assert "ValueError: boom" in response.text
++            assert "TESSERACT_DEBUG=1" not in response.text
++        else:
++            assert response.text.count("TESSERACT_DEBUG=1") == 1
++            assert "Traceback" not in response.text
++            assert "boom" not in response.text
++
++        with (
++            Tesseract.from_url(url, timeout=10) as tess,
++            pytest.raises(RuntimeError) as exc_info,
++        ):
++            tess.apply({"x": 1})
++        message = str(exc_info.value)
++        assert message == f"Error 500 from Tesseract: {response.text}"
++
++    server_logs = capsys.readouterr().out
++    assert "Traceback" in server_logs
++    assert "ValueError: boom" in server_logs
++
++
+ def test_custom_validation_error_over_http(dummy_tesseract_module):
+     """Custom array validation errors are properly reconstructed as ValidationErrors via the SDK."""
+     from pydantic import ValidationError as PydanticValidationError

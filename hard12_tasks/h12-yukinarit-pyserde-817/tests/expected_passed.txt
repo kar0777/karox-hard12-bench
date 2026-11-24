@@ -1,0 +1,9 @@
+tests/test_type_alias.py::test_pep695_generic_type_alias
+tests/test_type_alias.py::test_pep695_recursive_type_alias_skipped_field
+tests/test_type_alias.py::test_pep695_type_alias
+tests/test_type_alias.py::test_pep695_type_alias_as_top_level_union
+tests/test_type_alias.py::test_pep695_type_alias_literal
+tests/test_type_alias.py::test_pep695_type_alias_union
+tests/test_type_alias.py::test_pep695_type_alias_variable_tuple
+tests/test_type_alias.py::test_typealiastype_list
+tests/test_type_alias.py::test_typealiastype_nested_alias

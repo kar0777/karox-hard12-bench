@@ -1,0 +1,45 @@
+diff --git a/tests/catalog/test_rest.py b/tests/catalog/test_rest.py
+index 4877ee2f73..b1b46e4673 100644
+--- a/tests/catalog/test_rest.py
++++ b/tests/catalog/test_rest.py
+@@ -1799,6 +1799,7 @@ def test_create_view_200(rest_mock: Mocker, table_schema_simple: Schema, example
+     expected = View(
+         identifier=("fokko", "fokko2"),
+         metadata=ViewMetadata(**example_view_metadata_rest_json["metadata"]),
++        metadata_location=example_view_metadata_rest_json["metadata-location"],
+     )
+     assert actual == expected
+     assert actual.config == example_view_metadata_rest_json["config"]
+@@ -1846,7 +1847,11 @@ def test_load_view_200(rest_mock: Mocker, example_view_metadata_rest_json: dict[
+     )
+     catalog = RestCatalog("rest", uri=TEST_URI, token=TEST_TOKEN)
+     actual = catalog.load_view(("fokko", "view"))
+-    expected = View(identifier=("fokko", "view"), metadata=ViewMetadata(**example_view_metadata_rest_json["metadata"]))
++    expected = View(
++        identifier=("fokko", "view"),
++        metadata=ViewMetadata(**example_view_metadata_rest_json["metadata"]),
++        metadata_location=example_view_metadata_rest_json["metadata-location"],
++    )
+     assert actual == expected
+     assert actual.config == example_view_metadata_rest_json["config"]
+ 
+@@ -2806,6 +2811,7 @@ def test_register_view_200(rest_mock: Mocker, example_view_metadata_rest_json: d
+     expected = View(
+         identifier=("default", "registered_view"),
+         metadata=ViewMetadata(**example_view_metadata_rest_json["metadata"]),
++        metadata_location=example_view_metadata_rest_json["metadata-location"],
+     )
+     assert actual == expected
+     assert actual.config == example_view_metadata_rest_json["config"]
+diff --git a/tests/integration/test_rest_catalog.py b/tests/integration/test_rest_catalog.py
+index 05039a982e..1705dcfb27 100644
+--- a/tests/integration/test_rest_catalog.py
++++ b/tests/integration/test_rest_catalog.py
+@@ -92,6 +92,7 @@ def test_load_view(catalog: RestCatalog, table_schema_nested: Schema, database_n
+     )
+     view = catalog.create_view(identifier, table_schema_nested, view_version=view_version)
+     loaded_view = catalog.load_view(identifier)
++    assert view.metadata_location is not None
+     assert view == loaded_view
+ 
+ 
