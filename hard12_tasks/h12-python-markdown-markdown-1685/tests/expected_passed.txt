@@ -1,0 +1,5 @@
+tests/test_syntax/blocks/test_list_nesting.py::TestListNestingLimit::test_deeply_indented_list_does_not_raise
+tests/test_syntax/blocks/test_list_nesting.py::TestListNestingLimit::test_deeply_nested_list_does_not_raise
+tests/test_syntax/blocks/test_list_nesting.py::TestListNestingLimit::test_deeply_nested_ordered_list_does_not_raise
+tests/test_syntax/blocks/test_list_nesting.py::TestListNestingLimit::test_nesting_stops_short_of_the_recursion_limit
+tests/test_syntax/blocks/test_list_nesting.py::TestListNestingLimit::test_nesting_below_the_limit_is_unchanged

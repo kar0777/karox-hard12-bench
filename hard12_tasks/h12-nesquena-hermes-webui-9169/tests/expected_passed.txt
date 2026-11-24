@@ -1,0 +1,6 @@
+tests/test_storage_full_error.py::test_chat_start_enospc_reports_storage_full
+tests/test_storage_full_error.py::test_get_path_enospc_reports_storage_full
+tests/test_storage_full_error.py::test_write_storage_full_variants[edquot]
+tests/test_storage_full_error.py::test_write_storage_full_variants[raised-from-enospc]
+tests/test_storage_full_error.py::test_other_errors_keep_generic_500[other-oserror]
+tests/test_storage_full_error.py::test_other_errors_keep_generic_500[value-error]

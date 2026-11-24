@@ -1,0 +1,15 @@
+test/core/test_indexing.py::test_indexing_by_dataarray
+test/core/test_indexing.py::test_indexing_by_size_0_array
+test/core/test_indexing.py::test_can_index_grid_dim_not_in_data
+test/core/test_indexing.py::test_dataset_isel_keeps_bonus_coords
+test/core/test_indexing.py::test_indexing_does_not_edit_indexers_dict
+test/core/test_indexing.py::test_indexing_of_uxarray_obj_with_grid_dim_coords
+test/core/test_indexing.py::test_isel_can_use_bool
+test/core/test_indexing.py::test_isel_can_use_bool_with_coords
+test/core/test_indexing.py::test_isel_can_use_slice
+test/core/test_indexing.py::test_isel_crash_if_2d_indexer
+test/core/test_indexing.py::test_isel_crash_if_coordinates_conflict
+test/core/test_indexing.py::test_isel_when_indexer_dim_in_uxarray_obj
+test/core/test_indexing.py::test_sel_crash_if_provided_selection_options_with_coordless_dims
+test/core/test_indexing.py::test_sel_indexes_grid
+test/core/test_indexing.py::test_sel_uses_grid_dim_labels

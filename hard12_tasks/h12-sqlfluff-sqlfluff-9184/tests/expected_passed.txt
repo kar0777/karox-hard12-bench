@@ -1,0 +1,2 @@
+test/rules/std_ST01_test.py::test_rules_std_ST01_preserve_comments_end_to_end[in_sql0-out_sql0]
+test/rules/std_ST01_test.py::test_rules_std_ST01_preserve_comments_end_to_end[in_sql1-out_sql1]

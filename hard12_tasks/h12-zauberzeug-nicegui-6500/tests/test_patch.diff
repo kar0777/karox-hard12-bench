@@ -1,0 +1,50 @@
+diff --git a/tests/test_binding.py b/tests/test_binding.py
+index 6072c48175..85974d3f1f 100644
+--- a/tests/test_binding.py
++++ b/tests/test_binding.py
+@@ -332,6 +332,21 @@ def page():
+     await user.should_see('a = 2')  # the final value of a should be 2
+ 
+ 
++async def test_previous_value_of_nested_assignment(user: User):
++    events = []
++
++    @ui.page('/')
++    def page():
++        source = ui.input(value='first', on_change=lambda e: events.append((e.value, e.previous_value)))
++        target = ui.input().bind_value_from(source)
++        target.on_value_change(lambda e: source.set_value('third') if e.value == 'second' else None)
++        source.set_value('second')
++
++    await user.open('/')
++    assert events == [('third', 'second'), ('second', 'first')], \
++        'each event should report the value replaced by its assignment, even if a handler assigns again'
++
++
+ def test_binding_other_dict_is_strict(screen: Screen):
+     data: dict[str, str] = {}
+ 
+diff --git a/tests/test_events.py b/tests/test_events.py
+index 6c11ff6356..406ae29290 100644
+--- a/tests/test_events.py
++++ b/tests/test_events.py
+@@ -266,6 +266,7 @@ def test_value_change_event_arguments(screen: Screen):
+     @ui.page('/')
+     def page():
+         ui.checkbox('Checkbox', on_change=lambda e: events.append((e.value, e.previous_value)))
++        ui.radio({101: 'Alice', 205: 'Bob'}, value=101, on_change=lambda e: events.append((e.value, e.previous_value)))
+ 
+     screen.open('/')
+     screen.click('Checkbox')
+@@ -277,6 +278,11 @@ def page():
+     screen.wait(0.1)
+     assert events == [(True, False), (False, True)]
+ 
++    screen.click('Bob')
++    screen.wait_for(lambda: len(events) == 3)
++    screen.wait(0.1)
++    assert events == [(True, False), (False, True), (205, 101)]
++
+ 
+ async def test_late_event_registration(screen: Screen):
+     events = []

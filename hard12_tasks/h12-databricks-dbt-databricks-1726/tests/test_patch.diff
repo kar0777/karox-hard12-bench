@@ -1,0 +1,160 @@
+diff --git a/tests/functional/adapter/columns/fixtures.py b/tests/functional/adapter/columns/fixtures.py
+index 6ea05c4d2..c70fa4f53 100644
+--- a/tests/functional/adapter/columns/fixtures.py
++++ b/tests/functional/adapter/columns/fixtures.py
+@@ -80,3 +80,43 @@
+ select cast(2 as bigint) as id, cast(3000000000 as bigint) as measure
+ {% endif %}
+ """
++
++typed_columns_model = """
++{{ config(materialized='table') }}
++select
++    cast('a' as string) as string_col,
++    cast('a' as varchar(10)) as varchar_col,
++    cast('a' as char(3)) as char_col,
++    cast(1 as tinyint) as tinyint_col,
++    cast(1 as smallint) as smallint_col,
++    cast(1 as int) as int_col,
++    cast(1 as bigint) as bigint_col,
++    cast(1.0 as float) as float_col,
++    cast(1.0 as double) as double_col,
++    cast(1.0 as decimal(10, 2)) as decimal_col,
++    cast(1 as decimal(38, 0)) as decimal_38_0_col,
++    cast(true as boolean) as boolean_col,
++    cast('2024-01-01' as date) as date_col,
++    cast('2024-01-01' as timestamp) as timestamp_col,
++    array('a') as array_col,
++    named_struct('f', 'a') as struct_col
++"""
++
++column_type_predicates_model = """
++{{ config(materialized='table') }}
++{%- set typed_relation = ref('typed_columns') -%}
++{%- if execute %}
++{%- for col in adapter.get_columns_in_relation(typed_relation) %}
++select
++    '{{ col.name }}' as column_name,
++    {{ col.is_string() }} as is_string,
++    {{ col.is_number() }} as is_number,
++    {{ col.is_integer() }} as is_integer,
++    {{ col.is_float() }} as is_float,
++    {{ col.is_numeric() }} as is_numeric
++{%- if not loop.last %} union all{% endif %}
++{%- endfor %}
++{%- else %}
++select 1
++{%- endif %}
++"""
+diff --git a/tests/functional/adapter/columns/test_get_columns.py b/tests/functional/adapter/columns/test_get_columns.py
+index 2a4efb574..2029fab36 100644
+--- a/tests/functional/adapter/columns/test_get_columns.py
++++ b/tests/functional/adapter/columns/test_get_columns.py
+@@ -83,3 +83,46 @@ def test_varchar_char_columns(self, project, expected_columns):
+         with project.adapter.connection_named("_test"):
+             actual_columns = project.adapter.get_columns_in_relation(my_relation)
+         assert actual_columns == expected_columns
++
++
++class TestColumnTypePredicates:
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {
++            "typed_columns.sql": fixtures.typed_columns_model,
++            "column_type_predicates.sql": fixtures.column_type_predicates_model,
++        }
++
++    def test_column_type_predicates(self, project):
++        util.run_dbt(["run"])
++
++        rows = project.run_sql(
++            "select column_name, is_string, is_number, is_integer, is_float, is_numeric"
++            " from {database}.{schema}.column_type_predicates",
++            fetch="all",
++        )
++        actual = {row[0]: tuple(row[1:]) for row in rows}
++
++        string = (True, False, False, False, False)
++        integer = (False, True, True, False, False)
++        floating = (False, True, False, True, False)
++        decimal = (False, True, False, False, True)
++        other = (False, False, False, False, False)
++        assert actual == {
++            "string_col": string,
++            "varchar_col": string,
++            "char_col": string,
++            "tinyint_col": integer,
++            "smallint_col": integer,
++            "int_col": integer,
++            "bigint_col": integer,
++            "float_col": floating,
++            "double_col": floating,
++            "decimal_col": decimal,
++            "decimal_38_0_col": decimal,
++            "boolean_col": other,
++            "date_col": other,
++            "timestamp_col": other,
++            "array_col": other,
++            "struct_col": other,
++        }
+diff --git a/tests/unit/test_column.py b/tests/unit/test_column.py
+index 7c8ea6edd..0d5bb7a65 100644
+--- a/tests/unit/test_column.py
++++ b/tests/unit/test_column.py
+@@ -81,6 +81,56 @@ def test_format_add_column_list(self, columns, expected):
+         assert DatabricksColumn.format_add_column_list(columns) == expected
+ 
+ 
++class TestTypePredicates:
++    @pytest.mark.parametrize(
++        "dtype, expected",
++        [
++            ("string", "string"),
++            ("STRING", "string"),
++            ("string COLLATE UTF8_LCASE", "string"),
++            ("varchar(10)", "string"),
++            ("char(3)", "string"),
++            ("tinyint", "integer"),
++            ("byte", "integer"),
++            ("smallint", "integer"),
++            ("short", "integer"),
++            ("int", "integer"),
++            ("INTEGER", "integer"),
++            ("bigint", "integer"),
++            ("long", "integer"),
++            ("float", "float"),
++            ("real", "float"),
++            ("double", "float"),
++            ("decimal", "numeric"),
++            ("decimal(10,2)", "numeric"),
++            ("decimal(38, 0)", "numeric"),
++            ("DEC(5,1)", "numeric"),
++            ("numeric(10,2)", "numeric"),
++            ("boolean", None),
++            ("date", None),
++            ("timestamp", None),
++            ("binary", None),
++            ("variant", None),
++            ("array<string>", None),
++            ("map<string,int>", None),
++            ("struct<a:string>", None),
++        ],
++    )
++    def test_type_predicates(self, dtype, expected):
++        column = DatabricksColumn("col", dtype)
++        assert column.is_string() == (expected == "string")
++        assert column.is_integer() == (expected == "integer")
++        assert column.is_float() == (expected == "float")
++        assert column.is_numeric() == (expected == "numeric")
++        assert column.is_number() == (expected in ("integer", "float", "numeric"))
++
++    def test_can_expand_to__strings(self):
++        assert not DatabricksColumn("a", "string").can_expand_to(DatabricksColumn("a", "string"))
++        assert not DatabricksColumn("a", "varchar(10)").can_expand_to(
++            DatabricksColumn("a", "varchar(20)")
++        )
++
++
+ # Tests are based on possible JSON output from "DESCRIBE EXTENDED <table> AS JSON"
+ # https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-aux-describe-table#json-formatted-output
+ class TestDatabricksColumn:

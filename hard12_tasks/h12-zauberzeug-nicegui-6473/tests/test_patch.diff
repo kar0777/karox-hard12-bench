@@ -1,0 +1,53 @@
+diff --git a/tests/test_awaitable_response.py b/tests/test_awaitable_response.py
+index 8bde3b5d8c..7dab3e461d 100644
+--- a/tests/test_awaitable_response.py
++++ b/tests/test_awaitable_response.py
+@@ -6,7 +6,8 @@
+ from nicegui.awaitable_response import AwaitableResponse, NullResponse
+ 
+ 
+-async def test_awaitable_response():
++@pytest.mark.parametrize('with_fire_and_forget', [True, False])
++async def test_awaitable_response(with_fire_and_forget: bool):
+     core.loop = asyncio.get_event_loop()
+     actions = []
+ 
+@@ -18,12 +19,13 @@ async def wait_for_result() -> str:
+             actions.append('wait_for_result')
+             return 'result'
+ 
+-        return AwaitableResponse(fire_and_forget, wait_for_result)
++        return AwaitableResponse(fire_and_forget if with_fire_and_forget else None, wait_for_result)
+ 
++    fired = ['fire_and_forget'] if with_fire_and_forget else []
+     actions.clear()
+     do_something()
+     await asyncio.sleep(0.1)
+-    assert actions == ['fire_and_forget']
++    assert actions == fired
+ 
+     actions.clear()
+     result = await do_something()
+@@ -35,7 +37,7 @@ async def wait_for_result() -> str:
+     await asyncio.sleep(0.1)
+     with pytest.raises(RuntimeError, match='AwaitableResponse must be awaited immediately after creation or not at all'):
+         await result
+-    assert actions == ['fire_and_forget']
++    assert actions == fired
+ 
+ 
+ async def test_null_response():
+diff --git a/tests/test_javascript.py b/tests/test_javascript.py
+index fe53f81732..1296fb043c 100644
+--- a/tests/test_javascript.py
++++ b/tests/test_javascript.py
+@@ -47,7 +47,8 @@ def test_response_from_javascript(screen: Screen):
+     @ui.page('/')
+     def page():
+         async def compute() -> None:
+-            response = await ui.run_javascript('1 + 41')
++            ui.run_javascript('window.answer = 41')  # must not be overtaken by the awaited call (#6472)
++            response = await ui.run_javascript('window.answer + 1')
+             ui.label(response)
+ 
+         ui.button('compute', on_click=compute)

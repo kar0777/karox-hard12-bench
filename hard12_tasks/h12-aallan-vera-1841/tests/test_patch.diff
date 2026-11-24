@@ -1,0 +1,530 @@
+diff --git a/tests/codegen_helpers.py b/tests/codegen_helpers.py
+index 488973ad3..ef961eab4 100644
+--- a/tests/codegen_helpers.py
++++ b/tests/codegen_helpers.py
+@@ -198,8 +198,7 @@ def skip_map_inserts(monkeypatch: pytest.MonkeyPatch) -> None:
+     every caller as E620 (#1100) and the refusal of a dropped entry (#1183,
+     #1186), is reached by injection: `map_insert`'s translator raises the
+     skip it raised for an Array-valued map, and a fixture writes a map the
+-    check accepts.  The one check-green drop left is a bug, no fixture: a
+-    function type at a generic's type argument (#1783)."""
++    check accepts."""
+     from vera.skip import CodegenSkip
+     from vera.wasm.calls_containers import CallsContainersMixin
+ 
+diff --git a/tests/conformance/ch02_generic_function_type_argument.vera b/tests/conformance/ch02_generic_function_type_argument.vera
+new file mode 100644
+index 000000000..fdeca5e7c
+--- /dev/null
++++ b/tests/conformance/ch02_generic_function_type_argument.vera
+@@ -0,0 +1,52 @@
++-- Conformance: a generic instantiated at a function type (Chapter 2)
++-- Tests: a closure passed for a generic's type parameter, directly, as an
++-- array element and as a data type's field; the clone at the function type
++-- is compiled, and the closure it hands back is applied.  Code generation
++-- read a clone's parameter width from the type argument's name, which no
++-- branch answered, and dropped the clone and its callers (#1783).
++type IntToInt = fn(Int -> Int) effects(pure);
++
++private data Box<T> {
++  MkBox(T)
++}
++
++private forall<T> fn idg(@T -> @T)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @T.0
++}
++
++private forall<T> fn first_or(@Array<T>, @T -> @T)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  if array_length(@Array<T>.0) > 0 then {
++    @Array<T>.0[0]
++  } else {
++    @T.0
++  }
++}
++
++private forall<T> fn unbox(@Box<T> -> @T)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  match @Box<T>.0 {
++    MkBox(@T) -> @T.0
++  }
++}
++
++public fn main(@Unit -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  let @IntToInt = idg(fn(@Int -> @Int) effects(pure) { @Int.0 + 1 });
++  let @IntToInt = first_or(array_append([], @IntToInt.0), @IntToInt.0);
++  let @IntToInt = unbox(MkBox(@IntToInt.0));
++  apply_fn(@IntToInt.0, 41)
++}
+diff --git a/tests/conformance/manifest.json b/tests/conformance/manifest.json
+index 8d7b4e022..3d282ab2a 100644
+--- a/tests/conformance/manifest.json
++++ b/tests/conformance/manifest.json
+@@ -3355,6 +3355,24 @@
+       "exn_effect"
+     ]
+   },
++  {
++    "id": "ch02_generic_function_type_argument",
++    "file": "ch02_generic_function_type_argument.vera",
++    "chapter": 2,
++    "title": "A generic instantiated at a function type",
++    "level": "run",
++    "spec_ref": "Section 2.5",
++    "expected_stdout": "42\n",
++    "expected_exit": 0,
++    "features": [
++      "generics",
++      "forall",
++      "monomorphization",
++      "function_types",
++      "closures",
++      "adt"
++    ]
++  },
+   {
+     "id": "ch02_nonregular_data_rejected",
+     "file": "ch02_nonregular_data_rejected.vera",
+diff --git a/tests/test_declared_by_the_emitter_1744.py b/tests/test_declared_by_the_emitter_1744.py
+index 432c24408..78f263bd0 100644
+--- a/tests/test_declared_by_the_emitter_1744.py
++++ b/tests/test_declared_by_the_emitter_1744.py
+@@ -105,9 +105,8 @@ def _fn(name: str, formals: str, ret: str, effect: str, body: str,
+ 
+ #: A statement code generation refuses (E602) under the `skip_map_inserts`
+ #: injection, so the function holding it is dropped before the code after it
+-#: is emitted: no shape the check accepts is dropped at E602 (the one
+-#: check-green drop left, #1783's, is a caller's E620).  It uses no cell and
+-#: no tag.
++#: is emitted: no shape the check accepts is dropped at E602.  It uses no
++#: cell and no tag.
+ _DROPPER = 'let @Map<String, Int> = map_insert(map_new(), "a", 1);'
+ 
+ 
+diff --git a/tests/test_function_type_instance_1783.py b/tests/test_function_type_instance_1783.py
+new file mode 100644
+index 000000000..8101335e0
+--- /dev/null
++++ b/tests/test_function_type_instance_1783.py
+@@ -0,0 +1,297 @@
++"""A generic instantiated at a function type is compiled and runs (#1783).
++
++A call that instantiates a generic at a function type, `idg(f)` for
++`forall<T> fn idg(@T -> @T)` and a closure `f`, passed `vera check` and
++`vera verify`, and code generation refused the clone: its type arguments
++are spelled by name (`fn(Int -> Int)`), and the width of a type
++expression was read from the name, which no primitive, alias, data type or
++container answers, so the clone's parameter or return was "unsupported"
++(E600, E601) and every caller was dropped (E620).  A function value has a
++representation, the closure pointer, which code generation lowers wherever
++the type is written as one.  The width is now read from the typed program:
++a type expression the check typed as a function type is the closure
++pointer, whatever its clone spells it.
++
++The class is every program whose clone holds a function type at a type
++argument: the matrix crosses the generic's kind (a top-level declaration, a
++`where` helper) with the function type (pure, arity one and two; effectful)
++and the position the argument reaches in the generic (the type argument
++itself, an `Array` element, an `Option` built in the generic, a user data
++type's field, a `Map` value, a `State` cell, an `Exn` payload, a closure
++over it), each compiled with no diagnostic and run, its output pinned.  At
++the base every cell is dropped.  The negative space: the shapes no clone
++reaches compile as they did, and a function type at an `Eq` constraint is
++still refused at check (E613).
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from tests import pipeline
++
++pytestmark = pytest.mark.matrix(decides=[
++    "vera/codegen/core.py",
++    "vera/codegen/compilability.py",
++    "vera/typed.py",
++    "vera/monomorphize.py",
++])
++
++
++def _fn(head: str, body: str, effects: str = "pure") -> str:
++    return (f"{head}\n  requires(true)\n  ensures(true)\n  effects({effects})\n"
++            f"{{\n  {body}\n}}\n")
++
++
++#: Each function type: its alias, a closure of it, how it is applied, and
++#: what the program prints (the effectful closure prints before it returns).
++_ARGS: dict[str, tuple[str, str, str, str]] = {
++    "pure_arity1": (
++        "fn(Int -> Int) effects(pure)",
++        "fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }",
++        "apply_fn(@F.0, 21)",
++        "42"),
++    "pure_arity2": (
++        "fn(Int, Int -> Int) effects(pure)",
++        "fn(@Int, @Int -> @Int) effects(pure) { @Int.1 - @Int.0 }",
++        "apply_fn(@F.0, 50, 8)",
++        "42"),
++    "io_arity1": (
++        "fn(Int -> Int) effects(<IO>)",
++        'fn(@Int -> @Int) effects(<IO>) { IO.print("io\\n"); @Int.0 * 2 }',
++        "apply_fn(@F.0, 21)",
++        "io\n42"),
++}
++
++#: Each position: the generic's declaration (named `NAME`), and the
++#: expression that passes `@F.0` through it and gives back an `@F`.
++_POSITIONS: dict[str, tuple[str, str]] = {
++    "type_argument": (
++        _fn("forall<T> fn NAME(@T -> @T)", "@T.0"),
++        "NAME(@F.0)"),
++    "array_element": (
++        _fn("forall<T> fn NAME(@Array<T>, @T -> @T)",
++            "if array_length(@Array<T>.0) > 0 then { @Array<T>.0[0] } "
++            "else { @T.0 }"),
++        "NAME(array_append([], @F.0), @F.0)"),
++    "option_field": (
++        _fn("forall<T> fn NAME(@T -> @Option<T>)", "Some(@T.0)"),
++        "match NAME(@F.0) { Some(@F) -> @F.0, None -> @F.0 }"),
++    "data_field": (
++        _fn("forall<T> fn NAME(@Box<T> -> @T)",
++            "match @Box<T>.0 { MkBox(@T) -> @T.0 }"),
++        "NAME(MkBox(@F.0))"),
++    "map_value": (
++        _fn("forall<V> fn NAME(@Map<String, V>, @V -> @V)",
++            'match map_get(map_insert(@Map<String, V>.0, "k", @V.0), "k") '
++            "{ Some(@V) -> @V.0, None -> @V.0 }"),
++        "NAME(map_new(), @F.0)"),
++    "state_cell": (
++        _fn("forall<T> fn NAME(@T -> @T)",
++            "handle[State<T>](@T = @T.0) {\n"
++            "    get(@Unit) -> { resume(@T.0) },\n"
++            "    put(@T) -> { resume(()) }\n"
++            "  } in { get(()) }"),
++        "NAME(@F.0)"),
++    "exn_payload": (
++        _fn("forall<T> fn NAME(@T, @T -> @T)",
++            "handle[Exn<T>] {\n    throw(@T) -> { @T.0 }\n"
++            "  } in { throw(@T.1) }"),
++        "NAME(@F.0, @F.0)"),
++    "closure_over": (
++        _fn("forall<T> fn NAME(@T -> @K<T>)",
++            "fn(@Int -> @T) effects(pure) { @T.0 }"),
++        "apply_fn(NAME(@F.0), 0)"),
++}
++
++_KINDS = ("top_level", "where_helper")
++
++_PRELUDE = ("private data Box<T> { MkBox(T) }\n\n"
++            "type K<T> = fn(Int -> T) effects(pure);\n\n")
++
++
++def _program(kind: str, arg: str, position: str) -> str:
++    alias, closure, apply, _ = _ARGS[arg]
++    decl, through = _POSITIONS[position]
++    name = "gen" if kind == "top_level" else "helper"
++    decl = decl.replace("NAME", name)
++    body = (f"let @F = {closure};\n"
++            f"  let @F = {through.replace('NAME', name)};\n"
++            f"  IO.print(int_to_string({apply}))")
++    main = _fn("public fn main(@Unit -> @Unit)", body, "<IO>")
++    if kind == "top_level":
++        return (f"type F = {alias};\n\n{_PRELUDE}"
++                f"private {decl}\n{main}")
++    helper = "\n".join(f"  {line}" if line else line
++                       for line in decl.splitlines())
++    return f"type F = {alias};\n\n{_PRELUDE}{main}where {{\n{helper}\n}}\n"
++
++
++def _runs_clean(source: str, expected: str) -> None:
++    """*source* compiles with no diagnostic, runs to completion without a
++    trap, and prints *expected*."""
++    compiled = pipeline.compile(source)
++    codes = [d.error_code for d in compiled.result.diagnostics]
++    assert not codes, codes
++    ran = pipeline.run(compiled)
++    assert ran.ok, ran.trap
++    assert ran.stdout == expected
++
++
++@pytest.mark.parametrize("position", sorted(_POSITIONS))
++@pytest.mark.parametrize("arg", sorted(_ARGS))
++@pytest.mark.parametrize("kind", _KINDS)
++def test_a_function_typed_instance_compiles_and_runs(
++    kind: str, arg: str, position: str,
++) -> None:
++    source = _program(kind, arg, position)
++    checked = pipeline.check(source)
++    assert checked.ok, [d.error_code for d in checked.errors]
++    _runs_clean(source, _ARGS[arg][3])
++
++
++# ---------------------------------------------------------------------
++# The issue's instances, unparametrised
++# ---------------------------------------------------------------------
++
++_MLIB = """module mlib;
++
++type IntToInt = fn(Int -> Int) effects(pure);
++
++private forall<T> fn idg(@T -> @T)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @T.0
++}
++
++public fn compute(@Unit -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  let @IntToInt = idg(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
++  apply_fn(@IntToInt.0, 21)
++}
++"""
++
++_MAIN = """import mlib(compute);
++
++public fn main(@Unit -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  compute(())
++}
++"""
++
++
++def test_repro_the_issue_program_runs(tmp_path: Path) -> None:
++    """The issue's two-module program: a closure literal passed to a
++    module's private generic.  It printed nothing at the base: the clone
++    was refused (E600) and `compute` and `main` dropped (E620)."""
++    entry = pipeline.write_tree(
++        tmp_path, {"mlib.vera": _MLIB, "main.vera": _MAIN})
++    compiled = pipeline.compile(entry)
++    assert not [d.error_code for d in compiled.result.diagnostics]
++    assert pipeline.run(compiled).value == 42
++
++
++def test_repro_a_prelude_generic_at_a_function_type() -> None:
++    """`option_unwrap_or`, the prelude's, at `Option<F>`: its clone was
++    refused (E600) as a user generic's was."""
++    body = ("let @F = fn(@Int -> @Int) effects(pure) { @Int.0 * 2 };\n"
++            "  let @Option<F> = Some(@F.0);\n"
++            "  apply_fn(option_unwrap_or(@Option<F>.0, @F.0), 21)")
++    source = ("type F = fn(Int -> Int) effects(pure);\n\n"
++              + _fn("public fn main(@Unit -> @Int)", body))
++    compiled = pipeline.compile(source)
++    assert not [d.error_code for d in compiled.result.diagnostics]
++    assert pipeline.run(compiled).value == 42
++
++
++def test_repro_a_function_type_inside_a_function_type_argument() -> None:
++    """A closure returning a closure, at `idg`'s `T`."""
++    body = ("let @FF = idg(fn(@Int -> @F) effects(pure) "
++            "{ fn(@Int -> @Int) effects(pure) { @Int.0 + 1 } });\n"
++            "  apply_fn(apply_fn(@FF.0, 0), 41)")
++    source = ("type F = fn(Int -> Int) effects(pure);\n"
++              "type FF = fn(Int -> F) effects(pure);\n\n"
++              "private " + _fn("forall<T> fn idg(@T -> @T)", "@T.0")
++              + _fn("public fn main(@Unit -> @Int)", body))
++    compiled = pipeline.compile(source)
++    assert not [d.error_code for d in compiled.result.diagnostics]
++    assert pipeline.run(compiled).value == 42
++
++
++# ---------------------------------------------------------------------
++# Negative space
++# ---------------------------------------------------------------------
++
++#: Shapes no clone reaches: a function type in a data type's field, a
++#: `Map` value, an `array_map` result and a `State` cell, written directly.
++#: Each compiled and ran at the base.
++_NO_CLONE: dict[str, str] = {
++    "data_field": (
++        "let @Box<F> = MkBox(fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });\n"
++        "  match @Box<F>.0 { MkBox(@F) -> apply_fn(@F.0, 21) }"),
++    "map_value": (
++        'let @Map<String, F> = map_insert(map_new(), "k", '
++        "fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });\n"
++        '  match map_get(@Map<String, F>.0, "k") '
++        "{ Some(@F) -> apply_fn(@F.0, 21), None -> 0 }"),
++    "array_map": (
++        "let @Array<F> = array_map([1, 2], fn(@Int -> @F) effects(pure) "
++        "{ fn(@Int -> @Int) effects(pure) { @Int.0 * 21 } });\n"
++        "  apply_fn(@Array<F>.0[1], 2)"),
++    "state_cell": (
++        "let @F = handle[State<F>](@F = fn(@Int -> @Int) effects(pure) "
++        "{ @Int.0 * 2 }) {\n"
++        "    get(@Unit) -> { resume(@F.0) },\n"
++        "    put(@F) -> { resume(()) }\n"
++        "  } in { get(()) };\n"
++        "  apply_fn(@F.0, 21)"),
++}
++
++
++@pytest.mark.parametrize("shape", sorted(_NO_CLONE))
++def test_a_function_type_no_clone_reaches_compiles_as_before(
++    shape: str,
++) -> None:
++    source = ("type F = fn(Int -> Int) effects(pure);\n\n"
++              "private data Box<T> { MkBox(T) }\n\n"
++              + _fn("public fn main(@Unit -> @Int)", _NO_CLONE[shape]))
++    compiled = pipeline.compile(source)
++    assert not [d.error_code for d in compiled.result.diagnostics]
++    assert pipeline.run(compiled).value == 42
++
++
++def test_an_eq_constraint_at_a_function_type_is_still_refused() -> None:
++    """A function type has no `Eq`: the instantiation is refused at check,
++    at the call (E613), as at the base."""
++    body = ("let @F = fn(@Int -> @Int) effects(pure) { @Int.0 * 2 };\n"
++            "  same(@F.0, @F.0)")
++    source = ("type F = fn(Int -> Int) effects(pure);\n\n"
++              "private " + _fn("forall<T where Eq<T>> fn same(@T, @T -> @Bool)",
++                               "@T.0 == @T.1")
++              + _fn("public fn main(@Unit -> @Bool)", body))
++    checked = pipeline.check(source)
++    assert [d.error_code for d in checked.errors] == ["E613"]
++
++
++def test_repro_a_run_that_prints_and_then_traps_is_not_clean() -> None:
++    """The matrix's run assertion is not satisfied by output alone: a
++    program that prints the expected text and then traps fails it, since
++    `Ran.stdout` returns what a trapped run printed."""
++    body = ('IO.print("42");\n  let @Array<Int> = [1];\n'
++            "  IO.print(int_to_string(@Array<Int>.0[5]))")
++    source = _fn("public fn main(@Unit -> @Unit)", body, "<IO>")
++    ran = pipeline.run(source)
++    assert ran.trap is not None
++    assert ran.stdout == "42"
++    with pytest.raises(AssertionError, match="out of bounds"):
++        _runs_clean(source, "42")
+diff --git a/tests/test_matrix_sample.py b/tests/test_matrix_sample.py
+index 4cd21145e..1d7dbe042 100644
+--- a/tests/test_matrix_sample.py
++++ b/tests/test_matrix_sample.py
+@@ -711,6 +711,7 @@ def test_every_path_a_marker_names_is_one_the_plan_job_can_list(self) -> None:
+     "test_untranslatable_rule_1696.py",
+     "test_verifier_reads_the_typed_program_1525.py",
+     "test_composite_coercion_guards.py",
++    "test_function_type_instance_1783.py",
+ )
+ UNMARKED_FILES = (
+     "test_obligations.py",
+diff --git a/tests/test_per_owner_adt_identity_1317.py b/tests/test_per_owner_adt_identity_1317.py
+index f4d1a51a2..3e2b89767 100644
+--- a/tests/test_per_owner_adt_identity_1317.py
++++ b/tests/test_per_owner_adt_identity_1317.py
+@@ -42,6 +42,7 @@
+ from vera.codegen.core import CodeGenerator
+ 
+ from tests import pipeline
++from tests.codegen_helpers import skip_map_inserts  # noqa: F401  (the fixture)
+ from tests.module_fixture_helpers import (
+     build_multi_module,
+     compile_multi_module,
+@@ -1937,16 +1938,18 @@ def test_a_flow_behind_a_repeated_import_is_still_a_flow(
+         assert "liba.Shape" in text and "libb.Shape" in text, text
+ 
+ 
+-#: A function of `liba`'s that code generation skips on a program the check
+-#: accepts: a `let` of a parameterised alias has no WASM representation
+-#: (E602).  The `let` is the argument.
++#: A function of `liba`'s that code generation skips, under the
++#: `skip_map_inserts` injection, on a program the check accepts: a generic
++#: whose body holds a `map_insert`, so its clone at `Shape` is dropped
++#: (E602) and so is its caller (E620).  The `let` is the argument.
+ _SKIPPED = """
+-private forall<T> fn idg(@T -> @T)
++private forall<T> fn keep(@T -> @Int)
+   requires(true)
+   ensures(true)
+   effects(pure)
+ {
+-  @T.0
++  let @Map<String, Int> = map_insert(map_new(), "a", 1);
++  0
+ }
+ 
+ public fn broken(@Int -> @Int)
+@@ -1959,14 +1962,14 @@ def test_a_flow_behind_a_repeated_import_is_still_a_flow(
+ }
+ """
+ 
+-#: A generic instantiated at a function type over `Shape`, whose clone code
+-#: generation refuses (E600) and whose caller it drops (E620), each naming
+-#: the clone by `Shape` (#1783): a check-green program the stream reports
+-#: on, beside the rename.
+-_AT_SHAPE_FN = ("let @fn(Shape -> Int) effects(pure) = "
+-                "idg(fn(@Shape -> @Int) effects(pure) { 1 });")
++#: A generic instantiated at `Shape`, whose clone code generation drops
++#: (E602, injected) and whose caller it drops (E620), each naming the clone
++#: by `Shape`: a check-green program the stream reports on, beside the
++#: rename.
++_AT_SHAPE = "let @Int = keep(Sq(1));"
+ 
+ 
++@pytest.mark.usefixtures("skip_map_inserts")
+ class TestADiagnosticStreamThatIsNotEmpty:
+     """The display sweep, driven over a program that actually reports.
+ 
+@@ -1989,9 +1992,9 @@ def test_a_renamed_program_with_real_diagnostics_leaks_nothing(
+     ) -> None:
+         # Two contending `Shape`s (renamed), beside a function code
+         # generation skips, which makes the stream non-empty: a generic
+-        # instantiated at a function type (#1783), on a program the check
+-        # accepts.
+-        liba = _LIBA + _SKIPPED % _AT_SHAPE_FN
++        # clone at `Shape` dropped by the injected skip, on a program the
++        # check accepts.
++        liba = _LIBA + _SKIPPED % _AT_SHAPE
+         entry = _ENTRY.replace(
+             "import liba(aone);", "import liba(aone, broken);")
+         result = compile_multi_module(
+@@ -2016,13 +2019,12 @@ def test_a_diagnostic_that_names_a_renamed_type_reads_the_users_name(
+         against every other cell here: the sweeps run over
+         programs whose diagnostics never mention an ADT, so nothing read
+         the one thing the strip exists to change.  This drives a diagnostic
+-        that DOES name the type — a generic instantiated at a function type
+-        over ``Shape``, whose clone code generation refuses (E600) and whose
+-        caller it drops (E620), each naming the clone by the type (#1783) —
+-        on a program the check accepts, where ``Shape`` carries its link
+-        name.
++        that DOES name the type — a generic instantiated at ``Shape``, whose
++        clone code generation drops (E602, injected) and whose caller it
++        drops (E620), each naming the clone by the type — on a program the
++        check accepts, where ``Shape`` carries its link name.
+         """
+-        liba = _LIBA + _SKIPPED % _AT_SHAPE_FN
++        liba = _LIBA + _SKIPPED % _AT_SHAPE
+         entry = _ENTRY.replace(
+             "import liba(aone);", "import liba(aone, broken);")
+         result = compile_multi_module(
+@@ -2030,7 +2032,7 @@ def test_a_diagnostic_that_names_a_renamed_type_reads_the_users_name(
+             {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
+         )
+         e602 = [d for d in result.diagnostics
+-                if d.error_code in ("E600", "E620")]
++                if d.error_code in ("E602", "E620")]
+         assert e602, [d.error_code for d in result.diagnostics]
+         described = " ".join(
+             (getattr(d, a, None) or "")

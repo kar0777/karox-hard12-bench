@@ -1,0 +1,10 @@
+tests/test_javascript.py::test_response_from_javascript
+tests/test_awaitable_response.py::test_awaitable_response[False]
+tests/test_awaitable_response.py::test_awaitable_response[True]
+tests/test_awaitable_response.py::test_null_response
+tests/test_javascript.py::test_async_javascript
+tests/test_javascript.py::test_awaited_run_javascript_resolves_when_client_is_deleted
+tests/test_javascript.py::test_run_javascript_before_client_connected
+tests/test_javascript.py::test_run_javascript_on_button_press
+tests/test_javascript.py::test_run_javascript_on_value_change
+tests/test_javascript.py::test_simultaneous_async_javascript

@@ -1,0 +1,78 @@
+diff --git a/tests/inputs/pin_cell.imcnp b/tests/inputs/pin_cell.imcnp
+index 5c3a3201..dc4611e9 100644
+--- a/tests/inputs/pin_cell.imcnp
++++ b/tests/inputs/pin_cell.imcnp
+@@ -29,6 +29,8 @@ M10   40090.80c 0.515
+       40092.80c 0.171
+       40094.80c 0.174
+       40096.80c 0.028
++C added to replicate #1051
++u 0 2r 5
+ mode n
+ nps 1e3 
+ 
+diff --git a/tests/inputs/test_paren_groups.imcnp b/tests/inputs/test_paren_groups.imcnp
+index 1bade21a..e7dce12b 100644
+--- a/tests/inputs/test_paren_groups.imcnp
++++ b/tests/inputs/test_paren_groups.imcnp
+@@ -41,4 +41,6 @@ C execution
+ ksrc -1.1 0 0.01
+ kcode 100000 1.000 50 1050
+ mode n
++C replicating more edge cases for #1051
++U 5 0 0 0 0 0
+ vol NO 2J 1 1.5 2J
+diff --git a/tests/inputs/test_universe_data.imcnp b/tests/inputs/test_universe_data.imcnp
+index 2980033f..9c507552 100644
+--- a/tests/inputs/test_universe_data.imcnp
++++ b/tests/inputs/test_universe_data.imcnp
+@@ -24,7 +24,7 @@ C surfaces
+ C data
+ C materials
+ C UO2 5 atpt enriched
+-u 350 2J -1 
++u 350 2J -1 J 
+ FILL 2J 350 
+ m1        92235.80c           5 &
+ 92238.80c          95
+diff --git a/tests/test_integration.py b/tests/test_integration.py
+index 8ae1bd5f..3a89c726 100644
+--- a/tests/test_integration.py
++++ b/tests/test_integration.py
+@@ -945,7 +945,7 @@ def test_universe_data_formatter(data_universe_problem):
+     # test unmutated
+     output = problem.cells._universe.format_for_mcnp_input((6, 2, 0))
+     print(output)
+-    assert "u 350 2J -1" in output
++    assert "u 350 2J -1 J" in output
+     universe = problem.universes[350]
+     # test mutated
+     cell = problem.cells[3]
+@@ -954,7 +954,7 @@ def test_universe_data_formatter(data_universe_problem):
+     with pytest.warns(LineExpansionWarning):
+         output = problem.cells._universe.format_for_mcnp_input((6, 2, 0))
+     print(output)
+-    assert "u 350 J -350 -1" in output
++    assert "u 350 J -350 -1 J" in output
+     # test appending a new mutated cell
+     new_cell = cell.clone()
+     new_cell.number = 1000
+diff --git a/tests/test_universe_integration.py b/tests/test_universe_integration.py
+index d100d8a3..bea8c496 100644
+--- a/tests/test_universe_integration.py
++++ b/tests/test_universe_integration.py
+@@ -1,3 +1,4 @@
++import copy
+ import io
+ import numpy as np
+ from pathlib import Path
+@@ -210,3 +211,9 @@ def test_cell_universe_delete_adds_zero_universe():
+     del c.universe
+     assert 0 in p.universes.numbers
+     assert c.universe.number == 0
++
++
++def test_data_block_universe_trail_0(simple_problem):
++    prob = copy.deepcopy(simple_problem)
++    prob.print_in_data_block["U"] = True
++    assert prob.cells._universe.mcnp_str().rstrip() == "U 350 4J"

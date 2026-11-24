@@ -1,0 +1,489 @@
+diff --git a/tests/commands/dev/conftest.py b/tests/commands/dev/conftest.py
+index 59aaff527..31fb980fa 100644
+--- a/tests/commands/dev/conftest.py
++++ b/tests/commands/dev/conftest.py
+@@ -3,7 +3,7 @@
+ import pytest
+ 
+ from briefcase.commands import DevCommand
+-from briefcase.config import DraftAppConfig
++from briefcase.config import DraftAppConfig, GlobalConfig
+ from briefcase.integrations.subprocess import Subprocess
+ 
+ 
+@@ -14,6 +14,14 @@ def dev_command(dummy_console, tmp_path):
+         base_path=tmp_path,
+     )
+     command.tools.subprocess = mock.MagicMock(spec_set=Subprocess)
++    # In real use, __main__ parses the config before the command runs,
++    # so global_config is always a GlobalConfig; default_app is None
++    # unless the project declares one.
++    command.global_config = GlobalConfig(
++        project_name="Tester",
++        version="0.0.1",
++        bundle="org.beeware",
++    )
+     return command
+ 
+ 
+diff --git a/tests/commands/dev/test_call.py b/tests/commands/dev/test_call.py
+index 36b40bfc3..49e20f175 100644
+--- a/tests/commands/dev/test_call.py
++++ b/tests/commands/dev/test_call.py
+@@ -4,6 +4,7 @@
+ 
+ from briefcase.commands import DevCommand
+ from briefcase.commands.base import full_options
++from briefcase.config import GlobalConfig
+ from briefcase.exceptions import BriefcaseCommandError, RequirementsInstallError
+ from briefcase.integrations.virtual_environment import VirtualEnvironment
+ 
+@@ -24,6 +25,14 @@ def __init__(self, *args, **kwargs):
+ 
+         self.actions = []
+         self.env = {"a": 1, "b": 2, "c": 3}
++        # In real use, __main__ parses the config before the command runs,
++        # so global_config is always a GlobalConfig; default_app is None
++        # unless the project declares one.
++        self.global_config = GlobalConfig(
++            project_name="Tester",
++            version="0.0.1",
++            bundle="org.beeware",
++        )
+ 
+         # Mock the virtual environment manager
+         self.tools.virtual_environment = mock.MagicMock()
+@@ -230,6 +239,94 @@ def test_no_args_two_apps_non_interactive(dev_command, first_app, second_app):
+     assert dev_command.actions == []
+ 
+ 
++def test_no_args_two_apps_default_app(dev_command, first_app, second_app):
++    """If a default app is configured, dev starts it without prompting."""
++    # Add two apps
++    dev_command.apps = {
++        "first": first_app,
++        "second": second_app,
++    }
++    dev_command.global_config.default_app = "second"
++
++    # Simulate that the venv already exists (installed app)
++    dev_command.venvs["second"] = True
++
++    # Configure no command line options
++    options, _ = dev_command.parse_options([])
++
++    # Run the dev command
++    dev_command(**options)
++
++    # A representation of the venv was generated
++    second_venv = dev_command.venvs["second"]
++    second_venv.prepare.assert_called_once_with(recreate=False)
++
++    # The right sequence of things will be done, for the default app.
++    assert dev_command.actions == [
++        # Host OS is verified
++        ("verify-host",),
++        # Tools are verified
++        ("verify-tools",),
++        # App template is verified
++        ("verify-app-template", "second"),
++        # App tools are verified for app
++        ("verify-app-tools", "second"),
++        # Virtual environment was generated
++        ("virtual-environment", "venv", "second", second_venv),
++        # Run the second app devly
++        (
++            "run_dev",
++            "second",
++            False,
++            second_venv,
++            [],
++            dev_command.env,
++        ),
++    ]
++
++
++def test_app_flag_no_value_shows_menu(
++    dev_command,
++    first_app,
++    second_app,
++    monkeypatch,
++):
++    """`-a` with no value shows the menu, even with a default app configured."""
++    # Add two apps
++    dev_command.apps = {
++        "first": first_app,
++        "second": second_app,
++    }
++    dev_command.global_config.default_app = "second"
++
++    # Interactive mode
++    dev_command.console.input_enabled = True
++
++    # Capture the menu's default, and fake the user selecting "second"
++    seen_kwargs = {}
++
++    def fake_selection_question(**kwargs):
++        seen_kwargs.update(kwargs)
++        return "second"
++
++    monkeypatch.setattr(
++        dev_command.console,
++        "selection_question",
++        fake_selection_question,
++    )
++
++    # `-a` with no value parses to an empty app name.
++    options, _ = dev_command.parse_options(["-a"])
++    assert options["appname"] == ""
++
++    # This should follow the menu path and run without error.
++    dev_command(**options)
++
++    # The menu defaults to the configured default app.
++    assert seen_kwargs["default"] == "second"
++    assert dev_command.actions[-1][1] == "second"
++
++
+ def test_with_arg_one_app(dev_command, first_app):
+     """If there is one app, and a -a argument, dev starts that app."""
+     # Add a single app
+diff --git a/tests/commands/run/conftest.py b/tests/commands/run/conftest.py
+index 6f95b0d15..e843ca02a 100644
+--- a/tests/commands/run/conftest.py
++++ b/tests/commands/run/conftest.py
+@@ -2,7 +2,7 @@
+ 
+ from briefcase.commands import RunCommand
+ from briefcase.commands.base import full_options
+-from briefcase.config import DraftAppConfig
++from briefcase.config import DraftAppConfig, GlobalConfig
+ 
+ from ...utils import create_file
+ 
+@@ -22,6 +22,14 @@ def __init__(self, *args, **kwargs):
+         super().__init__(*args, apps={}, **kwargs)
+ 
+         self.actions = []
++        # In real use, __main__ parses the config before the command runs,
++        # so global_config is always a GlobalConfig; default_app is None
++        # unless the project declares one.
++        self.global_config = GlobalConfig(
++            project_name="Tester",
++            version="0.0.1",
++            bundle="org.beeware",
++        )
+ 
+     def briefcase_toml(self, app):
+         # default any app to an empty `briefcase.toml`
+diff --git a/tests/commands/run/test_call.py b/tests/commands/run/test_call.py
+index 70c941b42..7e773d94d 100644
+--- a/tests/commands/run/test_call.py
++++ b/tests/commands/run/test_call.py
+@@ -131,6 +131,109 @@ def test_no_args_two_apps_non_interactive(run_command, first_app, second_app):
+     assert run_command.actions == []
+ 
+ 
++def test_no_args_two_apps_default_app(run_command, first_app, second_app):
++    """If a default app is configured, run starts it without prompting."""
++    # Add two apps
++    run_command.apps = {
++        "first": first_app,
++        "second": second_app,
++    }
++    run_command.global_config.default_app = "second"
++
++    # Configure no command line options
++    options, _ = run_command.parse_options([])
++
++    # Run the run command
++    run_command(**options)
++
++    # The right sequence of things will be done, for the default app.
++    assert run_command.actions == [
++        # Host OS is verified
++        ("verify-host",),
++        # Tools are verified
++        ("verify-tools",),
++        # App config has been finalized
++        ("finalize-app-config", "second"),
++        # App template is verified
++        ("verify-app-template", "second"),
++        # App tools are verified
++        ("verify-app-tools", "second"),
++        # Run the second app
++        (
++            "run",
++            "second",
++            False,
++            False,
++            (None, None),
++            {"passthrough": []},
++        ),
++    ]
++
++
++def test_no_args_two_apps_default_app_non_interactive(
++    run_command,
++    first_app,
++    second_app,
++):
++    """A configured default app also applies when input is disabled."""
++    # Add two apps
++    run_command.apps = {
++        "first": first_app,
++        "second": second_app,
++    }
++    run_command.global_config.default_app = "second"
++
++    # Simulate --no-input on the command line
++    options, _ = run_command.parse_options(["--no-input"])
++
++    # Run the run command; no prompt is needed.
++    run_command(**options)
++
++    assert ("finalize-app-config", "second") in run_command.actions
++    assert run_command.actions[-1][1] == "second"
++
++
++def test_app_flag_no_value_shows_menu(
++    run_command,
++    first_app,
++    second_app,
++    monkeypatch,
++):
++    """`-a` with no value shows the menu, even with a default app configured."""
++    # Add two apps
++    run_command.apps = {
++        "first": first_app,
++        "second": second_app,
++    }
++    run_command.global_config.default_app = "second"
++
++    # Interactive mode
++    run_command.console.input_enabled = True
++
++    # Capture the menu's default, and fake the user selecting "second"
++    seen_kwargs = {}
++
++    def fake_selection_question(**kwargs):
++        seen_kwargs.update(kwargs)
++        return "second"
++
++    monkeypatch.setattr(
++        run_command.console,
++        "selection_question",
++        fake_selection_question,
++    )
++
++    # `-a` with no value parses to an empty app name.
++    options, _ = run_command.parse_options(["-a"])
++    assert options["appname"] == ""
++
++    # This should follow the menu path and run without error.
++    run_command(**options)
++
++    # The menu defaults to the configured default app.
++    assert run_command.actions[-1][1] == "second"
++
++
+ def test_with_arg_one_app(run_command, first_app):
+     """If there is one app, and a -a argument, run starts that app."""
+     # Add a single app
+diff --git a/tests/config/test_GlobalConfig.py b/tests/config/test_GlobalConfig.py
+index 644c1782d..64c56441c 100644
+--- a/tests/config/test_GlobalConfig.py
++++ b/tests/config/test_GlobalConfig.py
+@@ -82,6 +82,7 @@ def test_minimal_GlobalConfig():
+     assert config.author is None
+     assert config.author_email is None
+     assert config.requires_python is None
++    assert config.default_app is None
+ 
+     assert repr(config) == "<My Project v1.2.3 GlobalConfig>"
+ 
+@@ -100,6 +101,7 @@ def test_extra_attrs():
+         license="MIT",
+         license_files=["LICENSE"],
+         requires_python=">=3.12",
++        default_app="second",
+     )
+ 
+     # The basic properties have been set.
+@@ -112,6 +114,7 @@ def test_extra_attrs():
+     assert config.license == "MIT"
+     assert config.license_files == ["LICENSE"]
+     assert config.requires_python == ">=3.12"
++    assert config.default_app == "second"
+ 
+     # Explicit additional properties have been set
+     assert config.first == "value 1"
+diff --git a/tests/config/test_parse_config.py b/tests/config/test_parse_config.py
+index f4980943c..3f205d7d5 100644
+--- a/tests/config/test_parse_config.py
++++ b/tests/config/test_parse_config.py
+@@ -154,6 +154,59 @@ def test_multiple_minimal_apps(tmp_path):
+     console.warning_banner.assert_not_called()
+ 
+ 
++def test_default_app(tmp_path):
++    """A project can declare a default app."""
++    config_file = create_file(
++        tmp_path / "pyproject.toml",
++        """
++        [tool.briefcase]
++        default_app = "second"
++
++        [tool.briefcase.app.first]
++        license="MIT"
++
++        [tool.briefcase.app.second]
++        license="BSD-3-Clause"
++        """,
++    )
++
++    global_options, apps = parse_config(
++        config_file,
++        platform="macOS",
++        output_format="Xcode",
++        console=Mock(),
++    )
++
++    assert global_options["default_app"] == "second"
++    assert apps["first"]["default_app"] == "second"
++    assert apps["second"]["default_app"] == "second"
++
++
++def test_default_app_undefined(tmp_path):
++    """A default app that isn't defined in the project is an error."""
++    config_file = create_file(
++        tmp_path / "pyproject.toml",
++        """
++        [tool.briefcase]
++        default_app = "third"
++
++        [tool.briefcase.app.first]
++        license="MIT"
++        """,
++    )
++
++    with pytest.raises(
++        BriefcaseConfigError,
++        match="Default app 'third' is not defined",
++    ):
++        parse_config(
++            config_file,
++            platform="macOS",
++            output_format="Xcode",
++            console=Mock(),
++        )
++
++
+ def test_platform_override(tmp_path):
+     """An app can define platform settings that override base settings."""
+     config_file = create_file(
+diff --git a/tests/platforms/android/gradle/test_run.py b/tests/platforms/android/gradle/test_run.py
+index 9a94267d7..6dd071a5d 100644
+--- a/tests/platforms/android/gradle/test_run.py
++++ b/tests/platforms/android/gradle/test_run.py
+@@ -10,6 +10,7 @@
+ import httpx2
+ import pytest
+ 
++from briefcase.config import GlobalConfig
+ from briefcase.console import LogLevel
+ from briefcase.debuggers.base import BaseDebugger, DebuggerConnectionMode
+ from briefcase.exceptions import BriefcaseCommandError
+@@ -56,6 +57,14 @@ def run_command(dummy_console, tmp_path, first_app_config, jdk):
+ 
+     command._stream_app_logs = mock.MagicMock()
+ 
++    # In real use, __main__ parses the config before the command runs,
++    # so global_config is always a GlobalConfig.
++    command.global_config = GlobalConfig(
++        project_name="Tester",
++        version="0.0.1",
++        bundle="org.beeware",
++    )
++
+     return command
+ 
+ 
+diff --git a/tests/platforms/linux/appimage/test_run.py b/tests/platforms/linux/appimage/test_run.py
+index 2d20b542e..688603aa3 100644
+--- a/tests/platforms/linux/appimage/test_run.py
++++ b/tests/platforms/linux/appimage/test_run.py
+@@ -3,6 +3,7 @@
+ 
+ import pytest
+ 
++from briefcase.config import GlobalConfig
+ from briefcase.console import LogLevel
+ from briefcase.exceptions import UnsupportedHostError
+ from briefcase.integrations.subprocess import Subprocess
+@@ -17,6 +18,13 @@ def run_command(dummy_console, tmp_path):
+         data_path=tmp_path / "briefcase",
+     )
+     command.tools.home_path = tmp_path / "home"
++    # In real use, __main__ parses the config before the command runs,
++    # so global_config is always a GlobalConfig.
++    command.global_config = GlobalConfig(
++        project_name="Tester",
++        version="0.0.1",
++        bundle="org.beeware",
++    )
+ 
+     # Set the host architecture for test purposes.
+     command.tools.host_arch = "x86_64"
+diff --git a/tests/platforms/linux/system/test_dev.py b/tests/platforms/linux/system/test_dev.py
+index 89497e4a1..39841ccf0 100644
+--- a/tests/platforms/linux/system/test_dev.py
++++ b/tests/platforms/linux/system/test_dev.py
+@@ -5,6 +5,7 @@
+ 
+ import pytest
+ 
++from briefcase.config import GlobalConfig
+ from briefcase.integrations.subprocess import Subprocess
+ from briefcase.platforms.linux.system import LinuxSystemDevCommand
+ 
+@@ -33,6 +34,13 @@ def dev_command(monkeypatch, dummy_console, first_app, tmp_path):
+     command.tools.home_path = tmp_path / "home"
+     command.tools.subprocess = mock.MagicMock(spec_set=Subprocess)
+     command._stream_app_logs = mock.MagicMock()
++    # In real use, __main__ parses the config before the command runs,
++    # so global_config is always a GlobalConfig.
++    command.global_config = GlobalConfig(
++        project_name="Tester",
++        version="0.0.1",
++        bundle="org.beeware",
++    )
+     return command
+ 
+ 
+diff --git a/tests/platforms/linux/system/test_run.py b/tests/platforms/linux/system/test_run.py
+index 0e7043292..e08c352df 100644
+--- a/tests/platforms/linux/system/test_run.py
++++ b/tests/platforms/linux/system/test_run.py
+@@ -7,6 +7,7 @@
+ 
+ import pytest
+ 
++from briefcase.config import GlobalConfig
+ from briefcase.console import LogLevel
+ from briefcase.exceptions import UnsupportedHostError
+ from briefcase.integrations.docker import Docker
+@@ -27,6 +28,13 @@ def run_command(dummy_console, tmp_path, first_app, monkeypatch):
+         apps={"app": first_app},
+     )
+     command.tools.home_path = tmp_path / "home"
++    # In real use, __main__ parses the config before the command runs,
++    # so global_config is always a GlobalConfig.
++    command.global_config = GlobalConfig(
++        project_name="Tester",
++        version="0.0.1",
++        bundle="org.beeware",
++    )
+ 
+     # Default to running on Linux
+     command.tools.host_os = "Linux"

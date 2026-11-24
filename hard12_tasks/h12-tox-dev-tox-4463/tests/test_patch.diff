@@ -1,0 +1,111 @@
+diff --git a/tests/tox_env/python/pip/req/test_file.py b/tests/tox_env/python/pip/req/test_file.py
+index 2847de502..59e3ef861 100644
+--- a/tests/tox_env/python/pip/req/test_file.py
++++ b/tests/tox_env/python/pip/req/test_file.py
+@@ -655,10 +655,33 @@ def test_req_path_with_space_quoted(tmp_path: Path) -> None:
+     assert [str(i) for i in req_file.requirements] == ["c", "-c d<2"]
+ 
+ 
++@pytest.mark.parametrize(
++    ("algorithm", "length"),
++    [
++        pytest.param("sha256", 64, id="sha256"),
++        pytest.param("sha384", 96, id="sha384"),
++        pytest.param("sha512", 128, id="sha512"),
++    ],
++)
++@pytest.mark.parametrize(
++    "digits",
++    [pytest.param("ab", id="lowercase"), pytest.param("AB", id="uppercase"), pytest.param("aB", id="mixed-case")],
++)
++def test_hash_digest_case(tmp_path: Path, algorithm: str, length: int, digits: str) -> None:
++    hash_value = f"{algorithm}:{digits * (length // 2)}"
++    requirements = tmp_path / "req.txt"
++    requirements.write_text(f"attrs --hash={hash_value}\n", encoding="utf-8")
++
++    assert [str(requirement) for requirement in RequirementsFile(requirements, constraint=False).requirements] == [
++        f"attrs --hash {hash_value.lower()}",
++    ]
++
++
+ @pytest.mark.parametrize(
+     "hash_value",
+     [
+         pytest.param("sha256:a", id="sha256-colon-a"),
++        pytest.param(f"SHA256:{'a' * 64}", id="uppercase-algorithm"),
+         pytest.param(
+             "sha256:xxxxxxxxxx123456789012345678901234567890123456789012345678901234",
+             id="sha256-colon-xxxxxxxxxx123456789012345678901234567890123456789012345678901234",
+diff --git a/tests/tox_env/python/pip/test_pip_install.py b/tests/tox_env/python/pip/test_pip_install.py
+index fa001a386..06ef2a39b 100644
+--- a/tests/tox_env/python/pip/test_pip_install.py
++++ b/tests/tox_env/python/pip/test_pip_install.py
+@@ -2,6 +2,7 @@
+ 
+ import json
+ import os
++from hashlib import sha256
+ from textwrap import dedent
+ from typing import TYPE_CHECKING, Any, Final, TypedDict
+ from zipfile import ZipFile
+@@ -1046,6 +1047,60 @@ def test_pip_install_requirements_file_deps(tox_project: ToxProjectCreator) -> N
+     assert execute_calls.call_args[0][3].cmd == ["python", "-I", "-m", "pip", "install", "b", "-r", "r.txt"]
+ 
+ 
++@pytest.fixture
++def hashed_wheel_project(tox_project: ToxProjectCreator) -> ToxProject:
++    return tox_project({
++        "tox.ini": """
++            [testenv]
++            package = skip
++            deps = -r requirements.txt
++            commands = python -c 'from demo_pkg_inline import do; do()'
++        """,
++    })
++
++
++@pytest.mark.parametrize(
++    ("digest_suffix", "exit_code", "output"),
++    [
++        pytest.param(b"", 0, "greetings from demo_pkg_inline", id="matching-digest"),
++        pytest.param(b"other content", 1, "DO NOT MATCH THE HASHES", id="mismatched-digest"),
++    ],
++)
++def test_pip_install_requirements_file_hash_case(
++    hashed_wheel_project: ToxProject, demo_pkg_inline_wheel: Path, digest_suffix: bytes, exit_code: int, output: str
++) -> None:
++    digest = sha256(demo_pkg_inline_wheel.read_bytes() + digest_suffix).hexdigest().upper()
++    (hashed_wheel_project.path / "requirements.txt").write_text(
++        f"--no-index\n{demo_pkg_inline_wheel.as_uri()} --hash=sha256:{digest}\n", encoding="utf-8"
++    )
++
++    result = hashed_wheel_project.run("r")
++
++    assert result.code == exit_code, result
++    assert output in result.out + result.err, result
++
++
++def test_pip_install_reuses_env_when_only_digest_case_changes(
++    hashed_wheel_project: ToxProject, demo_pkg_inline_wheel: Path
++) -> None:
++    digest = sha256(demo_pkg_inline_wheel.read_bytes()).hexdigest()
++    assert digest != digest.upper()
++    requirement = f"--no-index\n{demo_pkg_inline_wheel.as_uri()} --hash=sha256:"
++    requirements = hashed_wheel_project.path / "requirements.txt"
++    requirements.write_text(f"{requirement}{digest}\n", encoding="utf-8")
++    original = hashed_wheel_project.run("r")
++    original.assert_success()
++    marker = original.state.envs["py"].env_dir / "marker"
++    marker.touch()
++
++    requirements.write_text(f"{requirement}{digest.upper()}\n", encoding="utf-8")
++    result = hashed_wheel_project.run("r")
++
++    result.assert_success()
++    assert marker.is_file(), result
++    assert "install_deps>" not in result.out, result
++
++
+ @pytest.fixture
+ def secret_requirements_project(tox_project: ToxProjectCreator, monkeypatch: pytest.MonkeyPatch) -> ToxProject:
+     monkeypatch.setenv("PYPI_TOKEN", "magic-one")

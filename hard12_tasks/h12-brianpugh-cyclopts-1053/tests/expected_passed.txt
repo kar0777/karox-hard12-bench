@@ -1,0 +1,7 @@
+tests/test_app_name_derivation.py::test_app_name_derivation_python_m[/src/mymodule.py-mymodule-python3
+tests/test_app_name_derivation.py::test_app_name_derivation_python_m[/src/mypkg/__main__.py-mypkg.__main__-python3
+tests/test_app_name_derivation.py::test_app_name_derivation_python_m[/src/mypkg/run.py-mypkg.run-python3
+tests/test_app_name_derivation.py::test_app_name_derivation_python_m_usage
+tests/test_app_name_derivation.py::test_app_name_derivation_main_module
+tests/test_app_name_derivation.py::test_app_name_derivation_not_main_module
+tests/test_app_name_derivation.py::test_app_name_derivation_python_m_wrapper

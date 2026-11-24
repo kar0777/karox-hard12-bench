@@ -1,0 +1,17 @@
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_cartesian_and_grouped_aggregates_over_subscripts[pandas]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-avg(a{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-count(a{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-count(b{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-sum(a{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-sum(b{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_special_property_names_in_a_subscript[pandas-MATCH
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_a_subscript_of_a_non_entity_value_keeps_its_outcome[pandas-UNWIND
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_a_subscript_of_a_non_entity_value_keeps_its_outcome[pandas-WITH
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_an_aggregate_over_a_list_or_null_subscript_keeps_each_engines_develop_answer[pandas-WITH
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-collect(a{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-count(DISTINCT
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-max(b{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_node_alias_aggregates_match_the_dotted_spelling[pandas-min(b{k})]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_relationship_alias_aggregates_match_the_dotted_spelling[pandas-count(r{k})-2]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_relationship_alias_aggregates_match_the_dotted_spelling[pandas-max(r{k})-20]
+graphistry/tests/compute/gfql/cypher/test_aggregate_string_subscript_2363.py::test_relationship_alias_aggregates_match_the_dotted_spelling[pandas-sum(r{k})-30]

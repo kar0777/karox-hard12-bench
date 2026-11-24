@@ -1,0 +1,12 @@
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[Free
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[MIT
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[Proprietary
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[Third-party
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[(
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[(MIT
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[GPL-2.0+
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[GPL-2.0-only
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[MIT-id]
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[custom
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[license_value16-expression]
+test/unittests/tools/sbom/test_spdx_expression.py::test_license_field[mit-id]

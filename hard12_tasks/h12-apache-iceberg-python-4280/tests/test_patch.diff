@@ -1,0 +1,111 @@
+diff --git a/tests/table/test_delete_file_index.py b/tests/table/test_delete_file_index.py
+index 6385e091cb..0afd5a76d7 100644
+--- a/tests/table/test_delete_file_index.py
++++ b/tests/table/test_delete_file_index.py
+@@ -233,3 +233,10 @@ def test_record_equality_for_partition_lookup() -> None:
+ 
+     assert len(index.for_data_file(1, data_file, partition_b)) == 1
+     assert len(index.for_data_file(1, data_file, partition_c)) == 0
++
++
++def test_record_equality_for_nan_partition_lookup() -> None:
++    index = DeleteFileIndex()
++    index.add_delete_file(_create_partition_delete(sequence_number=2, partition=Record(float("nan"))), Record(float("nan")))
++
++    assert len(index.for_data_file(1, _create_data_file(), Record(float("nan")))) == 1
+diff --git a/tests/table/test_validate.py b/tests/table/test_validate.py
+index a19983fd66..f44de3089a 100644
+--- a/tests/table/test_validate.py
++++ b/tests/table/test_validate.py
+@@ -30,11 +30,13 @@
+     _added_delete_files,
+     _deleted_data_files,
+     _validate_added_data_files,
++    _validate_data_files_exist,
+     _validate_deleted_data_files,
+     _validate_no_new_delete_files,
+     _validate_no_new_deletes_for_data_files,
+     _validation_history,
+ )
++from pyiceberg.typedef import Record
+ 
+ 
+ @pytest.fixture
+@@ -235,6 +237,37 @@ class DummyEntry:
+             )
+ 
+ 
++def test_validate_data_files_exist_raises_on_conflict_in_nan_partition(
++    table_v2_with_extensive_snapshots_and_manifests: tuple[Table, dict[int, list[ManifestFile]]],
++) -> None:
++    table, mock_manifests = table_v2_with_extensive_snapshots_and_manifests
++    oldest_snapshot = table.snapshots()[0]
++    newest_snapshot = cast(Snapshot, table.current_snapshot())
++
++    snapshots = table.snapshots()
++    snapshots[-2] = snapshots[-2].model_copy(update={"summary": Summary(operation=Operation.DELETE)})
++    table.metadata = table.metadata.model_copy(update={"snapshots": snapshots})
++
++    def data_file() -> DataFile:
++        return DataFile.from_args(file_path="s3://bucket/data.parquet", partition=Record(float("nan")), spec_id=0)
++
++    deleted_entry = ManifestEntry.from_args(
++        status=ManifestEntryStatus.DELETED, snapshot_id=snapshots[-2].snapshot_id, data_file=data_file()
++    )
++
++    with (
++        patch("pyiceberg.table.snapshots.Snapshot.manifests", new=lambda self, io: mock_manifests.get(self.snapshot_id, [])),
++        patch("pyiceberg.manifest.ManifestFile.fetch_manifest_entry", return_value=[deleted_entry]),
++    ):
++        with pytest.raises(ValidationException, match="Data files were concurrently deleted"):
++            _validate_data_files_exist(
++                table=table,
++                starting_snapshot=newest_snapshot,
++                data_files={data_file()},
++                parent_snapshot=oldest_snapshot,
++            )
++
++
+ @pytest.mark.parametrize("operation", [Operation.APPEND, Operation.OVERWRITE])
+ def test_validate_added_data_files_conflicting_count(
+     table_v2_with_extensive_snapshots_and_manifests: tuple[Table, dict[int, list[ManifestFile]]],
+diff --git a/tests/test_typedef.py b/tests/test_typedef.py
+index f13349a42f..32e4e54c2d 100644
+--- a/tests/test_typedef.py
++++ b/tests/test_typedef.py
+@@ -65,3 +65,35 @@ def computed(self) -> int:
+ 
+     with pytest.raises(TypeError, match="Unexpected RecordWithProperty fields: computed"):
+         RecordWithProperty._bind(StructType(), computed=1)
++
++
++def test_record_equality_with_nan() -> None:
++    assert Record(1, float("nan")) == Record(1, float("nan"))
++    assert Record(Record(float("nan"))) == Record(Record(float("nan")))
++    assert len({Record(float("nan")), Record(float("nan"))}) == 1
++
++    assert Record(float("nan")) != Record(1.0)
++    assert Record(1, float("nan")) != Record(2, float("nan"))
++
++
++def test_record_equality_compares_nested_records_once() -> None:
++    calls = 0
++
++    class Leaf:
++        def __init__(self, value: int) -> None:
++            self.value = value
++
++        def __eq__(self, other: object) -> bool:
++            nonlocal calls
++            calls += 1
++            return isinstance(other, Leaf) and self.value == other.value
++
++    depth = 20
++    for suffix in [(), (float("nan"),)]:
++        left, right = Record(Leaf(1)), Record(Leaf(2))
++        for _ in range(depth - 1):
++            left, right = Record(left, *suffix), Record(right, *suffix)
++
++        calls = 0
++        assert left != right
++        assert calls <= depth, suffix

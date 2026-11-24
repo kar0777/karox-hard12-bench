@@ -1,0 +1,239 @@
+diff --git a/tests/integrations/android_sdk/AndroidSDK/test__create_emulator.py b/tests/integrations/android_sdk/AndroidSDK/test__create_emulator.py
+index f7e38d54b..aba7390a1 100644
+--- a/tests/integrations/android_sdk/AndroidSDK/test__create_emulator.py
++++ b/tests/integrations/android_sdk/AndroidSDK/test__create_emulator.py
+@@ -7,6 +7,8 @@
+ from briefcase.integrations.android_sdk import AndroidSDK
+ from briefcase.integrations.base import ToolCache
+ 
++from ....utils import create_file
++
+ 
+ @pytest.fixture
+ def mock_tools(tmp_path, mock_tools) -> ToolCache:
+@@ -62,6 +64,10 @@ def test_create_emulator(
+     # Mock the initial output of an AVD config file.
+     avd_config_path = tmp_path / "home/.android/avd/new-emulator.avd/config.ini"
+     avd_config_path.parent.mkdir(parents=True)
++    create_file(
++        avd_config_path.parent.with_suffix(".ini"),
++        f"path={avd_config_path.parent}\n",
++    )
+     with avd_config_path.open("w", encoding="utf-8") as f:
+         f.write("hw.device.name=pixel\n")
+ 
+@@ -143,6 +149,10 @@ def test_create_emulator_with_defaults(
+     # Mock the initial output of an AVD config file.
+     avd_config_path = tmp_path / "home/.android/avd/new-emulator.avd/config.ini"
+     avd_config_path.parent.mkdir(parents=True)
++    create_file(
++        avd_config_path.parent.with_suffix(".ini"),
++        f"path={avd_config_path.parent}\n",
++    )
+     with avd_config_path.open("w", encoding="utf-8") as f:
+         f.write("hw.device.name=pixel\n")
+ 
+@@ -219,6 +229,10 @@ def test_create_emulator_with_defaults_no_skin(
+     # Mock the initial output of an AVD config file.
+     avd_config_path = tmp_path / "home/.android/avd/new-emulator.avd/config.ini"
+     avd_config_path.parent.mkdir(parents=True)
++    create_file(
++        avd_config_path.parent.with_suffix(".ini"),
++        f"path={avd_config_path.parent}\n",
++    )
+     with avd_config_path.open("w", encoding="utf-8") as f:
+         f.write("hw.device.name=pixel\n")
+ 
+@@ -317,6 +331,10 @@ def test_default_name(mock_tools, android_sdk, tmp_path):
+     # Mock the initial output of an AVD config file.
+     avd_config_path = tmp_path / "home/.android/avd/beePhone-31.avd/config.ini"
+     avd_config_path.parent.mkdir(parents=True)
++    create_file(
++        avd_config_path.parent.with_suffix(".ini"),
++        f"path={avd_config_path.parent}\n",
++    )
+     with avd_config_path.open("w", encoding="utf-8") as f:
+         f.write("hw.device.name=pixel\n")
+ 
+@@ -348,6 +366,10 @@ def test_default_name_with_collisions(mock_tools, android_sdk, tmp_path):
+     # Mock the initial output of an AVD config file.
+     avd_config_path = tmp_path / "home/.android/avd/beePhone-31-3.avd/config.ini"
+     avd_config_path.parent.mkdir(parents=True)
++    create_file(
++        avd_config_path.parent.with_suffix(".ini"),
++        f"path={avd_config_path.parent}\n",
++    )
+     with avd_config_path.open("w", encoding="utf-8") as f:
+         f.write("hw.device.name=pixel\n")
+ 
+diff --git a/tests/integrations/android_sdk/AndroidSDK/test_avd_config.py b/tests/integrations/android_sdk/AndroidSDK/test_avd_config.py
+index 78160cfd9..2ee2465d7 100644
+--- a/tests/integrations/android_sdk/AndroidSDK/test_avd_config.py
++++ b/tests/integrations/android_sdk/AndroidSDK/test_avd_config.py
+@@ -1,7 +1,22 @@
+-def test_avd_config(mock_tools, android_sdk, tmp_path):
+-    """An AVD configuration can be read."""
+-    config_file = tmp_path / "home/.android/avd/testDevice.avd/config.ini"
++import pytest
++
++from briefcase.exceptions import BriefcaseCommandError
++
++from ....utils import create_file
++
++
++@pytest.mark.parametrize(
++    "directory",
++    ["testDevice.avd", "originalDevice.avd", "device with spaces=é.avd"],
++)
++def test_avd_config(mock_tools, android_sdk, tmp_path, directory):
++    """An AVD configuration can be read even after the device is renamed."""
++    config_file = android_sdk.avd_path / directory / "config.ini"
+     config_file.parent.mkdir(parents=True)
++    create_file(
++        android_sdk.avd_path / "testDevice.ini",
++        f"avd.ini.encoding=UTF-8\npath={config_file.parent}\n",
++    )
+ 
+     # Write a default config. It contains:
+     # * blank lines
+@@ -37,6 +52,10 @@ def test_avd_config_with_space(mock_tools, android_sdk, tmp_path):
+     """An AVD configuration that contains spaces can be read."""
+     config_file = tmp_path / "home/.android/avd/testDevice.avd/config.ini"
+     config_file.parent.mkdir(parents=True)
++    create_file(
++        android_sdk.avd_path / "testDevice.ini",
++        f"\navd.ini.encoding = UTF-8\npath = {config_file.parent}\n",
++    )
+ 
+     # Write a default config. It contains:
+     # * blank lines
+@@ -67,3 +86,79 @@ def test_avd_config_with_space(mock_tools, android_sdk, tmp_path):
+         "disk.cachePartition": "yes",
+         "disk.cachePartition.size": "37MB",
+     }
++
++
++@pytest.mark.parametrize("metadata", [None, "", "path=\n", "path.rel=\n"])
++def test_missing_avd_path(android_sdk, metadata):
++    """A directory alone is not sufficient to identify an AVD."""
++    create_file(
++        android_sdk.avd_path / "testDevice.avd/config.ini",
++        "hw.device.name=pixel\n",
++    )
++    if metadata is not None:
++        create_file(android_sdk.avd_path / "testDevice.ini", metadata)
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match="Unable to read configuration of AVD @testDevice",
++    ):
++        android_sdk.avd_config("testDevice")
++
++
++@pytest.mark.parametrize("relative_path", [None, "avd/missingDevice.avd"])
++def test_missing_config(android_sdk, tmp_path, relative_path):
++    """An unreadable referenced AVD configuration raises a useful error."""
++    metadata = f"path={tmp_path / 'missingDevice.avd'}\n"
++    if relative_path is not None:
++        metadata += f"path.rel={relative_path}\n"
++    create_file(android_sdk.avd_path / "testDevice.ini", metadata)
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match="Unable to read configuration of AVD @testDevice",
++    ):
++        android_sdk.avd_config("testDevice")
++
++
++@pytest.mark.parametrize("absolute_path_exists", [True, False])
++def test_relative_path_preferred(android_sdk, tmp_path, absolute_path_exists):
++    """The relative path takes precedence over an absolute path, like the emulator."""
++    absolute_path = tmp_path / "custom AVD location=é"
++    if absolute_path_exists:
++        create_file(absolute_path / "config.ini", "hw.device.name=pixel\n")
++    create_file(
++        android_sdk.avd_path / "originalDevice.avd/config.ini",
++        "hw.device.name=slab\n",
++    )
++    create_file(
++        android_sdk.avd_path / "testDevice.ini",
++        f"path={absolute_path}\npath.rel=avd/originalDevice.avd\n",
++    )
++
++    assert android_sdk.avd_config("testDevice") == {"hw.device.name": "slab"}
++
++
++def test_absolute_path_fallback(android_sdk, tmp_path):
++    """The absolute path is used if the relative directory is missing."""
++    absolute_path = tmp_path / "custom AVD location=é"
++    create_file(absolute_path / "config.ini", "hw.device.name=pixel\n")
++    create_file(
++        android_sdk.avd_path / "testDevice.ini",
++        f"path={absolute_path}\npath.rel=avd/missingDevice.avd\n",
++    )
++
++    assert android_sdk.avd_config("testDevice") == {"hw.device.name": "pixel"}
++
++
++def test_relative_path_only(android_sdk):
++    """A valid relative path does not require an absolute path."""
++    create_file(
++        android_sdk.avd_path / "originalDevice.avd/config.ini",
++        "hw.device.name=slab\n",
++    )
++    create_file(
++        android_sdk.avd_path / "testDevice.ini",
++        "path.rel=avd/originalDevice.avd\n",
++    )
++
++    assert android_sdk.avd_config("testDevice") == {"hw.device.name": "slab"}
+diff --git a/tests/integrations/android_sdk/AndroidSDK/test_update_emulator_config.py b/tests/integrations/android_sdk/AndroidSDK/test_update_emulator_config.py
+index 4921b3a6f..e7e3269d7 100644
+--- a/tests/integrations/android_sdk/AndroidSDK/test_update_emulator_config.py
++++ b/tests/integrations/android_sdk/AndroidSDK/test_update_emulator_config.py
+@@ -1,11 +1,15 @@
+ import pytest
+ 
++from ....utils import create_file
+ 
+-@pytest.fixture
+-def test_device(tmp_path):
++
++@pytest.fixture(params=["testDevice.avd", "originalDevice.avd"])
++def test_device(tmp_path, request):
+     """Create an AVD configuration file."""
+-    config_file = tmp_path / "home/.android/avd/testDevice.avd/config.ini"
++    avd_path = tmp_path / "home/.android/avd"
++    config_file = avd_path / request.param / "config.ini"
+     config_file.parent.mkdir(parents=True)
++    create_file(avd_path / "testDevice.ini", f"path={config_file.parent}\n")
+ 
+     # Write a default config. It contains:
+     # * blank lines
+@@ -87,3 +91,26 @@ def test_new_content(android_sdk, test_device):
+ skin.path=skins/pixel_3a
+ """
+     )
++
++
++def test_update_relative_path(android_sdk, tmp_path):
++    """Updates go to the same directory that the emulator selects for reading."""
++    relative_config = create_file(
++        android_sdk.avd_path / "originalDevice.avd/config.ini",
++        "hw.device.name=pixel\n",
++    )
++    absolute_config = create_file(
++        tmp_path / "anotherDevice.avd/config.ini",
++        "hw.device.name=slab\n",
++    )
++    create_file(
++        android_sdk.avd_path / "testDevice.ini",
++        f"path={absolute_config.parent}\npath.rel=avd/originalDevice.avd\n",
++    )
++
++    android_sdk.update_emulator_config("testDevice", {"hw.keyboard": "yes"})
++
++    assert relative_config.read_text(encoding="utf-8") == (
++        "hw.device.name=pixel\nhw.keyboard=yes\n"
++    )
++    assert absolute_config.read_text(encoding="utf-8") == "hw.device.name=slab\n"

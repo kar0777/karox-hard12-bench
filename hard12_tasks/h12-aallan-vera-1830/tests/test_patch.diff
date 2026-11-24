@@ -1,0 +1,283 @@
+diff --git a/tests/mutation_oracle.py b/tests/mutation_oracle.py
+index 27d1a636a..06bc1533e 100644
+--- a/tests/mutation_oracle.py
++++ b/tests/mutation_oracle.py
+@@ -30,6 +30,15 @@
+ pytest's own reads of a traceback's source go through ``tokenize.open``,
+ which holds its own reference to the original ``open``.
+ 
++A test that fails with no mutant active, in the stats pass or the clean
++run, is the one that stops the pass under ``-x``, and the lane drops it
++from the oracle and runs again.  Under the fork server each pass runs in a
++child whose pytest output never reaches mutmut's log (its output catcher
++replaces ``sys.stdout`` in Python, so the child's writes die with it;
++#1829), so the plugin appends the node id of each test that fails in those
++two passes to the file ``MUTATION_ORACLE_FAILURES`` names, where the lane
++reads the first.
++
+ The skipped test is out of the oracle entirely.  mutmut's stats pass records,
+ at each test's teardown and whatever its outcome, the functions the test
+ reached, and runs a mutant against the tests recorded for its function; a
+@@ -52,7 +61,7 @@
+ import tomllib
+ from collections.abc import Generator
+ from pathlib import Path
+-from typing import Any
++from typing import Any, cast
+ 
+ import pytest
+ 
+@@ -62,6 +71,15 @@
+ #: The variable naming the file each test skipped for a source read is appended to.
+ SOURCE_SKIPS_ENV = "MUTATION_ORACLE_SOURCE_SKIPS"
+ 
++#: The variable naming the file each test that fails in mutmut's stats pass
++#: or its clean run is appended to.
++FAILURES_ENV = "MUTATION_ORACLE_FAILURES"
++
++#: mutmut's marker for the passes with no mutant active: the stats pass,
++#: and the clean run of the covering tests (the forced-fail run is ``fail``,
++#: a mutant's run its name, a listing ``list_all_tests``).
++_CLEAN_PASSES = ("", "stats")
++
+ #: Why a test is skipped, as its skip reason.
+ REASON = ("starts a Python or vera process, which inside mutmut's copy runs the mutated "
+           "modules afresh and records nothing for the stats pass")
+@@ -188,12 +206,12 @@ def pytest_configure(config: pytest.Config) -> None:
+     if _original_open is None:
+         _source_roots = source_roots(Path(__file__).resolve().parent.parent)
+         _original_open = builtins.open
+-        builtins.open = _skipping_open  # type: ignore[assignment]
+-        io.open = _skipping_open  # type: ignore[assignment]
++        builtins.open = _skipping_open
++        io.open = _skipping_open
+         _original_getsource = inspect.getsource
+         _original_getsourcelines = inspect.getsourcelines
+-        inspect.getsource = _skipping_getsource  # type: ignore[assignment]
+-        inspect.getsourcelines = _skipping_getsourcelines  # type: ignore[assignment]
++        inspect.getsource = cast(Any, _skipping_getsource)
++        inspect.getsourcelines = cast(Any, _skipping_getsourcelines)
+ 
+ 
+ def pytest_unconfigure(config: pytest.Config) -> None:
+@@ -210,6 +228,16 @@ def pytest_unconfigure(config: pytest.Config) -> None:
+         _source_roots = ()
+ 
+ 
++def pytest_runtest_logreport(report: pytest.TestReport) -> None:
++    """A test that fails with no mutant active fails in the copy: its node
++    id goes to the file ``MUTATION_ORACLE_FAILURES`` names, for the lane to
++    drop it by, since the fork server keeps the pass's output from the log."""
++    path = os.environ.get(FAILURES_ENV)
++    if path and report.failed and os.environ.get("MUTANT_UNDER_TEST", "") in _CLEAN_PASSES:
++        with open(path, "a", encoding="utf-8") as fh:
++            fh.write(report.nodeid + "\n")
++
++
+ @pytest.hookimpl(wrapper=True)
+ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Generator[None, Any, Any]:
+     """A test is the plugin's when any phase ends in one of its skips: one
+diff --git a/tests/test_mutate_diff.py b/tests/test_mutate_diff.py
+index b2f5ec5e2..fba6b45c5 100644
+--- a/tests/test_mutate_diff.py
++++ b/tests/test_mutate_diff.py
+@@ -1677,6 +1677,37 @@ def fake_run_engine(cmd: Any, *, cwd: Path, budget_s: float, log_path: Path,
+             budget_s=100.0, workdir=tmp_path, env={})
+         return run, dropped, attempts
+ 
++    def test_a_copy_failure_the_log_does_not_name_is_read_from_the_plugins_file(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
++    ) -> None:
++        """Each attempt starts with the file empty, so the id read is the
++        attempt's own; the drop and the rerun follow as from a `FAILED` line."""
++        failures = tmp_path / "failures.txt"
++        attempts: list[tuple[str, bool]] = []
++
++        def fake_run_engine(cmd: Any, *, cwd: Path, budget_s: float, log_path: Path,
++                            env: Any = None, grace_s: Any = None) -> Any:
++            config = (cwd / "pyproject.toml").read_text(encoding="utf-8")
++            attempts.append((config, failures.exists()))
++            for test in ("tests/test_m.py::test_f", "tests/test_m.py::test_g"):
++                if f"--deselect={test}" not in config:
++                    failures.write_text(test + "\n", encoding="utf-8")
++                    log_path.write_text("Running stats\nfailed to collect stats. runner returned 1\n",
++                                        encoding="utf-8")
++                    return md.EngineRun(1, None, 0.1)
++            log_path.write_text("done\n", encoding="utf-8")
++            return md.EngineRun(0, None, 0.1)
++
++        monkeypatch.setattr(md, "run_engine", fake_run_engine)
++        run, _, dropped = md.run_dropping(
++            ["mutmut", "run"], tree=tmp_path, pyproject=tmp_path / "pyproject.toml",
++            config_for=lambda dropped: "".join(f"--deselect={t}\n" for t in dropped),
++            budget_s=100.0, workdir=tmp_path, env={md.FAILURES_ENV: str(failures)})
++        assert run.returncode == 0 and dropped == ["tests/test_m.py::test_f", "tests/test_m.py::test_g"]
++        assert [existed for _, existed in attempts] == [False, False, False]  # emptied before each attempt
++        assert md.copy_failure("failed to collect stats. runner returned 1\n", None) is None
++        assert md.copy_failure("Running stats\n", failures) is None  # no stop sentence: not a copy failure
++
+     @staticmethod
+     def _night(deselected: set[str]) -> tuple[str, int]:
+         """The night's engine: each of its two tests errors at teardown in
+@@ -2466,6 +2497,41 @@ def test_fails_inside_the_parser():
+         assert os.path.join("vera", "parser.py") in result.stdout and "ParseError" in result.stdout
+         assert not skips.exists() and not source_skips.exists()
+ 
++    def test_a_failure_with_no_mutant_active_is_recorded_for_the_lane(self, tmp_path: Path) -> None:
++        """The stats pass and the clean run are the passes a copy failure
++        stops; under the fork server their pytest output never reaches the
++        log, so the plugin writes each failing test's id to the lane's file
++        in those passes alone, not in a mutant's run (#1829)."""
++        (tmp_path / "test_planted.py").write_text(_src("""
++            def test_passes():
++                pass
++
++
++            def test_fails():
++                assert 1 == 2
++
++
++            def test_errors_at_setup(missing_fixture):
++                pass
++        """), encoding="utf-8")
++        failures = tmp_path / "failures.txt"
++        base = {k: v for k, v in os.environ.items()
++                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS", "MUTANT_UNDER_TEST")}
++        seen: dict[str, list[str]] = {}
++        for marker in ("stats", "", "fail", "vera.m.x_f__mutmut_3"):
++            failures.unlink(missing_ok=True)
++            env = {**base, "PYTHONPATH": str(ROOT), "PYTHONUTF8": "1", "MUTATION_ORACLE_FAILURES": str(failures),
++                   "MUTANT_UNDER_TEST": marker}
++            result = subprocess.run(
++                [sys.executable, "-m", "pytest", "-q", "-p", "tests.mutation_oracle", "-p", "no:cacheprovider",
++                 "-o", "addopts=", "test_planted.py"],
++                cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
++                check=False)
++            assert "1 failed" in result.stdout and "1 error" in result.stdout, result.stdout + result.stderr
++            seen[marker] = failures.read_text(encoding="utf-8").splitlines() if failures.exists() else []
++        assert seen["stats"] == seen[""] == ["test_planted.py::test_fails", "test_planted.py::test_errors_at_setup"]
++        assert seen["fail"] == [] and seen["vera.m.x_f__mutmut_3"] == []
++
+     def test_the_mutated_source_paths_are_the_configurations(self, tmp_path: Path) -> None:
+         from tests import mutation_oracle
+ 
+@@ -2549,8 +2615,7 @@ def test_a_skipped_test_is_no_oracle_for_the_functions_it_reached_first(self, tm
+         env = {k: v for k, v in os.environ.items()
+                if k not in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "PYTEST_ADDOPTS",
+                             "MUTANT_UNDER_TEST")}
+-        env.update(PYTHONDONTWRITEBYTECODE="1", MUTATION_ORACLE_SKIPS=str(skips),
+-                   MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
++        env.update(MUTATION_ORACLE_SKIPS=str(skips), MUTATION_ORACLE_SOURCE_SKIPS=str(source_skips))
+         run = subprocess.run([str(engine), "run", "--max-children", "2"], cwd=project, env=env,
+                              capture_output=True, text=True, encoding="utf-8", check=False, timeout=600)
+         listed = subprocess.run([str(engine), "results", "--all", "true"], cwd=project, env=env,
+@@ -2619,7 +2684,11 @@ def test_a_skipped_test_is_no_oracle_for_the_functions_it_reached_first(self, tm
+     config = Path("pyproject.toml").read_text(encoding="utf-8")
+     if failing and (os.environ.get("FAKE_COPY_FAILURE_STICKY") or f"--deselect={failing}" not in config):
+         print("Running stats")
+-        print(f"FAILED {failing} - FileNotFoundError: [Errno 2] No such file or directory: 'CHANGELOG.md'")
++        if os.environ.get("FAKE_COPY_FAILURE_SILENT"):
++            with open(os.environ["MUTATION_ORACLE_FAILURES"], "a", encoding="utf-8") as fh:
++                fh.write(failing + "\\n")
++        else:
++            print(f"FAILED {failing} - FileNotFoundError: [Errno 2] No such file or directory: 'CHANGELOG.md'")
+         print("failed to collect stats. runner returned 1")
+         sys.exit(1)
+     for fake, env in (("FAKE_ORACLE_SKIPS", "MUTATION_ORACLE_SKIPS"),
+@@ -2993,6 +3062,20 @@ def test_a_test_that_starts_a_process_is_kept_out_and_reported(
+         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+         assert f"`{planted}`" in summary and "Not oracles in mutmut's copy" in summary
+ 
++    def test_a_copy_failure_the_log_does_not_name_is_read_from_the_plugins_file(
++        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
++    ) -> None:
++        """Under the fork server the stats pass's pytest output dies with
++        its child (#1829): the plugin's file names the failing test, and the
++        lane drops it and runs again, as it does from a `FAILED` line."""
++        failing = self._plant_a_tree_reading_test(repo)
++        monkeypatch.setenv("FAKE_COPY_FAILURE", failing)
++        monkeypatch.setenv("FAKE_COPY_FAILURE_SILENT", "1")
++        code, record, calls = _main(repo, tmp_path, "    vera.m.x_kept__mutmut_1: killed\n")
++        assert code == 0 and record["stopped"] is None
++        assert record["dropped_tests"] == [failing]
++        assert len([c for c in calls if c["args"][0] == "run"]) == 2
++
+     def test_a_test_that_reads_the_source_is_kept_out_and_reported(
+         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+     ) -> None:
+diff --git a/tests/test_mutate_sweep.py b/tests/test_mutate_sweep.py
+index 4c124e212..bfe64d4bd 100644
+--- a/tests/test_mutate_sweep.py
++++ b/tests/test_mutate_sweep.py
+@@ -1087,9 +1087,12 @@ def _steps(self, job: str) -> list[dict[str, Any]]:
+         assert isinstance(steps, list)
+         return steps
+ 
+-    def test_it_runs_nightly_and_on_demand_with_one_job_by_default(self) -> None:
++    def test_it_runs_on_demand_with_one_job_by_default_while_the_schedule_is_paused(self) -> None:
++        """The 21:00 UTC schedule is paused while the sample is drawn by line
++        rather than by mutant (#1829); the `issue` job keeps its scheduled
++        condition for the schedule's return."""
+         on = self._wf()[True]
+-        assert set(on) == {"schedule", "workflow_dispatch"} and len(on["schedule"]) == 1
++        assert set(on) == {"workflow_dispatch"}
+         assert on["workflow_dispatch"]["inputs"]["jobs"]["default"] == 1
+ 
+     def test_only_the_issue_job_writes_and_it_writes_only_issues(self) -> None:
+@@ -1250,7 +1253,8 @@ def test_the_engines_status_is_the_newest_logs_last_row_without_the_spinner(self
+ state = Path(os.environ["FAKE_STATE"])
+ args = sys.argv[1:]
+ with (state / "calls.jsonl").open("a", encoding="utf-8") as fh:
+-    fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "columns": os.environ.get("COLUMNS")}) + "\\n")
++    fh.write(json.dumps({"cwd": os.getcwd(), "args": args, "columns": os.environ.get("COLUMNS"),
++                         "bytecode_off": os.environ.get("PYTHONDONTWRITEBYTECODE")}) + "\\n")
+ if args[0] == "--version":
+     print("mutmut, version 3.8.0")
+     sys.exit(0)
+@@ -1270,7 +1274,13 @@ def test_the_engines_status_is_the_newest_logs_last_row_without_the_spinner(self
+     config = Path("pyproject.toml").read_text(encoding="utf-8")
+     if failing and f"--deselect={failing}" not in config:
+         print("Running stats")
+-        print(f"FAILED {failing} - FileNotFoundError: x")
++        if os.environ.get("FAKE_COPY_FAILURE_SILENT"):
++            # The fork server: the pass's pytest output never reaches the
++            # log; the plugin wrote the failing test's id to the lane's file.
++            with open(os.environ["MUTATION_ORACLE_FAILURES"], "a", encoding="utf-8") as fh:
++                fh.write(failing + "\\n")
++        else:
++            print(f"FAILED {failing} - FileNotFoundError: x")
+         print("failed to collect stats. runner returned 1")
+         sys.exit(1)
+     for fake, env in (("FAKE_ORACLE_SKIPS", "MUTATION_ORACLE_SKIPS"),
+@@ -1419,6 +1429,31 @@ def test_a_test_that_fails_in_the_copy_is_dropped_and_reported(
+         assert code == 0 and record["dropped_tests"] == ["tests/test_m.py::test_f"]
+         assert len([c for c in calls if c["args"][0] == "run"]) == 2
+ 
++    def test_a_copy_failure_the_log_does_not_name_is_read_from_the_plugins_file(
++        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
++    ) -> None:
++        """Under the fork server the stats pass's pytest output dies with
++        its child, so the log holds no `FAILED` line (the three engine stops
++        of 3 and 4 November 2026, #1829): the plugin's file names the test,
++        and the slice drops it as before."""
++        monkeypatch.setenv("FAKE_COPY_FAILURE", "tests/test_m.py::test_f")
++        monkeypatch.setenv("FAKE_COPY_FAILURE_SILENT", "1")
++        code, record, calls = _night(repo, tmp_path, 1, (
++            "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n"))
++        assert code == 0 and record["stopped"] is None
++        assert record["dropped_tests"] == ["tests/test_m.py::test_f"]
++        assert len([c for c in calls if c["args"][0] == "run"]) == 2
++
++    def test_the_copy_caches_bytecode(self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        """A mutated module compiles in tens of seconds and loads from its
++        .pyc in a fifth of a second; under the fork server every pass and
++        every mutant's worker is a fresh process (#1829)."""
++        monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")  # the night's own shell may set it
++        code, _, calls = _night(repo, tmp_path, 1, "    vera.m.x_f__mutmut_1: killed\n    vera.m.x_g__mutmut_1: killed\n")
++        assert code == 0
++        (run,) = [c for c in calls if c["args"][0] == "run"]
++        assert run["bytecode_off"] is None
++
+     def test_a_test_dropped_on_an_earlier_night_is_deselected_from_the_start(
+         self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+     ) -> None:

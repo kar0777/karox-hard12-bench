@@ -1,0 +1,3 @@
+tests/test_orm_relations.py::test_reverse_foreign_object_relation_is_skipped
+tests/test_orm_relations.py::test_reverse_foreign_object_relation_is_skipped_at_depth
+tests/test_orm_relations.py::test_manytomany
