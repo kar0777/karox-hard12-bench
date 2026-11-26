@@ -1,0 +1,14 @@
+tests/qasm3/test_expressions.py::test_expression_statements_are_evaluated_and_discarded[-value;]
+tests/qasm3/test_expressions.py::test_expression_statements_are_evaluated_and_discarded[1;]
+tests/qasm3/test_expressions.py::test_expression_statements_are_evaluated_and_discarded[sin(1.0);]
+tests/qasm3/test_expressions.py::test_expression_statements_are_evaluated_and_discarded[value
+tests/qasm3/test_expressions.py::test_expression_statements_are_evaluated_and_discarded[value;]
+tests/qasm3/test_expressions.py::test_expression_statements_are_evaluated_and_discarded[values[0];]
+tests/qasm3/test_expressions.py::test_unknown_gate_reports_its_name_before_checking_operands[unroll-OPENQASM
+tests/qasm3/test_expressions.py::test_unknown_gate_reports_its_name_before_checking_operands[validate-OPENQASM
+tests/qasm3/test_expressions.py::test_bit_in_expression
+tests/qasm3/test_expressions.py::test_correct_expressions
+tests/qasm3/test_expressions.py::test_incorrect_expressions
+tests/qasm3/test_expressions.py::test_subroutine_expression_statement_retains_operations
+tests/qasm3/test_expressions.py::test_unknown_expression_statement_call_raises_validation_error[unroll]
+tests/qasm3/test_expressions.py::test_unknown_expression_statement_call_raises_validation_error[validate]

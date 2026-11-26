@@ -1,0 +1,5 @@
+test/test_lopf_global_constraints.py::test_investment_period_without_multi_invest_raises[operational_limit-gas]
+test/test_lopf_global_constraints.py::test_investment_period_without_multi_invest_raises[primary_energy-co2_emissions]
+test/test_lopf_global_constraints.py::test_1449
+test/test_lopf_global_constraints.py::test_1884
+test/test_lopf_global_constraints.py::test_transmission_cost_limit_overnight_cost

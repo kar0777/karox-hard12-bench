@@ -1,0 +1,163 @@
+diff --git a/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py b/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py
+index 9fd59d211..daa2aec71 100644
+--- a/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py
++++ b/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py
+@@ -143,7 +143,6 @@ def test_cf_fill_value(self, cf_fill_value_hdf5_file):
+         metadata = manifest_store._group.arrays["data"].metadata
+         assert "_FillValue" in metadata.attributes
+ 
+-    @pytest.mark.filterwarnings("ignore:.*variable-length string dataset.*:UserWarning")
+     def test_string_dtype_fill_value(self, string_dtype_hdf5_url):
+         manifest_store = manifest_store_from_hdf_url(string_dtype_hdf5_url)
+         metadata = manifest_store._group.arrays["data"].metadata
+@@ -165,21 +164,76 @@ def test_fixed_length_bytes_fill_value_preserved(
+         metadata = manifest_store._group.arrays["data"].metadata
+         assert metadata.fill_value == b"\xff\xfe\xff\xfe\xff"
+ 
+-    def test_variable_length_string_warns_on_parse(self, vlen_string_hdf5_url):
+-        with pytest.warns(UserWarning, match="variable-length string"):
+-            manifest_store_from_hdf_url(vlen_string_hdf5_url)
+-
+-    def test_ascii_variable_length_string_warns_on_parse(
+-        self, ascii_vlen_string_hdf5_url
+-    ):
+-        # an ascii-cset vlen string is still a vlen string, so it should warn like
+-        # the utf-8 case rather than fail the whole file as an unsupported object dtype
+-        with pytest.warns(UserWarning, match="variable-length string"):
+-            manifest_store = manifest_store_from_hdf_url(ascii_vlen_string_hdf5_url)
++    def test_variable_length_string_roundtrip(self, vlen_string_hdf5_url):
++        # the strings live in the HDF5 global heap, so they are read at parse
++        # time and inlined, and no warning is needed
++        with warnings.catch_warnings():
++            warnings.simplefilter("error")
++            manifest_store = manifest_store_from_hdf_url(vlen_string_hdf5_url)
++        marr = manifest_store._group.arrays["data"]
++        assert len(marr.manifest._inlined) == 1
++        arr = zarr.open_array(manifest_store, path="data", mode="r", zarr_format=3)
++        np.testing.assert_array_equal(arr[...], np.array(["hello", "world"]))
++
++    def test_ascii_variable_length_string_roundtrip(self, ascii_vlen_string_hdf5_url):
++        # an ascii-cset vlen string is still a vlen string, so it should be read
++        # like the utf-8 case rather than fail the whole file as an unsupported
++        # object dtype
++        manifest_store = manifest_store_from_hdf_url(ascii_vlen_string_hdf5_url)
+         metadata = manifest_store._group.arrays["data"].metadata
+         assert metadata.data_type.to_native_dtype() == np.dtypes.StringDType()
++        arr = zarr.open_array(manifest_store, path="data", mode="r", zarr_format=3)
++        np.testing.assert_array_equal(arr[...], np.array(["hello", "world"]))
++
++    @pytest.mark.parametrize(
++        "kwargs",
++        [
++            pytest.param(
++                dict(
++                    data=np.array([f"s{i}" * (i % 4) for i in range(10)], dtype=object),
++                    chunks=(4,),
++                    compression="gzip",
++                ),
++                id="chunked-gzip-partial-edge-chunk",
++            ),
++            pytest.param(
++                dict(
++                    data=np.array([["α", "b", "c"], ["d", "", "ffff"]], dtype=object),
++                    chunks=(1, 2),
++                ),
++                id="2d",
++            ),
++            pytest.param(dict(data="hello"), id="scalar"),
++            pytest.param(dict(shape=(3,), chunks=(2,)), id="unwritten"),
++            pytest.param(dict(shape=(0,)), id="empty"),
++        ],
++    )
++    def test_variable_length_string_layouts(self, tmp_path, kwargs):
++        filepath = str(tmp_path / "vlen_strings.h5")
++        with h5py.File(filepath, "w") as f:
++            f.create_dataset("data", dtype=h5py.string_dtype(), **kwargs)
++        with h5py.File(filepath, "r") as f:
++            expected = np.asarray(f["data"].asstr()[()], dtype=object)
++
++        manifest_store = manifest_store_from_hdf_url(f"file://{filepath}")
++        arr = zarr.open_array(manifest_store, path="data", mode="r", zarr_format=3)
++        actual = arr[...] if arr.shape else arr[()]
++        assert np.shape(actual) == expected.shape
++        np.testing.assert_array_equal(np.asarray(actual, dtype=object), expected)
++
++    def test_variable_length_string_loadable_variable(self, vlen_string_hdf5_url):
++        registry = ObjectStoreRegistry()
++        registry.register(vlen_string_hdf5_url, from_url("file:///"))
++        with open_virtual_dataset(
++            url=vlen_string_hdf5_url,
++            registry=registry,
++            parser=HDFParser(),
++            loadable_variables=["data"],
++        ) as ds:
++            np.testing.assert_array_equal(
++                ds["data"].values, np.array(["hello", "world"])
++            )
+ 
+-    @pytest.mark.filterwarnings("ignore:.*variable-length string dataset.*:UserWarning")
+     def test_string_dtype_cf_fill_value(self, string_dtype_with_fillvalue_hdf5_url):
+         manifest_store = manifest_store_from_hdf_url(
+             string_dtype_with_fillvalue_hdf5_url
+diff --git a/virtualizarr/tests/test_writers/test_kerchunk.py b/virtualizarr/tests/test_writers/test_kerchunk.py
+index b5077ddf5..2abcf94c4 100644
+--- a/virtualizarr/tests/test_writers/test_kerchunk.py
++++ b/virtualizarr/tests/test_writers/test_kerchunk.py
+@@ -8,6 +8,7 @@
+ from zarr.core.metadata.v2 import ArrayV2Metadata
+ 
+ from virtualizarr.manifests import ChunkManifest, ManifestArray
++from virtualizarr.manifests.utils import create_v3_array_metadata
+ from virtualizarr.parsers import KerchunkJSONParser, KerchunkParquetParser
+ from virtualizarr.tests import requires_fastparquet, requires_kerchunk
+ from virtualizarr.utils import convert_v3_to_v2_metadata, kerchunk_refs_as_json
+@@ -510,6 +511,49 @@ def test_convert_v3_to_v2_metadata(
+     assert v2_metadata.attributes == {}
+ 
+ 
++def _vlen_string_metadata(shape, chunks):
++    return create_v3_array_metadata(
++        shape=shape,
++        chunk_shape=chunks,
++        data_type=np.dtypes.StringDType(),
++        fill_value="",
++        codecs=[{"name": "vlen-utf8"}],
++    )
++
++
++def test_convert_v3_to_v2_metadata_vlen_string():
++    # Zarr v2 has no array-bytes codec; a variable-length string array names its
++    # object codec as the first filter instead, and can't be read without it.
++    v2_metadata = convert_v3_to_v2_metadata(_vlen_string_metadata((4,), (2,)))
++    assert v2_metadata.filters
++    assert v2_metadata.filters[0].get_config() == {"id": "vlen-utf8"}
++
++
++def test_write_inlined_vlen_string_chunks_readable():
++    import fsspec
++    import zarr
++    from numcodecs.vlen import VLenUTF8
++
++    values = np.array(["a", "bb", "ccc", "é"], dtype=object)
++    codec = VLenUTF8()
++    manifest = ChunkManifest(
++        entries={
++            str(i): {"path": "", "offset": 0, "length": 0, "data": data}
++            for i, data in enumerate(
++                [codec.encode(values[:2].copy()), codec.encode(values[2:].copy())]
++            )
++        }
++    )
++    arr = ManifestArray(
++        chunkmanifest=manifest, metadata=_vlen_string_metadata((4,), (2,))
++    )
++    refs = Dataset({"a": (["x"], arr)}).vz.to_kerchunk(format="dict")
++
++    fs = fsspec.filesystem("reference", fo=refs)
++    zarr_arr = zarr.open_array(fs.get_mapper("a"), mode="r", zarr_format=2)
++    np.testing.assert_array_equal(zarr_arr[:], values.astype(str))
++
++
+ def test_codec_endian_normalizes_enum_and_str():
+     # zarr's BytesCodec.endian was an Endian enum through 3.2.x and became a plain str on main
+     # (zarr-developers/zarr-python#3968). _codec_endian must return the string either way, so

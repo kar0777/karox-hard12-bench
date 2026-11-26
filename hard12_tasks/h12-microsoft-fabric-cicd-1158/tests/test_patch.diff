@@ -1,0 +1,162 @@
+diff --git a/tests/test_fabric_workspace.py b/tests/test_fabric_workspace.py
+index e85cf832..72682685 100644
+--- a/tests/test_fabric_workspace.py
++++ b/tests/test_fabric_workspace.py
+@@ -719,6 +719,94 @@ def test_environment_parameter_replacement_ignore_case_regex(
+     assert 'SERVER_NAME="ppe-server.database.windows.net"' in result
+ 
+ 
++def test_key_value_replace_notebook_py_not_treated_as_yaml(
++    patched_fabric_workspace, temp_workspace_dir, valid_workspace_id
++):
++    """Ensure non-YAML files are not impacted by YAML parameterization even when their content parses as YAML."""
++    parameter_content = """
++key_value_replace:
++    - find_key: $.*
++      replace_value:
++        PPE: replaced-value
++      item_type: Notebook
++"""
++
++    notebook_dir = temp_workspace_dir / "Test Notebook.Notebook"
++    notebook_dir.mkdir(parents=True)
++
++    # Uncommented code parses as a YAML mapping; everything else is a YAML comment
++    notebook_content = (
++        "# Fabric notebook source\n\n"
++        "# CELL ********************\n\n"
++        'for p in ["a", "b"]:\n'
++        "    spark.conf.set(p, globals()[p])\n"
++    )
++
++    (temp_workspace_dir / "parameter.yml").write_text(parameter_content)
++    (notebook_dir / "notebook-content.py").write_text(notebook_content)
++
++    from fabric_cicd._common._file import File
++    from fabric_cicd._common._item import Item
++
++    with patch.object(FabricWorkspace, "_refresh_repository_items"):
++        workspace = patched_fabric_workspace(
++            workspace_id=valid_workspace_id,
++            repository_directory=str(temp_workspace_dir),
++            item_type_in_scope=["Notebook"],
++            environment="PPE",
++        )
++
++    test_item = Item(type="Notebook", name="Test Notebook", description="", guid="test-guid", path=notebook_dir)
++    test_file = File(item_path=notebook_dir, file_path=notebook_dir / "notebook-content.py")
++
++    result = workspace._replace_parameters(test_file, test_item)
++
++    # Notebook content is returned unchanged: prologue and cell markers preserved
++    assert result == notebook_content
++
++
++def test_key_value_replace_yaml_extension_still_applied(
++    patched_fabric_workspace, temp_workspace_dir, valid_workspace_id
++):
++    """Ensures the YAML allow-list still dispatches genuine .yml files through the YAML path."""
++    parameter_content = """
++key_value_replace:
++    - find_key: $.driver_cores
++      replace_value:
++        PPE: 16
++"""
++
++    env_dir = temp_workspace_dir / "Test Environment.Environment" / "Setting"
++    env_dir.mkdir(parents=True)
++
++    yaml_content = "enable_native_execution_engine: false\ndriver_cores: 8\n"
++
++    (temp_workspace_dir / "parameter.yml").write_text(parameter_content)
++    (env_dir / "Sparkcompute.yml").write_text(yaml_content)
++
++    from fabric_cicd._common._file import File
++    from fabric_cicd._common._item import Item
++
++    with patch.object(FabricWorkspace, "_refresh_repository_items"):
++        workspace = patched_fabric_workspace(
++            workspace_id=valid_workspace_id,
++            repository_directory=str(temp_workspace_dir),
++            item_type_in_scope=["Environment"],
++            environment="PPE",
++        )
++
++    item_dir = temp_workspace_dir / "Test Environment.Environment"
++    test_item = Item(type="Environment", name="Test Environment", description="", guid="test-guid", path=item_dir)
++    test_file = File(item_path=item_dir, file_path=env_dir / "Sparkcompute.yml")
++
++    result = workspace._replace_parameters(test_file, test_item)
++
++    # .yml is in the allow-list, so the replacement is applied
++    import yaml as _yaml
++
++    assert _yaml.safe_load(result)["driver_cores"] == 16
++
++
+ def test_empty_logical_id_validation(temp_workspace_dir, patched_fabric_workspace, valid_workspace_id):
+     """Test that empty logical IDs raise a ParsingError during repository refresh."""
+     from fabric_cicd._common._exceptions import ParsingError
+diff --git a/tests/test_parameter_utils.py b/tests/test_parameter_utils.py
+index 86aff375..0026c260 100644
+--- a/tests/test_parameter_utils.py
++++ b/tests/test_parameter_utils.py
+@@ -1543,6 +1543,58 @@ def test_replace_key_value_yaml_environment_not_found(self, mock_workspace):
+         result_data = yaml.safe_load(result)
+         assert result_data["server"]["host"] == "localhost"  # Original value unchanged
+ 
++    def test_replace_key_value_yaml_no_match_preserves_content(self, mock_workspace):
++        """Tests that content is returned untouched (comments/formatting preserved) when find_key matches nothing."""
++        test_yaml = """# top-level comment
++server:
++  host: localhost  # inline comment
++  port: 8080
++"""
++        param_dict = {
++            "find_key": "$.database.host",  # does not exist in the content
++            "replace_value": {"dev": "dev-server.example.com"},
++        }
++
++        result = replace_key_value(mock_workspace, param_dict, test_yaml, "dev", is_yaml=True)
++        # Unchanged content, including comments, since nothing matched
++        assert result == test_yaml
++
++    def test_replace_key_value_notebook_parsing_as_mapping_preserved(self, mock_workspace):
++        """Ensure unmatched YAML content is returned unchanged without re-serialization."""
++        notebook = """# Fabric notebook source
++
++# METADATA ********************
++
++# META {
++# META   "kernel_info": {
++# META     "name": "synapse_pyspark"
++# META   }
++# META }
++
++# CELL ********************
++
++for p in ["a", "b"]:
++    spark.conf.set(p, globals()[p])
++
++# METADATA ********************
++
++# META {
++# META   "language": "python",
++# META   "language_group": "synapse_pyspark"
++# META }
++"""
++        # Sanity check: the uncommented code parses as a YAML mapping
++        assert isinstance(yaml.safe_load(notebook), dict)
++
++        param_dict = {
++            "find_key": "$.schedules[*].enabled",
++            "replace_value": {"dev": False},
++        }
++
++        result = replace_key_value(mock_workspace, param_dict, notebook, "dev", is_yaml=True)
++        # Notebook is published unchanged: prologue and cell markers preserved
++        assert result == notebook
++
+     def test_replace_key_value_yaml_invalid(self, mock_workspace):
+         """Tests replace_key_value_yaml with invalid YAML content."""
+         invalid_yaml = "invalid: yaml: content: [unclosed"

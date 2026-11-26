@@ -1,0 +1,144 @@
+diff --git a/tests/sql/column/test_column_select_column_dialect_specific.py b/tests/sql/column/test_column_select_column_dialect_specific.py
+index d3164eb0..b3dca67e 100644
+--- a/tests/sql/column/test_column_select_column_dialect_specific.py
++++ b/tests/sql/column/test_column_select_column_dialect_specific.py
+@@ -54,3 +54,31 @@ def test_teradata_title_phrase(dialect: str):
+         dialect=dialect,
+         test_sqlparse=False,
+     )
++
++
++@pytest.mark.parametrize("dialect", ["tsql"])
++def test_tsql_subquery_with_column_alias_list(dialect: str):
++    """
++    Column alias list for derived table is not a tsql specific language feature, but since sqlfluff 4.4.0 it's parsed
++    differently for tsql only: the bracketed column alias list is wrapped in an alias_column_list segment so that
++    layout rules can target it, while other dialects keep it as a plain bracketed segment under alias_expression.
++    https://github.com/sqlfluff/sqlfluff/issues/6733
++    """
++    sql = """INSERT INTO tab1
++SELECT dt.col3, dt.col4
++FROM (SELECT col1, col2 FROM tab2) AS dt (col3, col4)"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col3", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col4", "tab1"),
++            ),
++        ],
++        dialect=dialect,
++        test_sqlparse=False,
++    )
+diff --git a/tests/sql/column/test_column_select_from_cte.py b/tests/sql/column/test_column_select_from_cte.py
+index 3bdebabf..cd4960bd 100644
+--- a/tests/sql/column/test_column_select_from_cte.py
++++ b/tests/sql/column/test_column_select_from_cte.py
+@@ -284,3 +284,23 @@ def test_create_table_as_select_wildcard_from_cte():
+         ],
+         test_sqlparse=False,
+     )
++
++
++def test_select_column_from_cte_with_column_alias_list():
++    sql = """WITH cte1 (col3, col4) AS (SELECT col1, max(col2) FROM tab2 GROUP BY col1)
++INSERT INTO tab1
++SELECT c.col3, c.col4 FROM cte1 c"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col3", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col4", "tab1"),
++            ),
++        ],
++        test_sqlparse=False,
++    )
+diff --git a/tests/sql/column/test_column_select_from_subquery.py b/tests/sql/column/test_column_select_from_subquery.py
+index 6465a3bc..0eb3a610 100644
+--- a/tests/sql/column/test_column_select_from_subquery.py
++++ b/tests/sql/column/test_column_select_from_subquery.py
+@@ -218,3 +218,75 @@ def test_nested_subquery_with_partial_wildcard_expansion():
+         sql,
+         [(ColumnQualifierTuple("*", "tab2"), ColumnQualifierTuple("*", "tab1"))],
+     )
++
++
++def test_select_column_from_subquery_with_column_alias_list():
++    sql = """INSERT INTO tab1
++SELECT col3, col4
++FROM (SELECT col1, max(col2) FROM tab2 GROUP BY col1) AS dt (col3, col4)"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col3", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col4", "tab1"),
++            ),
++        ],
++        test_sqlparse=False,
++    )
++
++
++def test_select_qualified_column_from_subquery_with_column_alias_list():
++    sql = """INSERT INTO tab1
++SELECT dt.col3, dt.col4
++FROM ((SELECT col1, col2 FROM tab2)) dt (col3, col4)"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col3", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col4", "tab1"),
++            ),
++        ],
++        test_sqlparse=False,
++    )
++
++
++def test_select_wildcard_from_subquery_with_column_alias_list():
++    sql = """INSERT INTO tab1
++SELECT *
++FROM (
++    SELECT col1, col2 FROM tab2
++    UNION ALL
++    SELECT col1, col2 FROM tab3
++) AS dt (col3, col4)"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col3", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col4", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col1", "tab3"),
++                ColumnQualifierTuple("col3", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab3"),
++                ColumnQualifierTuple("col4", "tab1"),
++            ),
++        ],
++        test_sqlparse=False,
++    )

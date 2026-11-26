@@ -1,0 +1,10 @@
+gammapy/modeling/tests/test_covariance.py::test_diagonal_storage_lazy
+gammapy/modeling/tests/test_covariance.py::test_diagonal_storage_dense_input
+gammapy/modeling/tests/test_covariance.py::test_from_factor_matrix
+gammapy/modeling/tests/test_covariance.py::test_get_subcovariance
+gammapy/modeling/tests/test_covariance.py::test_plot_correlation
+gammapy/modeling/tests/test_covariance.py::test_scipy_mvn
+gammapy/modeling/tests/test_covariance.py::test_set_data
+gammapy/modeling/tests/test_covariance.py::test_set_subcovariance
+gammapy/modeling/tests/test_covariance.py::test_shape
+gammapy/modeling/tests/test_covariance.py::test_str

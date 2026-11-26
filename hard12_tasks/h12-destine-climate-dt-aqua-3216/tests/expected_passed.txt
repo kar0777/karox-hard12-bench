@@ -1,0 +1,13 @@
+tests/console/test_console_base.py::TestAquaConsole::test_console_add_invalid_editable_catalog
+tests/console/test_console_base.py::TestAquaConsole::test_console_base
+tests/console/test_console_base.py::TestAquaConsole::test_console_core_only_install
+tests/console/test_console_base.py::TestAquaConsole::test_console_editable
+tests/console/test_console_base.py::TestAquaConsole::test_console_install
+tests/console/test_console_base.py::TestAquaConsole::test_console_with_links
+tests/console/test_console_base.py::TestAquaConsole::test_console_without_home
+tests/console/test_console_shared.py::TestCatalogListingAndErrors::test_add_catalog_cleanup_on_failure[False]
+tests/console/test_console_shared.py::TestCatalogListingAndErrors::test_add_catalog_cleanup_on_failure[True]
+tests/console/test_console_shared.py::TestCatalogListingAndErrors::test_console_nonexistent_catalog_from_existing_repo
+tests/console/test_console_shared.py::TestCatalogListingAndErrors::test_update_nonexistent_catalog
+tests/console/test_console_shared.py::TestGridAndFixOperations::test_grids_and_fixes_operations
+tests/console/test_console_shared.py::TestGridAndFixOperations::test_grids_deploy_entrypoint

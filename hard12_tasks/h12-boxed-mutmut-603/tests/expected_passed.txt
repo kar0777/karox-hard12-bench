@@ -1,0 +1,6 @@
+tests/mutation/test_mutation_runtime.py::test_enum_creation_hooks_runtime_execution
+tests/mutation/test_mutation_runtime.py::test_classmethod_subclass_runtime
+tests/mutation/test_mutation_runtime.py::test_default_arg_mutation
+tests/mutation/test_mutation_runtime.py::test_enum_mutation_runtime_execution
+tests/mutation/test_mutation_runtime.py::test_regular_class_staticmethod_runtime
+tests/mutation/test_mutation_runtime.py::test_type_annotation_runtime_execution

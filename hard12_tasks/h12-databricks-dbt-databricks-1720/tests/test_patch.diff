@@ -1,0 +1,247 @@
+diff --git a/tests/functional/adapter/views/fixtures.py b/tests/functional/adapter/views/fixtures.py
+index 2a13d047e..f0a702c86 100644
+--- a/tests/functional/adapter/views/fixtures.py
++++ b/tests/functional/adapter/views/fixtures.py
+@@ -91,3 +91,16 @@
+ 
+ select cast(1 as bigint) as id
+ """
++
++
++qualified_star_view_sql = """
++{{ config(materialized='view') }}
++select src.* from {{ ref('seed') }} as src;
++"""
++
++seed_with_extra_csv = """id,msg,extra
++1,hello,a
++2,goodbye,b
++2,yo,c
++3,anyway,d
++"""
+diff --git a/tests/functional/adapter/views/test_view_metadata_fetch_skips.py b/tests/functional/adapter/views/test_view_metadata_fetch_skips.py
+index b349634e9..0f5345114 100644
+--- a/tests/functional/adapter/views/test_view_metadata_fetch_skips.py
++++ b/tests/functional/adapter/views/test_view_metadata_fetch_skips.py
+@@ -2,12 +2,16 @@
+ from dbt.artifacts.schemas.results import RunStatus
+ from dbt.tests import util
+ 
+-from tests.functional.adapter.fixtures import fail_if_tag_fetch_called_macros
++from tests.functional.adapter.fixtures import RerunSafeMixin, fail_if_tag_fetch_called_macros
+ from tests.functional.adapter.views.fixtures import view_with_tags_sql, view_without_tags_sql
+ 
+ 
+ @pytest.mark.skip_profile("databricks_cluster")
+-class TestViewMetadataFetchSkips:
++class TestViewMetadataFetchSkips(RerunSafeMixin):
++    @pytest.fixture(scope="class")
++    def relations_to_reset(self):
++        return ("view_metadata_fetch",)
++
+     @pytest.fixture(scope="class")
+     def models(self):
+         return {"view_metadata_fetch.sql": view_without_tags_sql}
+@@ -31,6 +35,23 @@ def test_second_view_run_succeeds_without_tag_fetches(self, project):
+         util.run_dbt(["run"])
+         util.run_dbt(["run"])
+ 
++    def test_unchanged_explicit_view_preserves_unmanaged_column_comment(self, project):
++        util.run_dbt(["run"])
++        relation = util.relation_from_name(project.adapter, "view_metadata_fetch")
++        with util.get_connection(project.adapter):
++            comment_sql = project.adapter.execute_macro(
++                "comment_on_column_sql",
++                kwargs={
++                    "column_path": f"{relation.render()}.id",
++                    "escaped_comment": "externally managed comment",
++                },
++            )
++        project.run_sql(comment_sql)
++        util.run_dbt(["run"])
++
++        columns = project.run_sql("describe {database}.{schema}.view_metadata_fetch", fetch="all")
++        assert columns[0][2] == "externally managed comment"
++
+ 
+ @pytest.mark.skip_profile("databricks_cluster")
+ class TestViewMetadataFetchRequiresTags:
+diff --git a/tests/functional/adapter/views/test_views.py b/tests/functional/adapter/views/test_views.py
+index 356115fa5..17dcbab4e 100644
+--- a/tests/functional/adapter/views/test_views.py
++++ b/tests/functional/adapter/views/test_views.py
+@@ -3,7 +3,7 @@
+ from dbt.artifacts.schemas.results import RunStatus
+ from dbt.tests import util
+ 
+-from tests.functional.adapter.fixtures import RequiresDescribeAsJsonCapabilityMixin
++from tests.functional.adapter.fixtures import RequiresDescribeAsJsonCapabilityMixin, RerunSafeMixin
+ from tests.functional.adapter.views import fixtures
+ 
+ 
+@@ -296,7 +296,15 @@ def project_config_update(self):
+ 
+ 
+ @pytest.mark.skip_profile("databricks_cluster")
+-class TestUpdateViewViaAlterColumnComments(BaseUpdateColumnComments):
++class TestUpdateViewViaAlterColumnComments(RerunSafeMixin, BaseUpdateColumnComments):
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {"initial_view.sql": fixtures.altered_view_sql, "schema.yml": fixtures.schema_yml}
++
++    @pytest.fixture(scope="class")
++    def relations_to_reset(self):
++        return ("initial_view", "seed")
++
+     @pytest.fixture(scope="class")
+     def project_config_update(self):
+         return {
+@@ -576,3 +584,43 @@ def project_config_update(self):
+                 "+view_update_via_alter": True,
+             },
+         }
++
++
++@pytest.mark.skip_profile("databricks_cluster")
++class TestUpdateViewViaAlterUpstreamSchema(RerunSafeMixin, BaseUpdateView):
++    @pytest.fixture(scope="class")
++    def relations_to_reset(self):
++        return ("initial_view", "seed")
++
++    @pytest.fixture(autouse=True)
++    def reset_seed_file(self, project):
++        util.write_file(fixtures.seed_csv, "seeds", "seed.csv")
++
++    @pytest.fixture(scope="class")
++    def project_config_update(self):
++        return {
++            "flags": {"use_materialization_v2": True},
++            "models": {
++                "+view_update_via_alter": True,
++                "+persist_docs": {"relation": True, "columns": True},
++            },
++        }
++
++    @pytest.mark.parametrize(
++        "view_sql",
++        [
++            pytest.param(fixtures.view_sql, id="star"),
++            pytest.param(fixtures.qualified_star_view_sql, id="qualified-star"),
++        ],
++    )
++    def test_view_update_with_upstream_schema_change(self, project, view_sql):
++        util.write_file(view_sql, "models", "initial_view.sql")
++        util.run_dbt(["build"])
++        util.write_file(fixtures.seed_with_extra_csv, "seeds", "seed.csv")
++        util.run_dbt(["seed", "--full-refresh"])
++        util.run_dbt(["run"])
++
++        columns = project.run_sql("describe {database}.{schema}.initial_view", fetch="all")
++
++        assert [column.col_name for column in columns] == ["id", "msg", "extra"]
++        assert columns[0][2] == "This is the id column"
+diff --git a/tests/unit/relation_configs/test_query.py b/tests/unit/relation_configs/test_query.py
+index f8ae33594..31fccc7a9 100644
+--- a/tests/unit/relation_configs/test_query.py
++++ b/tests/unit/relation_configs/test_query.py
+@@ -4,11 +4,17 @@
+ from agate import Row
+ from dbt.exceptions import DbtRuntimeError
+ 
++from dbt.adapters.databricks.relation_configs.column_comments import ColumnCommentsConfig
++from dbt.adapters.databricks.relation_configs.column_tags import ColumnTagsConfig
++from dbt.adapters.databricks.relation_configs.comment import CommentConfig
+ from dbt.adapters.databricks.relation_configs.query import (
+     DescribeQueryProcessor,
+     QueryConfig,
+     QueryProcessor,
+ )
++from dbt.adapters.databricks.relation_configs.tags import TagsConfig
++from dbt.adapters.databricks.relation_configs.tblproperties import TblPropertiesConfig
++from dbt.adapters.databricks.relation_configs.view import ViewConfig
+ 
+ sql = "select * from foo"
+ 
+@@ -106,3 +112,82 @@ def test_from_relation_results__valid_view_text_row(self):
+         }
+         spec = DescribeQueryProcessor.from_relation_results(results)
+         assert spec == QueryConfig(query=sql)
++
++
++class TestViewQueryChanges:
++    @staticmethod
++    def view_config(query="select id from foo", **components):
++        return ViewConfig(
++            config={
++                "tags": TagsConfig(set_tags={}),
++                "tblproperties": TblPropertiesConfig(tblproperties={}),
++                "query": QueryConfig(query=query),
++                "comment": CommentConfig(),
++                "column_comments": ColumnCommentsConfig(comments={"id": ""}),
++                "column_tags": ColumnTagsConfig(set_column_tags={}),
++                **components,
++            }
++        )
++
++    @pytest.mark.parametrize(
++        "query",
++        [
++            "select * from foo",
++            "select foo.* from foo",
++            "with src as (select * from foo) select id from src",
++            "select * except (secret) from foo",
++            "select count(*) from foo",
++            "select id * 2 from foo",
++            "select '*' as literal from foo",
++            "select id from foo -- *",
++        ],
++    )
++    def test_unchanged_query_containing_star_is_reapplied(self, query):
++        config = self.view_config(query)
++
++        changeset = config.get_changeset(self.view_config(query))
++
++        assert changeset is not None
++        assert changeset.changes == {"query": config.config["query"]}
++        assert not changeset.requires_full_refresh
++
++    def test_unchanged_explicit_query_has_no_changes(self):
++        assert self.view_config().get_changeset(self.view_config()) is None
++
++    def test_changed_explicit_query_is_reapplied(self):
++        config = self.view_config("select msg from foo")
++
++        changeset = config.get_changeset(self.view_config())
++
++        assert changeset is not None
++        assert changeset.changes == {"query": config.config["query"]}
++
++    def test_column_comment_only_change_does_not_reapply_query(self):
++        comments = ColumnCommentsConfig(comments={"id": "new comment"}, persist=True)
++        config = self.view_config(column_comments=comments)
++
++        changeset = config.get_changeset(self.view_config())
++
++        assert changeset is not None
++        assert changeset.changes == {
++            "column_comments": ColumnCommentsConfig(comments={"`id`": "new comment"}, persist=True)
++        }
++        assert not changeset.requires_full_refresh
++
++    def test_star_query_preserves_other_configuration_changes(self):
++        properties = TblPropertiesConfig(tblproperties={"key": "value"})
++        config = self.view_config("select * from foo", tblproperties=properties)
++
++        changeset = config.get_changeset(self.view_config("select * from foo"))
++
++        assert changeset is not None
++        assert changeset.changes == {"query": config.config["query"], "tblproperties": properties}
++
++    @pytest.mark.parametrize("query", ["select id from foo", "select * from foo"])
++    def test_description_change_still_requires_replacement(self, query):
++        config = self.view_config(query, comment=CommentConfig(comment="new comment", persist=True))
++
++        changeset = config.get_changeset(self.view_config(query))
++
++        assert changeset is not None
++        assert changeset.requires_full_refresh
