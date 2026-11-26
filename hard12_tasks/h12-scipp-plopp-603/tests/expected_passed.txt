@@ -1,0 +1,13 @@
+tests/widgets/clip3d_test.py::test_move_cut
+tests/widgets/clip3d_test.py::test_value_cuts[False]
+tests/widgets/clip3d_test.py::test_value_cuts[True]
+tests/widgets/debounce_test.py::test_calls_immediately_without_running_event_loop
+tests/widgets/debounce_test.py::test_delays_call_and_keeps_latest_value_with_running_event_loop
+tests/widgets/debounce_test.py::test_independent_callbacks_do_not_cancel_each_other
+tests/widgets/clip3d_test.py::test_add_remove_cuts[False]
+tests/widgets/clip3d_test.py::test_add_remove_cuts[True]
+tests/widgets/clip3d_test.py::test_mixing_spatial_and_value_cuts[False]
+tests/widgets/clip3d_test.py::test_mixing_spatial_and_value_cuts[True]
+tests/widgets/clip3d_test.py::test_operation_and
+tests/widgets/clip3d_test.py::test_operation_or
+tests/widgets/clip3d_test.py::test_operation_xor

@@ -1,0 +1,14 @@
+tests/qasm3/test_device_qubits.py::test_physical_qubits_are_not_consolidated
+tests/qasm3/test_device_qubits.py::test_physical_qubits_only
+tests/qasm3/test_device_qubits.py::test_barrier
+tests/qasm3/test_device_qubits.py::test_double_unroll_with_consolidate_qubits
+tests/qasm3/test_device_qubits.py::test_gates
+tests/qasm3/test_device_qubits.py::test_incorrect_device_qubits[qasm_code0-Total
+tests/qasm3/test_device_qubits.py::test_incorrect_qubit_reg[qasm_code0-Variable
+tests/qasm3/test_device_qubits.py::test_incorrect_qubit_reg[qasm_code1-Variable
+tests/qasm3/test_device_qubits.py::test_incorrect_qubit_reg[qasm_code2-Variable
+tests/qasm3/test_device_qubits.py::test_measurement
+tests/qasm3/test_device_qubits.py::test_reset
+tests/qasm3/test_device_qubits.py::test_unrolled_barrier
+tests/qasm3/test_device_qubits.py::test_unrolled_barrier_with_range
+tests/qasm3/test_device_qubits.py::test_validate

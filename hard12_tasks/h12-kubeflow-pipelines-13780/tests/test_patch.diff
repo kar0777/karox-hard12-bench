@@ -1,0 +1,44 @@
+diff --git a/sdk/python/kfp/cli/component_test.py b/sdk/python/kfp/cli/component_test.py
+index 46374fa68dc..7a3c5c1709f 100644
+--- a/sdk/python/kfp/cli/component_test.py
++++ b/sdk/python/kfp/cli/component_test.py
+@@ -527,9 +527,9 @@ def test_docker_file_is_created_correctly_with_one_url(self):
+ 
+                 WORKDIR /usr/local/src/kfp/components
+                 COPY runtime-requirements.txt runtime-requirements.txt
+-                RUN pip install --index-url https://pypi.org/simple --trusted-host https://pypi.org/simple --no-cache-dir -r runtime-requirements.txt
++                RUN pip install --index-url https://pypi.org/simple --no-cache-dir -r runtime-requirements.txt
+ 
+-                RUN pip install --index-url https://pypi.org/simple --trusted-host https://pypi.org/simple --no-cache-dir kfp==1.2.3
++                RUN pip install --index-url https://pypi.org/simple --no-cache-dir kfp==1.2.3
+                 COPY . .
+                 '''))
+ 
+@@ -558,9 +558,9 @@ def test_docker_file_is_created_correctly_with_two_urls(self):
+ 
+                 WORKDIR /usr/local/src/kfp/components
+                 COPY runtime-requirements.txt runtime-requirements.txt
+-                RUN pip install --index-url https://pypi.org/simple --extra-index-url https://example.com/pypi/simple --trusted-host https://pypi.org/simple --trusted-host https://example.com/pypi/simple --no-cache-dir -r runtime-requirements.txt
++                RUN pip install --index-url https://pypi.org/simple --extra-index-url https://example.com/pypi/simple --no-cache-dir -r runtime-requirements.txt
+ 
+-                RUN pip install --index-url https://pypi.org/simple --extra-index-url https://example.com/pypi/simple --trusted-host https://pypi.org/simple --trusted-host https://example.com/pypi/simple --no-cache-dir kfp==1.2.3
++                RUN pip install --index-url https://pypi.org/simple --extra-index-url https://example.com/pypi/simple --no-cache-dir kfp==1.2.3
+                 COPY . .
+                 '''))
+ 
+diff --git a/sdk/python/kfp/dsl/component_factory_test.py b/sdk/python/kfp/dsl/component_factory_test.py
+index afb1a0edbed..9009b59063e 100644
+--- a/sdk/python/kfp/dsl/component_factory_test.py
++++ b/sdk/python/kfp/dsl/component_factory_test.py
+@@ -185,9 +185,9 @@ def test_with_packages_to_install_with_pip_index_url(self):
+                 '\n'
+                 'PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet '
+                 '--no-warn-script-location --index-url https://myurl.org/simple '
+-                "--trusted-host https://myurl.org/simple 'package1' 'package2'  &&  python3 "
++                "'package1' 'package2'  &&  python3 "
+                 '-m pip install --quiet --no-warn-script-location --index-url '
+-                'https://myurl.org/simple --trusted-host https://myurl.org/simple kfp '
++                'https://myurl.org/simple kfp '
+                 '\'--no-deps\' \'typing-extensions>=3.7.4,<5; python_version<"3.9"\' && "$0" '
+                 '"$@"\n'
+             ]))

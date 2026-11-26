@@ -1,0 +1,16 @@
+tests/test_exclude.py::test_config_exclude_multiline_conditional[True]
+tests/test_exclude.py::test_config_exclude
+tests/test_exclude.py::test_config_exclude_copieryml_without_templates_suffix
+tests/test_exclude.py::test_config_exclude_extended
+tests/test_exclude.py::test_config_exclude_file_with_bad_jinja_syntax_without_templates_suffix
+tests/test_exclude.py::test_config_exclude_multiline_conditional[False]
+tests/test_exclude.py::test_config_exclude_with_subdirectory
+tests/test_exclude.py::test_config_exclude_with_subdirectory_dot
+tests/test_exclude.py::test_config_exclude_with_subdirectory_empty_string
+tests/test_exclude.py::test_config_exclude_with_templated_path
+tests/test_exclude.py::test_config_exclude_without_subdirectory
+tests/test_exclude.py::test_config_include
+tests/test_exclude.py::test_exclude_recursive
+tests/test_exclude.py::test_exclude_recursive_negate
+tests/test_exclude.py::test_exclude_wildcard_negate_nested_file
+tests/test_exclude.py::test_path_filter

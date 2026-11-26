@@ -1,0 +1,248 @@
+diff --git a/tests/test_api_timeout.py b/tests/test_api_timeout.py
+index ebf02b373b5..ce3b1c85436 100644
+--- a/tests/test_api_timeout.py
++++ b/tests/test_api_timeout.py
+@@ -230,17 +230,16 @@ def test_session_message_loads_keep_explicit_longer_timeouts():
+         "      {timeoutMs:120000}\n"
+         "    )"
+     ) in src
++    # _loadOlderMessages now picks between two strategies (tail-growth vs
++    # msg_before paging) via a useBeforePaging ternary, but both keep the long
++    # timeoutMs:120000. Assert each URL + timeout survives in the source.
+     assert (
+-        "api(\n"
+-        "      `/api/session?session_id=${encodeURIComponent(sid)}&messages=1&resolve_model=0&msg_limit=${requestedLimit}`,\n"
+-        "      {timeoutMs:120000}\n"
+-        "    )"
++        "`/api/session?session_id=${encodeURIComponent(sid)}&messages=1&resolve_model=0&msg_before=${_oldestIdx}&msg_limit=${_INITIAL_MSG_LIMIT}`,\n"
++        "          {timeoutMs:120000}"
+     ) in src
+     assert (
+-        "api(\n"
+-        "        `/api/session?session_id=${encodeURIComponent(sid)}&messages=1&resolve_model=0&msg_before=${_oldestIdx}&msg_limit=${_INITIAL_MSG_LIMIT}`,\n"
+-        "        {timeoutMs:120000}\n"
+-        "      )"
++        "`/api/session?session_id=${encodeURIComponent(sid)}&messages=1&resolve_model=0&msg_limit=${requestedLimit}`,\n"
++        "          {timeoutMs:120000}"
+     ) in src
+ 
+ 
+diff --git a/tests/test_cross_session_message_load_isolation.py b/tests/test_cross_session_message_load_isolation.py
+index 9f8999c4eab..d15f2512c9e 100644
+--- a/tests/test_cross_session_message_load_isolation.py
++++ b/tests/test_cross_session_message_load_isolation.py
+@@ -208,6 +208,13 @@ def test_ensure_messages_loaded_ownership_guard_pre_and_post_await():
+   globalThis._oldestIdx = 0;
+   globalThis._messageRenderWindowSize = 0;
+   globalThis._messageReloadLimitForSession = () => 2;
++  // sessions.js module-level const, referenced by _ensureMessagesLoaded's
++  // boundedReloadLimit ceiling check (#6152/#6154). Not one of the extracted
++  // functions, so define it in the harness (matching the real value) or the
++  // reload-width path resolves it as undefined -> boundedReloadLimit=null ->
++  // the fetch URL drops msg_limit/expand_renderable and mismatches the
++  // enqueued buildMessageUrl(), stalling the ordered api() harness.
++  globalThis._MSG_LIMIT_MAX = 500;
+   globalThis._currentMessageRenderWindowSize = () => 1;
+   globalThis._messageRenderableMessageCount = () => 2;
+ 
+diff --git a/tests/test_issue3162_ensure_messages_loaded.py b/tests/test_issue3162_ensure_messages_loaded.py
+index 4e267bdda9c..f3d1bc6d1eb 100644
+--- a/tests/test_issue3162_ensure_messages_loaded.py
++++ b/tests/test_issue3162_ensure_messages_loaded.py
+@@ -15,10 +15,25 @@
+ 
+ def _ensure_messages_loaded_body() -> str:
+     start = SESSIONS_JS.index("async function _ensureMessagesLoaded")
+-    # Window widened (#3326 added reload-width-hint handling inside this function,
+-    # pushing the carry-forward reassignment further down; #3790 added the
+-    # cold-load expand_renderable param + comment, pushing it further still).
+-    return SESSIONS_JS[start: start + 4500]
++    # Extract the ACTUAL function body via brace-balance instead of a fixed
++    # character window. The old fixed 4500-char window kept needing bumps as the
++    # function grew (#3326 reload-width-hint, #3790 cold-load expand_renderable,
++    # #6152/#6154 the msg_limit ceiling boundedReloadLimit path — each pushed the
++    # carry-forward reassignment further down and eventually past the window).
++    # Balancing braces from the opening `{` is robust to any in-function growth.
++    brace = SESSIONS_JS.index("{", start)
++    depth = 0
++    end = brace
++    for i in range(brace, len(SESSIONS_JS)):
++        c = SESSIONS_JS[i]
++        if c == "{":
++            depth += 1
++        elif c == "}":
++            depth -= 1
++            if depth == 0:
++                end = i + 1
++                break
++    return SESSIONS_JS[start:end]
+ 
+ 
+ def test_ensure_messages_loaded_declares_msgs_with_let():
+diff --git a/tests/test_msg_limit_ceiling_drift.py b/tests/test_msg_limit_ceiling_drift.py
+new file mode 100644
+index 00000000000..13fd92ed355
+--- /dev/null
++++ b/tests/test_msg_limit_ceiling_drift.py
+@@ -0,0 +1,71 @@
++"""Stopgap drift guard: the frontend ``_MSG_LIMIT_MAX`` mirror must match the
++backend ``_MAX_MSG_LIMIT`` ceiling.
++
++PR #6152 introduced the server-side ``_MAX_MSG_LIMIT`` ceiling on
++``GET /api/session ?msg_limit=``. PR #6154 added a hand-mirrored
++``_MSG_LIMIT_MAX`` in ``static/sessions.js`` so the frontend knows when to
++switch from the growing-tail strategy to ``msg_before`` paging. If the two
++drift, load-older silently stalls at the old value — the exact regression #6154
++fixed. The durable fix (#6177) exposes the ceiling via ``/api/session`` metadata
++so the mirror isn't needed; until then, this static-source assertion catches the
++drift.
++
++Placement note: this test ships in #6152 (where ``_MAX_MSG_LIMIT`` is defined).
++The frontend ``_MSG_LIMIT_MAX`` only exists once #6154 lands, so the assertion
++SKIPS when the JS constant is absent — it activates automatically once both
++branches are on master, and bites if the two values ever diverge.
++"""
++from __future__ import annotations
++
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def _backend_max_msg_limit() -> int:
++    """Extract ``_MAX_MSG_LIMIT = <int>`` from api/routes.py."""
++    src = (ROOT / "api" / "routes.py").read_text(encoding="utf-8")
++    m = re.search(r"^_MAX_MSG_LIMIT\s*=\s*(\d+)\s*$", src, re.MULTILINE)
++    assert m, "_MAX_MSG_LIMIT not found in api/routes.py"
++    return int(m.group(1))
++
++
++def _frontend_msg_limit_max():
++    """Extract ``_MSG_LIMIT_MAX = <int>`` from static/sessions.js, or return
++    None when the constant is absent (PR #6154 not yet landed)."""
++    sessions = ROOT / "static" / "sessions.js"
++    if not sessions.exists():
++        return None
++    src = sessions.read_text(encoding="utf-8")
++    m = re.search(r"const\s+_MSG_LIMIT_MAX\s*=\s*(\d+)\s*;", src)
++    return int(m.group(1)) if m else None
++
++
++def test_frontend_msg_limit_max_matches_backend_ceiling():
++    """When both constants exist (i.e. #6152 + #6154 have both landed), the
++    frontend mirror MUST equal the backend ceiling or load-older silently stalls
++    for long sessions. Skips gracefully when the JS constant is absent (the
++    #6152-only state) so this test ships atomically with the backend constant
++    without depending on the #6154 branch."""
++    backend = _backend_max_msg_limit()
++    frontend = _frontend_msg_limit_max()
++    if frontend is None:
++        # PR #6154 (the frontend mirror) hasn't landed yet — skip rather than
++        # fail. Once both are on master this branch is exercised and bites on
++        # any drift.
++        import pytest
++        pytest.skip("_MSG_LIMIT_MAX not yet present in static/sessions.js "
++                    "(lands in #6154); drift guard activates once both are on master")
++    assert frontend == backend, (
++        f"frontend _MSG_LIMIT_MAX ({frontend}) != backend _MAX_MSG_LIMIT ({backend}): "
++        f"load-older will silently stall at the wrong value. Update both together, "
++        f"or land #6177 (metadata-exposure) to retire the mirror."
++    )
++
++
++def test_backend_max_msg_limit_is_reasonable():
++    """The backend ceiling must exist and stay in a sane range (the frontend's
++    real pagination grows by ~30, so anything in [100, 2000] is generous)."""
++    backend = _backend_max_msg_limit()
++    assert 100 <= backend <= 2000, f"_MAX_MSG_LIMIT out of expected range: {backend}"
+diff --git a/tests/test_session_msg_limit_ceiling.py b/tests/test_session_msg_limit_ceiling.py
+new file mode 100644
+index 00000000000..b83138e9bd6
+--- /dev/null
++++ b/tests/test_session_msg_limit_ceiling.py
+@@ -0,0 +1,66 @@
++"""Tests: server-side ``msg_limit`` ceiling on ``GET /api/session``.
++
++A client could request ``msg_limit=1000000`` (or the frontend's
++``msg_limit=9999`` outline-jump path) and force the server to assemble and
++serialize an unbounded message payload. The handler now clamps ``msg_limit`` to
++``_MAX_MSG_LIMIT`` (generous — far above any legitimate visible-row window) so
++real pagination is unaffected while the pathological/oversized request is
++bounded. The existing ``_messages_truncated`` signal covers the clamped case.
++
++The parse+clamp lives in ``_parse_msg_limit`` so the clamping expression has
++direct test coverage (driving the handler end-to-end would require a live
++session + state.db; the helper is the unit under test).
++"""
++from __future__ import annotations
++
++from api.routes import _MAX_MSG_LIMIT, _parse_msg_limit
++
++
++def test_max_msg_limit_constant_is_reasonable():
++    """The ceiling must exist and be well above legitimate pagination sizes
++    (the frontend grows windows by ~30, initial load is 30) but finite."""
++    assert isinstance(_MAX_MSG_LIMIT, int)
++    assert 100 <= _MAX_MSG_LIMIT <= 2000, _MAX_MSG_LIMIT
++
++
++def test_parse_msg_limit_none_when_absent_or_empty():
++    """No value (the bare no-msg_limit path) returns None — intentionally the
++    'full transcript' escape hatch for branch/undo/jump-to-start flows."""
++    assert _parse_msg_limit(None) is None
++    assert _parse_msg_limit("") is None
++
++
++def test_parse_msg_limit_none_when_malformed():
++    """A non-numeric value returns None rather than raising (matches the
++    pre-fix behavior where a ValueError fell through to msg_limit=None)."""
++    assert _parse_msg_limit("not-a-number") is None
++    assert _parse_msg_limit("abc") is None
++
++
++def test_parse_msg_limit_passes_legit_sizes_unchanged():
++    """Legitimate pagination sizes (5/30/60/100) are returned verbatim — the
++    ceiling only caps oversized requests."""
++    for legit in (1, 5, 30, 60, 100):
++        if legit > _MAX_MSG_LIMIT:
++            continue
++        assert _parse_msg_limit(str(legit)) == legit, f"legit {legit} altered"
++
++
++def test_parse_msg_limit_clamps_oversized_to_ceiling():
++    """An over-ceiling request (the outline-jump 9999, or a hostile 1000000) is
++    clamped down to _MAX_MSG_LIMIT — exactly the regression this PR fixes."""
++    assert _parse_msg_limit("9999") == _MAX_MSG_LIMIT
++    assert _parse_msg_limit("1000000") == _MAX_MSG_LIMIT
++    assert _parse_msg_limit(str(_MAX_MSG_LIMIT + 1)) == _MAX_MSG_LIMIT
++
++
++def test_parse_msg_limit_ceiling_boundary_itself_passes():
++    """A request exactly at the ceiling is allowed (clamp is inclusive)."""
++    assert _parse_msg_limit(str(_MAX_MSG_LIMIT)) == _MAX_MSG_LIMIT
++
++
++def test_parse_msg_limit_zero_and_negative_clamp_to_one():
++    """Non-positive values clamp to the minimum (1), not None — a caller asking
++    for msg_limit=0 gets a 1-row window, not the full transcript."""
++    assert _parse_msg_limit("0") == 1
++    assert _parse_msg_limit("-5") == 1
+diff --git a/tests/test_webui_external_refresh_frontend.py b/tests/test_webui_external_refresh_frontend.py
+index 5be682452e4..fe6679c16b7 100644
+--- a/tests/test_webui_external_refresh_frontend.py
++++ b/tests/test_webui_external_refresh_frontend.py
+@@ -427,7 +427,12 @@ def test_same_session_force_reload_keeps_loaded_transcript_width_hint():
+     assert "const appendedMessageCount=Math.max(0,currentMessageCount-previousMessageCount);" in SESSIONS_JS
+     assert "return Math.max(_INITIAL_MSG_LIMIT,loadedRenderableCount,loadedMessageCount+appendedMessageCount);" in SESSIONS_JS
+     assert "const reloadLimit = _messageReloadLimitForSession(sid);" in SESSIONS_JS
+-    assert "const reloadLimitParam = reloadLimit ? `&msg_limit=${reloadLimit}` : '';" in SESSIONS_JS
++    # The width hint is applied only when it stays within the server msg_limit
++    # ceiling; an over-ceiling hint would be clamped by the backend and could
++    # silently shrink an already-loaded transcript, so it falls back to the bare
++    # full-transcript path (#6152/#6154 ceiling; Codex gate silent row-loss fix).
++    assert "const boundedReloadLimit = (reloadLimit && reloadLimit <= _MSG_LIMIT_MAX) ? reloadLimit : null;" in SESSIONS_JS
++    assert "const reloadLimitParam = boundedReloadLimit ? `&msg_limit=${boundedReloadLimit}` : '';" in SESSIONS_JS
+     assert "if (_ownsLoad()) _clearSameSessionForceReloadHint(sid);" in SESSIONS_JS
+ 
+     load_start = SESSIONS_JS.index("async function loadSession(sid)")

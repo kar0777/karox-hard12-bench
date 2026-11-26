@@ -1,0 +1,15 @@
+diff --git a/tests/test_facts_documentation.py b/tests/test_facts_documentation.py
+new file mode 100644
+index 000000000..35f2e25f6
+--- /dev/null
++++ b/tests/test_facts_documentation.py
+@@ -0,0 +1,9 @@
++from pyinfra.facts.deb import DebPackage
++
++
++def test_deb_package_documents_package_resolution():
++    docstring = " ".join((DebPackage.__doc__ or "").split())
++
++    assert "``*.deb``" in docstring
++    assert "current working directory" in docstring
++    assert "installed package database" in docstring

@@ -1,0 +1,13 @@
+gammapy/utils/tests/test_regions.py::test_compound_region_center
+gammapy/utils/tests/test_regions.py::test_compound_region_center_concentric
+gammapy/utils/tests/test_regions.py::test_compound_region_center_inomogeneous_frames
+gammapy/utils/tests/test_regions.py::test_compound_region_center_single
+gammapy/utils/tests/test_regions.py::test_get_centroid
+gammapy/utils/tests/test_regions.py::test_make_grid_rectangle_sky_regions
+gammapy/utils/tests/test_regions.py::test_polygon_points_pixel_region_init
+gammapy/utils/tests/test_regions.py::test_polygon_points_pixel_region_rotate
+gammapy/utils/tests/test_regions.py::test_polygon_points_sky_region_init
+gammapy/utils/tests/test_regions.py::test_polygon_points_sky_region_to_pixel_to_sky
+gammapy/utils/tests/test_regions.py::test_region_circle_to_ellipse
+gammapy/utils/tests/test_regions.py::test_region_to_frame
+gammapy/utils/tests/test_regions.py::test_spherical_circle_sky_region

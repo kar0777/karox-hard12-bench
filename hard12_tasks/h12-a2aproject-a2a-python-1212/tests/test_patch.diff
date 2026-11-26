@@ -1,0 +1,85 @@
+diff --git a/tests/server/routes/test_jsonrpc_dispatcher.py b/tests/server/routes/test_jsonrpc_dispatcher.py
+index 3bde4fc2e..ed55c476c 100644
+--- a/tests/server/routes/test_jsonrpc_dispatcher.py
++++ b/tests/server/routes/test_jsonrpc_dispatcher.py
+@@ -364,6 +364,32 @@ def test_list_tasks_routes_to_on_list_tasks(self, client, handler):
+         call_context = handler.on_list_tasks.call_args[0][1]
+         assert call_context.state['method'] == 'ListTasks'
+ 
++    @pytest.mark.parametrize(
++        ('params', 'artifacts_expected'),
++        [
++            pytest.param({}, False, id='default'),
++            pytest.param({'includeArtifacts': True}, True, id='included'),
++        ],
++    )
++    def test_list_tasks_artifact_presence(
++        self,
++        client: TestClient,
++        handler: AsyncMock,
++        params: dict[str, Any],
++        artifacts_expected: bool,
++    ) -> None:
++        handler.on_list_tasks.return_value = ListTasksResponse(
++            tasks=[Task(id='task1')]
++        )
++
++        response = client.post(
++            '/', json=_make_jsonrpc_request('ListTasks', params)
++        )
++        response.raise_for_status()
++
++        task = response.json()['result']['tasks'][0]
++        assert ('artifacts' in task) is artifacts_expected
++
+     def test_create_push_notification_config_routes_correctly(
+         self, client, handler
+     ):
+diff --git a/tests/server/routes/test_rest_dispatcher.py b/tests/server/routes/test_rest_dispatcher.py
+index 00cc45f7b..a062a10c1 100644
+--- a/tests/server/routes/test_rest_dispatcher.py
++++ b/tests/server/routes/test_rest_dispatcher.py
+@@ -73,7 +73,7 @@ def rest_dispatcher_instance(mock_handler):
+     return RestDispatcher(request_handler=mock_handler)
+ 
+ 
+-from starlette.datastructures import Headers
++from starlette.datastructures import Headers, QueryParams
+ 
+ 
+ def make_mock_request(
+@@ -216,6 +216,34 @@ async def test_list_tasks(self, rest_dispatcher_instance, mock_handler):
+         response = await rest_dispatcher_instance.list_tasks(req)
+         assert response.status_code == 200
+ 
++    @pytest.mark.parametrize(
++        ('query_params', 'artifacts_expected'),
++        [
++            pytest.param(QueryParams(), False, id='default'),
++            pytest.param(
++                QueryParams({'includeArtifacts': 'true'}),
++                True,
++                id='included',
++            ),
++        ],
++    )
++    async def test_list_tasks_artifact_presence(
++        self,
++        rest_dispatcher_instance: RestDispatcher,
++        mock_handler: AsyncMock,
++        query_params: QueryParams,
++        artifacts_expected: bool,
++    ) -> None:
++        mock_handler.on_list_tasks.return_value = ListTasksResponse(
++            tasks=[Task(id='test_task')]
++        )
++        req = make_mock_request(method='GET', query_params=query_params)
++
++        response = await rest_dispatcher_instance.list_tasks(req)
++
++        task = json.loads(response.body)['tasks'][0]
++        assert ('artifacts' in task) is artifacts_expected
++
+     async def test_get_push_notification(
+         self, rest_dispatcher_instance, mock_handler
+     ):

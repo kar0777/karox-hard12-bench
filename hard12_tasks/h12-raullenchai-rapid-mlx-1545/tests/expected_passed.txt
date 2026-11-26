@@ -1,0 +1,17 @@
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_boundary_requires_positive_middle_budget
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_default_always_config_preserves_short_prompt
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_metadata_surfaces_safe_refusal
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.05-4096]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.05-8192]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.5-4096]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.5-8192]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.95-4096]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.95-8192]
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_generous_budget_keeps_middle_and_is_not_flagged
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_metadata_middle_tokens_kept_positive_on_normal_compression
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_small_sink_tail_leaves_middle_on_short_prompt
+tests/test_pflash_endpoints_only.py::TestPFlashEndpointsOnly::test_uncompressed_result_is_not_endpoints_only
+tests/test_pflash_needle.py::test_pflash_compressor_honors_keep_budget
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.05-16384]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.5-16384]
+tests/test_pflash_needle.py::test_pflash_default_preserves_needle[0.95-16384]

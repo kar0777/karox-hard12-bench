@@ -1,0 +1,71 @@
+diff --git a/tests/brokers/redis/test_config.py b/tests/brokers/redis/test_config.py
+index 73dd1847938..5dc9d499d64 100644
+--- a/tests/brokers/redis/test_config.py
++++ b/tests/brokers/redis/test_config.py
+@@ -81,6 +81,15 @@ def test_stream_with_group_and_min_idle_time() -> None:
+     assert config.ack_policy is AckPolicy.REJECT_ON_ERROR
+ 
+ 
++@pytest.mark.redis()
++def test_stream_declare_without_group_warning() -> None:
++    with pytest.warns(
++        RuntimeWarning,
++        match="`declare` has no effect without consumer group",
++    ):
++        StreamSub("test_stream", declare=False)
++
++
+ @pytest.mark.redis()
+ def test_broker_ack_policy() -> None:
+     broker = RedisBroker(ack_policy=AckPolicy.ACK)
+diff --git a/tests/brokers/redis/test_consume.py b/tests/brokers/redis/test_consume.py
+index 72ba3178ef9..40ccaa7708a 100644
+--- a/tests/brokers/redis/test_consume.py
++++ b/tests/brokers/redis/test_consume.py
+@@ -4,6 +4,7 @@
+ 
+ import pytest
+ from redis.asyncio import Redis
++from redis.exceptions import ResponseError
+ 
+ from faststream import AckPolicy
+ from faststream.redis import (
+@@ -438,6 +439,38 @@ async def publish_test_message():
+ @pytest.mark.redis()
+ @pytest.mark.asyncio()
+ class TestConsumeStream(RedisTestcaseConfig):
++    async def test_consume_group_creates_stream_by_default(self, queue: str) -> None:
++        consume_broker = self.get_broker()
++
++        @consume_broker.subscriber(
++            stream=StreamSub(queue, group="group", consumer=queue),
++        )
++        async def handler(msg: RedisMessage) -> None: ...
++
++        async with self.patch_broker(consume_broker) as br:
++            await br.start()
++            assert await br._connection.exists(queue)
++
++    async def test_consume_group_without_declare_requires_stream(
++        self, queue: str
++    ) -> None:
++        consume_broker = self.get_broker()
++
++        @consume_broker.subscriber(
++            stream=StreamSub(
++                queue,
++                group="group",
++                consumer=queue,
++                declare=False,
++            ),
++        )
++        async def handler(msg: RedisMessage) -> None: ...
++
++        async with self.patch_broker(consume_broker) as br:
++            with pytest.raises(ResponseError, match="key to exist"):
++                await br.start()
++            assert not await br._connection.exists(queue)
++
+     @pytest.mark.slow()
+     async def test_consume_stream(
+         self, mock: MagicMock, queue: str, event: asyncio.Event

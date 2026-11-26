@@ -1,0 +1,517 @@
+diff --git a/tests/integration/test_scenarios.py b/tests/integration/test_scenarios.py
+index 762270a9a..a032323f9 100644
+--- a/tests/integration/test_scenarios.py
++++ b/tests/integration/test_scenarios.py
+@@ -2253,3 +2253,108 @@ async def cancel(
+     # Verify that agent can see context_id the same as in task_1 and different task id
+     assert agent_context2_id == agent_context1_id
+     assert agent_task2_id != agent_task1_id
++
++
++# Cancel-terminal-state (issue #1170): cancel must leave the task in a state a
++# caller can act on. These two scenarios are @technicalpickles' repro from
++# https://github.com/a2aproject/a2a-python/pull/1171, folded in here verbatim
++# with the strict-xfail markers dropped since this PR fixes what they pin. Both
++# executors below define cancel() as an empty teardown, which is what
++# InputRequiredAgent, SlowAgent and DummyAgentExecutor use in this file and what
++# a real cleanup-only executor looks like.
++_TERMINAL_STATES = {
++    TaskState.TASK_STATE_CANCELED,
++    TaskState.TASK_STATE_COMPLETED,
++    TaskState.TASK_STATE_FAILED,
++    TaskState.TASK_STATE_REJECTED,
++}
++
++
++async def _start_task(client, text):
++    it = client.send_message(
++        SendMessageRequest(
++            message=Message(
++                message_id='test-msg',
++                role=Role.ROLE_USER,
++                parts=[Part(text=text)],
++            ),
++            configuration=SendMessageConfiguration(return_immediately=True),
++        )
++    )
++    res = await it.__anext__()
++    return res.task.id if res.HasField('task') else res.status_update.task_id
++
++
++@pytest.mark.timeout(5.0)
++@pytest.mark.asyncio
++async def test_scenario_19_mid_run_cancel_reaches_a_terminal_state():
++    """A caller who cancels should at least be able to stop polling."""
++    started = asyncio.Event()
++    hang = asyncio.Event()
++
++    class SilentCancelAgent(AgentExecutor):
++        async def execute(
++            self, context: RequestContext, event_queue: EventQueue
++        ):
++            task = new_task_from_user_message(context.message)
++            task.status.state = TaskState.TASK_STATE_WORKING
++            await event_queue.enqueue_event(task)
++            started.set()
++            await hang.wait()
++
++        async def cancel(
++            self, context: RequestContext, event_queue: EventQueue
++        ):
++            pass
++
++    client = await create_client(
++        create_handler(SilentCancelAgent(), use_legacy=False),
++        agent_card=agent_card(),
++        streaming=True,
++    )
++    task_id = await _start_task(client, 'hello')
++    await asyncio.wait_for(started.wait(), timeout=1.0)
++
++    await client.cancel_task(CancelTaskRequest(id=task_id))
++    task_after = await client.get_task(GetTaskRequest(id=task_id))
++
++    assert task_after.status.state in _TERMINAL_STATES
++
++
++@pytest.mark.timeout(5.0)
++@pytest.mark.asyncio
++async def test_scenario_19_cancel_of_parked_task_does_not_silently_succeed():
++    """input-required is non-terminal, so cancel should either work or raise
++    TaskNotCancelableError. Reporting success and changing nothing is the one
++    outcome a caller cannot act on."""
++
++    class ParkingAgent(AgentExecutor):
++        async def execute(
++            self, context: RequestContext, event_queue: EventQueue
++        ):
++            task = new_task_from_user_message(context.message)
++            task.status.state = TaskState.TASK_STATE_INPUT_REQUIRED
++            await event_queue.enqueue_event(task)
++
++        async def cancel(
++            self, context: RequestContext, event_queue: EventQueue
++        ):
++            pass
++
++    client = await create_client(
++        create_handler(ParkingAgent(), use_legacy=False),
++        agent_card=agent_card(),
++        streaming=True,
++    )
++    task_id = await _start_task(client, 'start')
++
++    for _ in range(50):
++        parked = await client.get_task(GetTaskRequest(id=task_id))
++        if parked.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
++            break
++        await asyncio.sleep(0.02)
++    assert parked.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
++
++    result = await client.cancel_task(CancelTaskRequest(id=task_id))
++
++    assert result.status.state != TaskState.TASK_STATE_INPUT_REQUIRED
+diff --git a/tests/server/agent_execution/test_active_task.py b/tests/server/agent_execution/test_active_task.py
+index b700987d2..5a06f4d34 100644
+--- a/tests/server/agent_execution/test_active_task.py
++++ b/tests/server/agent_execution/test_active_task.py
+@@ -129,6 +129,109 @@ async def execute_mock(req, q):
+         agent_executor.cancel.assert_called_once()
+         stop_event.set()
+ 
++    @pytest.mark.asyncio
++    async def test_active_task_cancel_producer_cancelled_on_cancellederror(
++        self,
++        active_task: ActiveTask,
++        agent_executor: Mock,
++        request_context: Mock,
++        task_manager: Mock,
++    ) -> None:
++        """Regression: executor.cancel() raising asyncio.CancelledError must
++        still cancel the producer task.
++
++        asyncio.CancelledError is a BaseException, so `except Exception` does
++        not catch it. The producer cancel therefore lives in a `finally`;
++        without it the producer would leak as a pending task on this path.
++        """
++        hang = asyncio.Event()
++        producer_cancelled = asyncio.Event()
++
++        async def execute_mock(req, q):
++            try:
++                await hang.wait()
++            except asyncio.CancelledError:
++                producer_cancelled.set()
++                raise
++
++        agent_executor.execute = AsyncMock(side_effect=execute_mock)
++        agent_executor.cancel = AsyncMock(side_effect=asyncio.CancelledError)
++        task_manager.get_task = AsyncMock(
++            return_value=Task(
++                id='test-task-id',
++                status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
++            )
++        )
++
++        await active_task.enqueue_request(request_context)
++        await active_task.start(
++            call_context=ServerCallContext(), create_task_if_missing=True
++        )
++        await asyncio.sleep(0.1)  # let the producer reach `await hang.wait()`
++        assert active_task._producer_task is not None
++
++        # The CancelledError from executor.cancel propagates out of cancel()...
++        with pytest.raises(asyncio.CancelledError):
++            await active_task.cancel(request_context)
++        agent_executor.cancel.assert_awaited_once()
++
++        # ...but the producer must have received the cancellation, not been
++        # left blocked on `hang.wait()`. `_run_producer` swallows the
++        # CancelledError and returns, so the executor's coroutine seeing it is
++        # the signal that `_producer_task.cancel()` actually fired. Without the
++        # `finally` this event never sets and the producer leaks pending.
++        for _ in range(50):
++            if producer_cancelled.is_set():
++                break
++            await asyncio.sleep(0.01)
++        assert producer_cancelled.is_set(), (
++            'producer was never cancelled -> it leaked as a pending task'
++        )
++        hang.set()
++        await active_task.aclose()
++
++    @pytest.mark.asyncio
++    async def test_active_task_cancel_does_not_mutate_shared_task(
++        self,
++        active_task: ActiveTask,
++        agent_executor: Mock,
++        request_context: Mock,
++        task_manager: Mock,
++    ) -> None:
++        """cancel() must not write the terminal state onto the shared task.
++
++        get_task() returns _task_manager._current_task, which may already have
++        been yielded to a subscriber. The terminal write goes onto a copy so
++        that reference does not change under the reader.
++        """
++        stop_event = asyncio.Event()
++
++        async def execute_mock(req, q):
++            await stop_event.wait()
++
++        shared = Task(
++            id='test-task-id',
++            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
++        )
++        agent_executor.execute = AsyncMock(side_effect=execute_mock)
++        agent_executor.cancel = AsyncMock()
++        task_manager.get_task = AsyncMock(return_value=shared)
++
++        await active_task.enqueue_request(request_context)
++        await active_task.start(
++            call_context=ServerCallContext(), create_task_if_missing=True
++        )
++        await asyncio.sleep(0.1)
++
++        result = await active_task.cancel(request_context)
++
++        # The returned task is CANCELED...
++        assert result.status.state == TaskState.TASK_STATE_CANCELED
++        # ...but the shared object get_task handed out is untouched.
++        assert result is not shared
++        assert shared.status.state == TaskState.TASK_STATE_WORKING
++        stop_event.set()
++
+     @pytest.mark.asyncio
+     async def test_active_task_interrupted_auth(
+         self,
+diff --git a/tests/server/agent_execution/test_active_task_registry.py b/tests/server/agent_execution/test_active_task_registry.py
+index 16d9c8797..7f0e3e46b 100644
+--- a/tests/server/agent_execution/test_active_task_registry.py
++++ b/tests/server/agent_execution/test_active_task_registry.py
+@@ -5,12 +5,15 @@
+ 
+ import pytest
+ 
++from a2a.auth.user import User
+ from a2a.server.agent_execution.active_task_registry import ActiveTaskRegistry
+ from a2a.server.agent_execution.agent_executor import AgentExecutor
+ from a2a.server.agent_execution.context import RequestContext
+ from a2a.server.context import ServerCallContext
+ from a2a.server.events.event_queue_v2 import EventQueue
+ from a2a.server.tasks import InMemoryTaskStore
++from a2a.types.a2a_pb2 import Task, TaskState, TaskStatus
++from a2a.utils.errors import TaskNotFoundError
+ 
+ 
+ class _SlowExecutor(AgentExecutor):
+@@ -105,3 +108,65 @@ async def test_aclose_logs_and_swallows_task_errors(caplog):
+         await registry.aclose()
+ 
+     assert 'Error draining active task' in caplog.text
++
++
++class _NamedUser(User):
++    """Minimal authenticated test user identified by ``user_name``."""
++
++    def __init__(self, user_name: str) -> None:
++        self._user_name = user_name
++
++    @property
++    def is_authenticated(self) -> bool:
++        return True
++
++    @property
++    def user_name(self) -> str:
++        return self._user_name
++
++
++def _ctx(user_name: str) -> ServerCallContext:
++    return ServerCallContext(user=_NamedUser(user_name))
++
++
++@pytest.mark.timeout(5)
++@pytest.mark.asyncio
++async def test_get_or_create_cache_hit_is_owner_scoped():
++    """Issue #1159: resolving a LIVE (cached) task by id is owner-scoped at the
++    registry, so a non-owner cannot retrieve another user's active task on the
++    cache-hit path. The guarantee lives at the registry, not at each call site.
++    """
++    store = InMemoryTaskStore()
++    registry = ActiveTaskRegistry(
++        agent_executor=_SlowExecutor(), task_store=store
++    )
++    alice = _ctx('alice')
++    bob = _ctx('bob')
++
++    # Alice owns the task in the store and it is live in the registry, so the
++    # next lookups take the cache-hit early return rather than the miss path.
++    await store.save(
++        Task(
++            id='task-1',
++            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
++        ),
++        alice,
++    )
++    active = await registry.get_or_create(
++        'task-1', call_context=alice, create_task_if_missing=True
++    )
++    assert await registry.get('task-1') is not None
++
++    # Bob (non-owner) is rejected on the cache-hit path, masked as not-found.
++    with pytest.raises(TaskNotFoundError):
++        await registry.get_or_create(
++            'task-1', call_context=bob, create_task_if_missing=False
++        )
++
++    # Alice (owner) still resolves the same live task.
++    again = await registry.get_or_create(
++        'task-1', call_context=alice, create_task_if_missing=False
++    )
++    assert again is active
++
++    await registry.aclose()
+diff --git a/tests/server/request_handlers/test_default_request_handler_v2.py b/tests/server/request_handlers/test_default_request_handler_v2.py
+index b276fb77a..8a62e5a17 100644
+--- a/tests/server/request_handlers/test_default_request_handler_v2.py
++++ b/tests/server/request_handlers/test_default_request_handler_v2.py
+@@ -1746,3 +1746,199 @@ async def test_aclose_is_idempotent_and_handles_empty():
+ 
+     await handler.aclose()
+     await handler.aclose()
++
++
++# --- Issue #1159: SubscribeToTask / CancelTask must be owner-scoped even when
++# the task is LIVE in the ActiveTaskRegistry (the cached-active path that
++# previously skipped the owner-aware TaskStore). ------------------------------
++
++
++class _HangingAgent(AgentExecutor):
++    """Stays in ``working`` so the task remains live in the registry.
++
++    ``cancel`` writes a terminal CANCELED state, so a legitimate owner cancel
++    resolves the same way regardless of the #1170 fix.
++    """
++
++    def __init__(self) -> None:
++        self.working = asyncio.Event()
++        self.release = asyncio.Event()
++        self.cancel_called = asyncio.Event()
++
++    async def execute(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        task = new_task_from_user_message(context.message)
++        await event_queue.enqueue_event(task)
++        updater = TaskUpdater(event_queue, task.id, task.context_id)
++        await updater.update_status(TaskState.TASK_STATE_WORKING)
++        self.working.set()
++        await self.release.wait()
++
++    async def cancel(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        self.cancel_called.set()
++        updater = TaskUpdater(event_queue, context.task_id, context.context_id)
++        await updater.cancel()
++
++
++class _ParkThenHangAgent(AgentExecutor):
++    """Parks the task in the non-terminal ``input-required`` state and keeps
++    the producer alive, so the ActiveTask stays in the registry. ``cancel`` is
++    cleanup-only (writes no terminal state)."""
++
++    def __init__(self) -> None:
++        self.parked = asyncio.Event()
++        self.release = asyncio.Event()
++
++    async def execute(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        task = new_task_from_user_message(context.message)
++        await event_queue.enqueue_event(task)
++        updater = TaskUpdater(event_queue, task.id, task.context_id)
++        await updater.update_status(TaskState.TASK_STATE_INPUT_REQUIRED)
++        self.parked.set()
++        await self.release.wait()
++
++    async def cancel(
++        self, context: RequestContext, event_queue: EventQueue
++    ) -> None:
++        pass
++
++
++async def _start_live_task(handler, ctx, text):
++    task = await handler.on_message_send(
++        SendMessageRequest(
++            message=Message(
++                message_id=f'msg-{text}',
++                role=Role.ROLE_USER,
++                parts=[Part(text=text)],
++            ),
++            configuration=SendMessageConfiguration(return_immediately=True),
++        ),
++        ctx,
++    )
++    return task.id
++
++
++@pytest.mark.timeout(10)
++@pytest.mark.asyncio
++async def test_on_cancel_task_is_owner_scoped_for_live_task():
++    """Issue #1159: a non-owner must not cancel another user's LIVE task."""
++    agent = _HangingAgent()
++    handler = DefaultRequestHandlerV2(
++        agent_executor=agent,
++        task_store=InMemoryTaskStore(),
++        agent_card=create_default_agent_card(),
++    )
++    alice = _ctx('alice')
++    bob = _ctx('bob')
++
++    task_id = await _start_live_task(handler, alice, 'work')
++    await asyncio.wait_for(agent.working.wait(), timeout=5)
++    # The task is live in the registry -> exercises the cached-active path.
++    assert await handler._active_task_registry.get(task_id) is not None
++
++    # Bob (non-owner) is rejected, masked as not-found, and never reaches the
++    # executor's cancel().
++    with pytest.raises(TaskNotFoundError):
++        await handler.on_cancel_task(CancelTaskRequest(id=task_id), bob)
++    assert not agent.cancel_called.is_set()
++
++    # Alice (owner) can still cancel her own task.
++    result = await handler.on_cancel_task(CancelTaskRequest(id=task_id), alice)
++    assert result.status.state == TaskState.TASK_STATE_CANCELED
++    assert agent.cancel_called.is_set()
++
++    agent.release.set()
++    await handler.aclose()
++
++
++@pytest.mark.timeout(10)
++@pytest.mark.asyncio
++async def test_on_subscribe_to_task_is_owner_scoped_for_live_task():
++    """Issue #1159: a non-owner must not subscribe to another user's LIVE task."""
++    agent = _HangingAgent()
++    handler = DefaultRequestHandlerV2(
++        agent_executor=agent,
++        task_store=InMemoryTaskStore(),
++        agent_card=create_default_agent_card(),
++    )
++    alice = _ctx('alice')
++    bob = _ctx('bob')
++
++    task_id = await _start_live_task(handler, alice, 'work')
++    await asyncio.wait_for(agent.working.wait(), timeout=5)
++    assert await handler._active_task_registry.get(task_id) is not None
++
++    # Bob (non-owner) is rejected on the first iteration of the stream.
++    with pytest.raises(TaskNotFoundError):
++        async for _ in handler.on_subscribe_to_task(
++            SubscribeToTaskRequest(id=task_id), bob
++        ):
++            break
++
++    # Alice (owner) can subscribe and receives her own task.
++    received = None
++    async for event in handler.on_subscribe_to_task(
++        SubscribeToTaskRequest(id=task_id), alice
++    ):
++        received = event
++        break
++    assert received is not None
++    assert getattr(received, 'id', None) == task_id
++
++    agent.release.set()
++    await handler.aclose()
++
++
++@pytest.mark.timeout(10)
++@pytest.mark.asyncio
++async def test_on_cancel_of_parked_task_is_owner_scoped():
++    """Issue #1159 x #1170: a non-owner cancel of another user's PARKED
++    (input-required) live task must be rejected and must NOT write a terminal
++    CANCELED state. This is the exact cross-tenant regression the #1170 fix
++    (cancel writes a terminal state) would otherwise expose on the un-guarded
++    cached-active path."""
++    agent = _ParkThenHangAgent()
++    store = InMemoryTaskStore()
++    handler = DefaultRequestHandlerV2(
++        agent_executor=agent,
++        task_store=store,
++        agent_card=create_default_agent_card(),
++    )
++    alice = _ctx('alice')
++    bob = _ctx('bob')
++
++    task_id = await _start_live_task(handler, alice, 'park')
++    await asyncio.wait_for(agent.parked.wait(), timeout=5)
++    assert await handler._active_task_registry.get(task_id) is not None
++
++    # update_status enqueues the input-required transition; wait until it is
++    # persisted to the store before the cross-tenant cancel so the assertions
++    # below do not race the event pipeline.
++    alice_view = None
++    for _ in range(500):
++        alice_view = await store.get(task_id, alice)
++        if (
++            alice_view is not None
++            and alice_view.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
++        ):
++            break
++        await asyncio.sleep(0.01)
++    assert alice_view is not None
++    assert alice_view.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
++
++    # Bob (non-owner) is rejected...
++    with pytest.raises(TaskNotFoundError):
++        await handler.on_cancel_task(CancelTaskRequest(id=task_id), bob)
++
++    # ...and Alice's task is untouched: still input-required, not CANCELED.
++    alice_view = await store.get(task_id, alice)
++    assert alice_view is not None
++    assert alice_view.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
++
++    agent.release.set()
++    await handler.aclose()

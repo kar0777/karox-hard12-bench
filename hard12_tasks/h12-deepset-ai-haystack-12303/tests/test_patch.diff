@@ -1,0 +1,148 @@
+diff --git a/test/components/agents/test_agent.py b/test/components/agents/test_agent.py
+index cd76bd53b1a..da2ff348c5e 100644
+--- a/test/components/agents/test_agent.py
++++ b/test/components/agents/test_agent.py
+@@ -1086,6 +1086,19 @@ def test_does_not_exit_on_empty_assistant_message(self, weather_tool):
+         assert result["step_count"] == 2
+         assert result["last_message"].text == "The weather is sunny."
+ 
++    def test_exits_on_empty_assistant_message_truncated_by_output_limit(self, monkeypatch, weather_tool):
++        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
++        agent = Agent(chat_generator=OpenAIChatGenerator(), tools=[weather_tool], exit_conditions=["text"])
++
++        truncated_reply = {"replies": [ChatMessage.from_assistant(text="", meta={"finish_reason": "length"})]}
++        recovered_reply = {"replies": [ChatMessage.from_assistant(text="The weather is sunny.")]}
++        agent.chat_generator.run = MagicMock(side_effect=[truncated_reply, recovered_reply])
++
++        result = agent.run([ChatMessage.from_user("What's the weather?")])
++
++        assert agent.chat_generator.run.call_count == 1
++        assert result["last_message"].text == ""
++
+     @pytest.mark.asyncio
+     async def test_does_not_exit_on_empty_assistant_message_async(self, weather_tool):
+         replies = [ChatMessage.from_assistant(text=""), "The weather is sunny."]
+@@ -1096,6 +1109,20 @@ async def test_does_not_exit_on_empty_assistant_message_async(self, weather_tool
+         assert result["step_count"] == 2
+         assert result["last_message"].text == "The weather is sunny."
+ 
++    @pytest.mark.asyncio
++    async def test_exits_on_empty_assistant_message_truncated_by_output_limit_async(self, monkeypatch, weather_tool):
++        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
++        agent = Agent(chat_generator=OpenAIChatGenerator(), tools=[weather_tool], exit_conditions=["text"])
++
++        truncated_reply = {"replies": [ChatMessage.from_assistant(text="", meta={"finish_reason": "length"})]}
++        recovered_reply = {"replies": [ChatMessage.from_assistant(text="The weather is sunny.")]}
++        agent.chat_generator.run_async = AsyncMock(side_effect=[truncated_reply, recovered_reply])
++
++        result = await agent.run_async([ChatMessage.from_user("What's the weather?")])
++
++        assert agent.chat_generator.run_async.call_count == 1
++        assert result["last_message"].text == ""
++
+     def test_text_exit(self, weather_tool):
+         """A plain assistant reply with no tool calls reports the `"text"` exit reason."""
+         agent = Agent(chat_generator=MockChatGenerator("Berlin is sunny."), tools=[weather_tool])
+diff --git a/test/components/generators/chat/test_openai_responses_conversion.py b/test/components/generators/chat/test_openai_responses_conversion.py
+index aa26a2a40d1..f0c5876bd23 100644
+--- a/test/components/generators/chat/test_openai_responses_conversion.py
++++ b/test/components/generators/chat/test_openai_responses_conversion.py
+@@ -2,6 +2,7 @@
+ #
+ # SPDX-License-Identifier: Apache-2.0
+ 
++from typing import Literal
+ from unittest.mock import ANY, MagicMock
+ 
+ import pytest
+@@ -16,6 +17,7 @@
+     ResponseFunctionCallArgumentsDeltaEvent,
+     ResponseFunctionCallArgumentsDoneEvent,
+     ResponseFunctionToolCall,
++    ResponseIncompleteEvent,
+     ResponseInProgressEvent,
+     ResponseOutputItemAddedEvent,
+     ResponseOutputItemDoneEvent,
+@@ -27,11 +29,13 @@
+     ResponseTextDoneEvent,
+     ResponseUsage,
+ )
++from openai.types.responses.response import IncompleteDetails
+ from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
+ 
+ from haystack.components.generators.chat.openai_responses import (
+     _convert_chat_message_to_responses_api_format,
+     _convert_response_chunk_to_streaming_chunk,
++    _convert_response_to_chat_message,
+     _convert_streaming_chunks_to_chat_message,
+ )
+ from haystack.dataclasses import (
+@@ -222,6 +226,26 @@ def openai_responses_streaming_chunks_with_tool_call():
+ 
+ 
+ class TestConversionToStreamingChunks:
++    @pytest.mark.parametrize(
++        ("incomplete_reason", "finish_reason"), [("max_output_tokens", "length"), ("content_filter", "content_filter")]
++    )
++    def test_convert_incomplete_response_with_finish_reason(
++        self, incomplete_reason: Literal["max_output_tokens", "content_filter"], finish_reason: str
++    ) -> None:
++        response = Response.model_construct(
++            output=[],
++            output_text=None,
++            status="incomplete",
++            incomplete_details=IncompleteDetails(reason=incomplete_reason),
++        )
++        event = ResponseIncompleteEvent.model_construct(response=response, type="response.incomplete")
++
++        chunk = _convert_response_chunk_to_streaming_chunk(event, previous_chunks=[])
++
++        assert chunk.finish_reason == finish_reason
++        message = _convert_streaming_chunks_to_chat_message([chunk])
++        assert message.meta["finish_reason"] == finish_reason
++
+     def test_convert_streaming_chunks_to_chat_message_with_tool_call_empty_reasoning(
+         self, openai_responses_streaming_chunks_with_tool_call: MagicMock
+     ) -> None:
+@@ -276,6 +300,7 @@ def test_convert_streaming_chunks_to_chat_message_with_tool_call_empty_reasoning
+                     "total_tokens": 145,
+                 },
+                 "store": True,
++                "finish_reason": "tool_calls",
+             },
+         )
+ 
+@@ -880,6 +905,9 @@ def test_convert_only_text(self) -> None:
+             ),
+         ]
+ 
++        message = _convert_streaming_chunks_to_chat_message(streaming_chunks)
++        assert message.meta["finish_reason"] == "stop"
++
+     def test_convert_only_function_call(self) -> None:
+ 
+         chunks = [
+@@ -1226,6 +1254,23 @@ def test_convert_only_function_call(self) -> None:
+ 
+ 
+ class TestResponseToChatMessage:
++    @pytest.mark.parametrize(
++        ("incomplete_reason", "finish_reason"), [("max_output_tokens", "length"), ("content_filter", "content_filter")]
++    )
++    def test_convert_incomplete_response_with_finish_reason(
++        self, incomplete_reason: Literal["max_output_tokens", "content_filter"], finish_reason: str
++    ) -> None:
++        response = Response.model_construct(
++            output=[],
++            output_text=None,
++            status="incomplete",
++            incomplete_details=IncompleteDetails(reason=incomplete_reason),
++        )
++
++        message = _convert_response_to_chat_message(response)
++
++        assert message.meta["finish_reason"] == finish_reason
++
+     def test_convert_system_message(self) -> None:
+ 
+         message = ChatMessage.from_system("You are good assistant")

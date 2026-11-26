@@ -1,0 +1,44 @@
+diff --git a/test/components/query/test_query_expander.py b/test/components/query/test_query_expander.py
+index 224988aaca1..dea0f7bfacd 100644
+--- a/test/components/query/test_query_expander.py
++++ b/test/components/query/test_query_expander.py
+@@ -200,6 +200,18 @@ def test_run_query_deduplication(self):
+         assert result["queries"] == ["original query", "alt1", "alt2"]
+         assert len(result["queries"]) == 3
+ 
++    def test_run_deduplicates_generated_queries(self):
++        chat_generator = MockChatGenerator('{"queries": ["same query", "same query", "other query"]}')
++        expander = QueryExpander(chat_generator=chat_generator, n_expansions=3, include_original_query=False)
++        result = expander.run("topic")
++        assert result["queries"] == ["same query", "other query"]
++
++    def test_run_deduplicates_before_truncating(self):
++        chat_generator = MockChatGenerator('{"queries": ["a", "a", "b", "c"]}')
++        expander = QueryExpander(chat_generator=chat_generator, n_expansions=3, include_original_query=False)
++        result = expander.run("topic")
++        assert result["queries"] == ["a", "b", "c"]
++
+     def test_run_truncates_excess_queries(self, caplog):
+         chat_generator = MockChatGenerator('{"queries": ["q1", "q2", "q3", "q4", "q5"]}')
+         expander = QueryExpander(chat_generator=chat_generator, n_expansions=3, include_original_query=False)
+@@ -397,6 +409,20 @@ async def test_run_async_fallback_to_sync_run(self):
+         ]
+         fake_chat_generator.run.assert_called_once()
+ 
++    @pytest.mark.asyncio
++    async def test_run_async_deduplicates_generated_queries(self):
++        chat_generator = MockChatGenerator('{"queries": ["same query", "same query", "other query"]}')
++        expander = QueryExpander(chat_generator=chat_generator, n_expansions=3, include_original_query=False)
++        result = await expander.run_async("topic")
++        assert result["queries"] == ["same query", "other query"]
++
++    @pytest.mark.asyncio
++    async def test_run_async_deduplicates_before_truncating(self):
++        chat_generator = MockChatGenerator('{"queries": ["a", "a", "b", "c"]}')
++        expander = QueryExpander(chat_generator=chat_generator, n_expansions=3, include_original_query=False)
++        result = await expander.run_async("topic")
++        assert result["queries"] == ["a", "b", "c"]
++
+ 
+ @pytest.mark.integration
+ class TestQueryExpanderIntegration:

@@ -1,0 +1,11 @@
+test/core/test_dataset.py::test_integrate
+test/core/test_dataset.py::test_integrate_multiple_data_arrays
+test/core/test_dataset.py::test_integrate_skips_non_grid_variables
+test/core/test_dataset.py::test_get_dual
+test/core/test_dataset.py::test_info
+test/core/test_dataset.py::test_sel_method_forwarded
+test/core/test_dataset.py::test_sel_time_slice
+test/core/test_dataset.py::test_ugrid_dim_names
+test/core/test_dataset.py::test_uxdataset_init_from_xarray_dataset
+test/core/test_dataset.py::test_uxdataset_to_array
+test/core/test_dataset.py::test_uxgrid_setget

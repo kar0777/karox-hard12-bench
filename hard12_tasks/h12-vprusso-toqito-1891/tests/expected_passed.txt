@@ -1,0 +1,9 @@
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm_rectangular_requires_dim
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm[cvxopt-test_input0-1]
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm[cvxopt-test_input1-2.0]
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm[cvxopt-test_input2-1.414213562373095]
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm[cvxopt-test_input3-2]
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm_cp_non_trace_preserving
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm_invalid_input
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm_rectangular[test_input0-1]
+toqito/channel_metrics/tests/test_completely_bounded_trace_norm.py::test_cb_trace_norm_rectangular[test_input1-2]

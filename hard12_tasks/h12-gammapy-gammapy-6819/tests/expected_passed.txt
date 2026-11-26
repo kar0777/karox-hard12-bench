@@ -1,0 +1,11 @@
+gammapy/astro/darkmatter/tests/test_utils.py::test_compute_differential_jfactor_outside_halo_no_intersection
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[boundary_away-2-2-120]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[boundary_toward-2-2-30]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[inside_away-1-2-120]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[inside_perpendicular-1-2-90]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[inside_toward-1-2-30]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[outside_away-10-2-120]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[outside_intersects-10-2-5]
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_geometric_path_length[outside_misses-10-2-30]
+gammapy/astro/darkmatter/tests/test_utils.py::test_compute_differential_jfactor_large_separation
+gammapy/astro/darkmatter/tests/test_utils.py::test_integrate_los_branch_zero_impact_positive_radius

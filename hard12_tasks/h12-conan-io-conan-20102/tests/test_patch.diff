@@ -1,0 +1,136 @@
+diff --git a/test/integration/package_id/package_id_modes_test.py b/test/integration/package_id/package_id_modes_test.py
+index 70aa92d6539..28fc5cea13f 100644
+--- a/test/integration/package_id/package_id_modes_test.py
++++ b/test/integration/package_id/package_id_modes_test.py
+@@ -105,6 +105,48 @@ class Dep(ConanFile):
+         c.run("create pkg")
+         c.assert_listed_binary({"pkg/0.1": ("56934f87c11792e356423e081c7cd490f3c1fbe0", "Build")})
+ 
++    def test_dep_defined_micro(self):
++        c = TestClient()
++        dep = textwrap.dedent("""
++            from conan import ConanFile
++            class Dep(ConanFile):
++                name = "dep"
++                package_type = "static-library"
++                package_id_embed_mode = "micro_mode"
++                package_id_non_embed_mode = "micro_mode"
++            """)
++        c.save({"dep/conanfile.py": dep,
++                "pkg/conanfile.py": GenConanfile("pkg", "0.1").with_requires("dep/[*]")
++                                                              .with_shared_option(False)})
++        c.run("create dep --version=1.0.0.0")
++        c.run("create pkg")
++        static_id = c.created_package_id("pkg/0.1")
++        c.run("create pkg -o pkg/*:shared=True")
++        shared_id = c.created_package_id("pkg/0.1")
++
++        # micro change (1.0.0.0 → 1.0.0.1) triggers new binaries for both embed and non-embed
++        c.run("create dep --version=1.0.0.1")
++        c.run("create pkg")
++        new_static_id = c.created_package_id("pkg/0.1")
++        assert new_static_id != static_id
++        c.run("create pkg -o pkg/*:shared=True")
++        new_shared_id = c.created_package_id("pkg/0.1")
++        assert new_shared_id != shared_id
++        c.run("list pkg:*")
++        assert "dep/1.0.0.1" in c.out
++
++        # More digits are ignored, same package_id
++        c.run("create dep --version=1.0.0.1.1")
++        c.run("create pkg")
++        new_static_id2 = c.created_package_id("pkg/0.1")
++        assert new_static_id2 == new_static_id
++        c.run("create pkg -o pkg/*:shared=True")
++        new_shared_id2 = c.created_package_id("pkg/0.1")
++        assert new_shared_id2 == new_shared_id
++        c.run("list pkg:*")
++        assert "dep/1.0.0.1" in c.out
++        assert "dep/1.0.0.1.1" not in c.out
++
+     def test_dep_python_require_defined(self):
+         c = TestClient()
+         dep = textwrap.dedent("""
+@@ -138,3 +180,27 @@ class Dep(ConanFile):
+         c.assert_listed_binary({"pkg/0.1": ("9b015e30b768df0217ffa2c270f60227c998e609", "Build")})
+         c.run("list *:*")
+         assert "dep/1.Y.Z" in c.out
++
++
++def test_conf_micro_mode():
++    """micro_mode via global.conf: 4th digit changes affect package_id"""
++    c = TestClient()
++    c.save_home({"global.conf": "core.package_id:default_unknown_mode=micro_mode"})
++    c.save({"dep/conanfile.py": GenConanfile("dep"),
++            "pkg/conanfile.py": GenConanfile("pkg", "0.1").with_requires("dep/[*]")})
++    c.run("create dep --version=1.0.0.0")
++    c.run("create pkg")
++    package_id = c.created_package_id("pkg/0.1")
++    c.run("list pkg:*")
++    assert "dep/1.0.0.0" in c.out
++
++    # same patch, different micro → new binary required
++    c.run("create dep --version=1.0.0.1")
++    c.run("install --requires=pkg/0.1", assert_error=True)
++    assert "ERROR: Missing prebuilt package for 'pkg/0.1'" in c.out
++    assert "dep/1.0.0.1" in c.out
++
++    # build the new binary and confirm the package_id changed
++    c.run("create pkg")
++    new_package_id = c.created_package_id("pkg/0.1")
++    assert new_package_id != package_id
+diff --git a/test/integration/package_id/package_id_requires_modes_test.py b/test/integration/package_id/package_id_requires_modes_test.py
+index 3a0c0ae1b9d..daf690716c3 100644
+--- a/test/integration/package_id/package_id_requires_modes_test.py
++++ b/test/integration/package_id/package_id_requires_modes_test.py
+@@ -10,6 +10,7 @@ class TestPackageIDRequirementsModes:
+     @pytest.mark.parametrize("mode, accepted_version, rejected_version, pattern",
+                              [("unrelated_mode", "2.0", "", ""),
+                               ("patch_mode", "1.0.0.1", "1.0.1", "1.0.1"),
++                              ("micro_mode", "1.0.0.0", "1.0.0.1", "1.0.0.1"),
+                               ("minor_mode", "1.0.1", "1.2", "1.2.Z"),
+                               ("major_mode", "1.5", "2.0", "2.Y.Z"),
+                               ("semver_mode", "1.5", "2.0", "2.Y.Z"),
+@@ -37,6 +38,8 @@ def test(self, mode, accepted_version, rejected_version, pattern):
+                          [("unrelated_mode", "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+                           ("semver_mode", "13b9e753af3958dd1b2d4b3f935b04b8fb6b6760"),
+                           ("patch_mode", "38d7a3ec6a09165ab3e5306f81c539a2e0a784bd"),
++                          # micro_mode with 0.1.1.1 → "0.1.1.1", same repr as full_version_mode
++                          ("micro_mode", "13b9e753af3958dd1b2d4b3f935b04b8fb6b6760"),
+                           ("minor_mode", "a5e7ad26ccf4a5049090976846da1c6ed165cced"),
+                           ("major_mode", "6ac597ffb99c3747ed78699f206dc1041537a8df"),
+                           # This is equal to semver_mode for 0.X.Y.Z..
+@@ -152,6 +155,17 @@ def test(self, mode, pattern):
+         c.run("list pkg:*")
+         assert f"dep/{pattern}" in c.out
+ 
++    def test_micro_mode(self):
++        c = TestClient(light=True)
++        pkg = GenConanfile("pkg", "0.1").with_requirement("dep/1.2.3.4",
++                                                          package_id_mode="micro_mode")
++        c.save({"dep/conanfile.py": GenConanfile("dep", "1.2.3.4"),
++                "pkg/conanfile.py": pkg})
++        c.run("create dep")
++        c.run("create pkg")
++        c.run("list pkg:*")
++        assert "dep/1.2.3.4" in c.out
++
+     def test_wrong_mode(self):
+         c = TestClient(light=True)
+         pkg = GenConanfile("pkg", "0.1").with_requirement("dep/1.2.3", package_id_mode="nothing")
+@@ -164,6 +178,7 @@ def test_wrong_mode(self):
+ 
+     @pytest.mark.parametrize("mode, pattern",
+                              [("patch_mode", "1.2.3"),
++                              ("micro_mode", "1.2.3.0"),
+                               ("minor_mode", "1.2.Z"),
+                               ("major_mode", "1.Y.Z")])
+     def test_half_diamond(self, mode, pattern):
+@@ -190,6 +205,7 @@ def test_half_diamond(self, mode, pattern):
+ 
+     @pytest.mark.parametrize("mode, pattern",
+                              [("patch_mode", "1.2.3"),
++                              ("micro_mode", "1.2.3.0"),
+                               ("minor_mode", "1.2.Z"),
+                               ("major_mode", "1.Y.Z")])
+     def test_half_diamond_conflict(self, mode, pattern):

@@ -1,0 +1,2 @@
+test/io/test_structured.py::test_global_structured_grid_merges_poles_and_seam
+test/io/test_structured.py::test_regional_structured_grid_is_unchanged

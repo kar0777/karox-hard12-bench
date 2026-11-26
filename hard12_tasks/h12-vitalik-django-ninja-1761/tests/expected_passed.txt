@@ -1,0 +1,2 @@
+tests/test_conf.py::test_override_settings_updates_ninja_settings
+tests/test_conf.py::test_default_configuration

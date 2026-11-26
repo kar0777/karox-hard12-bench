@@ -1,0 +1,265 @@
+diff --git a/console/src/pages/Chat/tests/sessionCacheStaleness.test.ts b/console/src/pages/Chat/tests/sessionCacheStaleness.test.ts
+new file mode 100644
+index 00000000000..c470de61a1f
+--- /dev/null
++++ b/console/src/pages/Chat/tests/sessionCacheStaleness.test.ts
+@@ -0,0 +1,118 @@
++/**
++ * Regression test for issue #6131 follow-up:
++ * "Messages sent from an external channel (DingTalk) don't appear in the
++ *  console conversation; switching away and back doesn't help — only a full
++ *  page refresh shows them."
++ *
++ * Root cause: SessionApi keeps an in-memory LRU cache of converted messages
++ * keyed by backend UUID. On session switch-back, `fetchAndBuildSession`
++ * returned the cached messages for idle chats WITHOUT re-fetching. The cache
++ * was only invalidated when the LOCAL user sent a message — never when a
++ * message arrived from an external channel. A full page refresh worked only
++ * because it recreates the SessionApi singleton (empty cache).
++ *
++ * Fix: the cache entry now records the chat's backend `updated_at`; on read we
++ * compare it against the freshly-polled `updated_at` from the session list and
++ * treat the entry as stale (re-fetch) when the backend is newer.
++ *
++ * These tests drive the public `getSession` / `getSessionList` flow with
++ * mocked `api.getChat` / `api.listChats`, asserting a re-fetch happens exactly
++ * when `updated_at` advances (and NOT when it stays the same).
++ */
++import { describe, it, expect, vi, afterEach } from "vitest";
++import type { ChatSpec, ChatHistory, Message } from "../../../api";
++import api from "../../../api";
++import sessionApi from "../sessionApi";
++
++const T0 = "2026-07-16T15:30:00.000000+00:00";
++const T1 = "2026-07-16T15:36:00.000000+00:00";
++
++function makeChatSpec(id: string, updatedAt: string): ChatSpec {
++  return {
++    id,
++    name: "DingTalk chat",
++    session_id: `dingtalk:${id}`,
++    user_id: "u1",
++    channel: "dingtalk",
++    created_at: T0,
++    updated_at: updatedAt,
++    meta: {},
++    status: "idle",
++    pinned: false,
++    archived: false,
++    archived_at: null,
++  } as unknown as ChatSpec;
++}
++
++function makeHistory(
++  turns: Array<{ role: string; text: string }>,
++): ChatHistory {
++  const messages: Message[] = turns.map(
++    ({ role, text }) =>
++      ({
++        role,
++        content: [{ type: "text", text }],
++      }) as unknown as Message,
++  );
++  return { messages, status: "idle" } as unknown as ChatHistory;
++}
++
++afterEach(() => {
++  vi.restoreAllMocks();
++});
++
++describe("SessionApi converted-cache staleness on updated_at change (#6131)", () => {
++  it("re-fetches messages when the backend updated_at advances", async () => {
++    const id = "11111111-1111-4111-8111-111111111111";
++    const listSpy = vi
++      .spyOn(api, "listChats")
++      .mockResolvedValue([makeChatSpec(id, T0)]);
++    const getChatSpy = vi
++      .spyOn(api, "getChat")
++      .mockResolvedValue(makeHistory([{ role: "assistant", text: "first" }]));
++
++    // Initial poll + open: fetches history v1 and caches it.
++    await sessionApi.getSessionList();
++    const s1 = await sessionApi.getSession(id);
++    expect(getChatSpy).toHaveBeenCalledTimes(1);
++    const count1 = (s1.messages || []).length;
++
++    // A new message arrives via DingTalk: backend updated_at advances and the
++    // history now has an extra user turn + reply (distinct cards).
++    listSpy.mockResolvedValue([makeChatSpec(id, T1)]);
++    getChatSpy.mockResolvedValue(
++      makeHistory([
++        { role: "assistant", text: "first" },
++        { role: "user", text: "what time is it" },
++        { role: "assistant", text: "second" },
++      ]),
++    );
++
++    // Poll picks up the newer updated_at, then the user switches back.
++    await sessionApi.getSessionList();
++    const s2 = await sessionApi.getSession(id);
++
++    // Must have re-fetched (cache treated as stale) and show the new message.
++    expect(getChatSpy).toHaveBeenCalledTimes(2);
++    expect((s2.messages || []).length).toBeGreaterThan(count1);
++  });
++
++  it("serves the cache (no re-fetch) when updated_at is unchanged", async () => {
++    const id = "22222222-2222-4222-8222-222222222222";
++    vi.spyOn(api, "listChats").mockResolvedValue([makeChatSpec(id, T0)]);
++    const getChatSpy = vi
++      .spyOn(api, "getChat")
++      .mockResolvedValue(makeHistory([{ role: "assistant", text: "only" }]));
++
++    await sessionApi.getSessionList();
++    await sessionApi.getSession(id);
++    expect(getChatSpy).toHaveBeenCalledTimes(1);
++
++    // Poll again with the SAME updated_at, then switch back.
++    await sessionApi.getSessionList();
++    await sessionApi.getSession(id);
++
++    // Cache is still valid: no extra network fetch.
++    expect(getChatSpy).toHaveBeenCalledTimes(1);
++  });
++});
+diff --git a/tests/integration/test_console_chat_updated_at.py b/tests/integration/test_console_chat_updated_at.py
+new file mode 100644
+index 00000000000..375cb411f2d
+--- /dev/null
++++ b/tests/integration/test_console_chat_updated_at.py
+@@ -0,0 +1,135 @@
++# -*- coding: utf-8 -*-
++"""Regression test for issue #6131.
++
++After the 2.x migration, sending a message in an existing chat did not
++refresh ``ChatSpec.updated_at``. The console session list sorts by
++``updated_at`` (descending) and polls the backend, so a stale timestamp
++meant the chat never re-surfaced as the most recent conversation.
++
++The fix touches ``updated_at`` inside the console channel's ``stream_one``
++executor (which serves the web-streaming, background-task and terminal
++paths) and inside ``BaseChannel._consume_with_tracker`` (all other
++channels). This test exercises the console web-streaming path end to end
++and asserts that a second message advances ``updated_at`` past the first.
++"""
++from __future__ import annotations
++
++import threading
++import time
++from datetime import datetime
++from http.server import HTTPServer
++
++import httpx
++import pytest
++
++from tests.integration.helpers import (
++    MOCK_LLM_PROVIDER_ID,
++    MockLLMHandler,
++    default_http_timeout,
++    register_mock_provider,
++    unregister_mock_provider,
++)
++
++_HTTP_TIMEOUT = default_http_timeout(15.0)
++
++
++@pytest.fixture(scope="module")
++def mock_llm():
++    """Module-scoped mock OpenAI streaming server."""
++    srv = HTTPServer(("127.0.0.1", 0), MockLLMHandler)
++    srv.force_error = False
++    srv.force_tool_call = False
++    port = srv.server_address[1]
++    thread = threading.Thread(target=srv.serve_forever, daemon=True)
++    thread.start()
++    yield srv, f"http://127.0.0.1:{port}/v1"
++    srv.shutdown()
++
++
++def _drain_console_chat(app_server, session_id: str, user_id: str) -> None:
++    """POST /api/console/chat and fully consume the SSE stream.
++
++    Draining to completion guarantees the background producer (which runs
++    ``stream_one``) has finished, so the ``updated_at`` touch is persisted.
++    """
++    body = {
++        "channel": "console",
++        "user_id": user_id,
++        "session_id": session_id,
++        "input": [
++            {
++                "role": "user",
++                "type": "message",
++                "content": [{"type": "text", "text": "hello"}],
++            },
++        ],
++    }
++    url = f"{app_server.base_url}/api/console/chat"
++    with app_server.client.stream(
++        "POST",
++        url,
++        json=body,
++        timeout=httpx.Timeout(20.0, read=20.0),
++    ) as resp:
++        assert resp.status_code == 200, app_server.logs_tail()
++        for _ in resp.iter_lines():
++            pass
++
++
++def _get_chat_updated_at(app_server, session_id: str, user_id: str):
++    """Return (updated_at, created_at) datetimes for the target chat."""
++    resp = app_server.api_request(
++        "GET",
++        "/api/chats",
++        params={"user_id": user_id},
++        timeout=_HTTP_TIMEOUT,
++    )
++    assert resp.status_code == 200, app_server.logs_tail()
++    matches = [c for c in resp.json() if c.get("session_id") == session_id]
++    assert matches, f"chat for session {session_id} not found: {resp.json()}"
++    spec = matches[0]
++    updated = datetime.fromisoformat(spec["updated_at"])
++    created = datetime.fromisoformat(spec["created_at"])
++    return updated, created
++
++
++@pytest.mark.integration
++@pytest.mark.p1
++def test_console_chat_second_message_advances_updated_at(
++    app_server,
++    mock_llm,  # pylint: disable=redefined-outer-name
++) -> None:
++    """A follow-up message must push ``updated_at`` forward (issue #6131).
++
++    API endpoints:
++    - POST /api/console/chat
++    - GET  /api/chats
++    """
++    _srv, mock_url = mock_llm
++    unregister_mock_provider(app_server, MOCK_LLM_PROVIDER_ID)
++    provider_id = register_mock_provider(app_server, mock_url)
++    user_id = "integ-updated-at-6131"
++    session_id = f"console:{user_id}"
++    try:
++        # First message creates the chat and processes a turn.
++        _drain_console_chat(app_server, session_id, user_id)
++        updated_1, created = _get_chat_updated_at(
++            app_server,
++            session_id,
++            user_id,
++        )
++        assert updated_1 >= created
++
++        # Ensure a measurable gap so the comparison is unambiguous.
++        time.sleep(1.2)
++
++        # Second message must refresh updated_at to a later timestamp.
++        _drain_console_chat(app_server, session_id, user_id)
++        updated_2, _ = _get_chat_updated_at(app_server, session_id, user_id)
++
++        assert updated_2 > updated_1, (
++            "updated_at did not advance after the second message: "
++            f"first={updated_1.isoformat()} second={updated_2.isoformat()}"
++        )
++    finally:
++        unregister_mock_provider(app_server, provider_id)

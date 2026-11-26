@@ -1,0 +1,6 @@
+opentelemetry-sdk/tests/trace/export/test_in_memory_span_exporter.py::TestInMemorySpanExporter::test_max_spans_limit
+opentelemetry-sdk/tests/trace/export/test_in_memory_span_exporter.py::TestInMemorySpanExporter::test_max_spans_none_is_unlimited
+opentelemetry-sdk/tests/trace/export/test_in_memory_span_exporter.py::TestInMemorySpanExporter::test_clear
+opentelemetry-sdk/tests/trace/export/test_in_memory_span_exporter.py::TestInMemorySpanExporter::test_get_finished_spans
+opentelemetry-sdk/tests/trace/export/test_in_memory_span_exporter.py::TestInMemorySpanExporter::test_return_code
+opentelemetry-sdk/tests/trace/export/test_in_memory_span_exporter.py::TestInMemorySpanExporter::test_shutdown

@@ -1,0 +1,3 @@
+test/grid/geometry/test_angles.py::test_equiangle_skewness
+test/grid/geometry/test_angles.py::test_face_node_angles_hexagons_and_pentagons
+test/grid/geometry/test_angles.py::test_face_node_angles_triangle

@@ -1,0 +1,25 @@
+diff --git a/tests/test_conf.py b/tests/test_conf.py
+index 23d3c93da..986313cb0 100644
+--- a/tests/test_conf.py
++++ b/tests/test_conf.py
+@@ -1,6 +1,20 @@
++from django.test import override_settings
++
+ from ninja.conf import settings
+ 
+ 
+ def test_default_configuration():
+     assert settings.PAGINATION_CLASS == "ninja.pagination.LimitOffsetPagination"
+     assert settings.PAGINATION_PER_PAGE == 100
++
++
++def test_override_settings_updates_ninja_settings():
++    assert settings.NUM_PROXIES is None
++    assert settings.PAGINATION_PER_PAGE == 100
++
++    with override_settings(NINJA_NUM_PROXIES=3, NINJA_PAGINATION_PER_PAGE=20):
++        assert settings.NUM_PROXIES == 3
++        assert settings.PAGINATION_PER_PAGE == 20
++
++    assert settings.NUM_PROXIES is None
++    assert settings.PAGINATION_PER_PAGE == 100

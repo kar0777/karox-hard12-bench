@@ -1,0 +1,278 @@
+diff --git a/test/dialects/clickhouse_test.py b/test/dialects/clickhouse_test.py
+new file mode 100644
+index 0000000000..b64188710c
+--- /dev/null
++++ b/test/dialects/clickhouse_test.py
+@@ -0,0 +1,22 @@
++"""Tests specific to the ClickHouse dialect."""
++
++from sqlfluff.core import Linter
++
++
++def test_group_by_modifiers_are_inside_indent() -> None:
++    """Keep ClickHouse GROUP BY modifiers inside the clause indentation."""
++    parsed = Linter(dialect="clickhouse").parse_string(
++        "SELECT a, count() FROM t GROUP BY a WITH TOTALS HAVING count() > 1;"
++    )
++
++    assert parsed.tree is not None
++    assert not parsed.violations
++    groupby = next(parsed.tree.recursive_crawl("groupby_clause"))
++    segment_types = [segment.type for segment in groupby.segments]
++    totals_index = next(
++        index
++        for index, segment in enumerate(groupby.segments)
++        if segment.raw_upper == "TOTALS"
++    )
++
++    assert segment_types.index("indent") < totals_index < segment_types.index("dedent")
+diff --git a/test/fixtures/dialects/clickhouse/select_group_by_modifiers.sql b/test/fixtures/dialects/clickhouse/select_group_by_modifiers.sql
+new file mode 100644
+index 0000000000..e6a2a2d23f
+--- /dev/null
++++ b/test/fixtures/dialects/clickhouse/select_group_by_modifiers.sql
+@@ -0,0 +1,14 @@
++-- ClickHouse GROUP BY modifiers: WITH ROLLUP / WITH CUBE / WITH TOTALS.
++-- https://clickhouse.com/docs/en/sql-reference/statements/select/group-by
++
++SELECT a, count() FROM t GROUP BY a WITH TOTALS;
++
++SELECT a, count() FROM t GROUP BY a WITH ROLLUP;
++
++SELECT a, count() FROM t GROUP BY a WITH CUBE;
++
++SELECT a, b, count() FROM t GROUP BY a, b WITH ROLLUP WITH TOTALS;
++
++SELECT a, b, count() FROM t GROUP BY a, b WITH CUBE WITH TOTALS;
++
++SELECT a, count() FROM t GROUP BY a WITH TOTALS HAVING count() > 1;
+diff --git a/test/fixtures/dialects/clickhouse/select_group_by_modifiers.yml b/test/fixtures/dialects/clickhouse/select_group_by_modifiers.yml
+new file mode 100644
+index 0000000000..828bcc412a
+--- /dev/null
++++ b/test/fixtures/dialects/clickhouse/select_group_by_modifiers.yml
+@@ -0,0 +1,224 @@
++# YML test files are auto-generated from SQL files and should not be edited by
++# hand. To help enforce this, the "hash" field in the file must match a hash
++# computed by SQLFluff when running the tests. Please run
++# `python test/generate_parse_fixture_yml.py`  to generate them after adding or
++# altering SQL files.
++_hash: 923e7be205a12b4f8bb0a5e2461fb5f1f5db26b6b9c3f5742beed5857ce4eecc
++file:
++- statement:
++    select_statement:
++      select_clause:
++      - keyword: SELECT
++      - select_clause_element:
++          column_reference:
++            naked_identifier: a
++      - comma: ','
++      - select_clause_element:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++      from_clause:
++        keyword: FROM
++        from_expression:
++          from_expression_element:
++            table_expression:
++              table_reference:
++                naked_identifier: t
++      groupby_clause:
++      - keyword: GROUP
++      - keyword: BY
++      - column_reference:
++          naked_identifier: a
++      - keyword: WITH
++      - keyword: TOTALS
++- statement_terminator: ;
++- statement:
++    select_statement:
++      select_clause:
++      - keyword: SELECT
++      - select_clause_element:
++          column_reference:
++            naked_identifier: a
++      - comma: ','
++      - select_clause_element:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++      from_clause:
++        keyword: FROM
++        from_expression:
++          from_expression_element:
++            table_expression:
++              table_reference:
++                naked_identifier: t
++      groupby_clause:
++      - keyword: GROUP
++      - keyword: BY
++      - column_reference:
++          naked_identifier: a
++      - keyword: WITH
++      - keyword: ROLLUP
++- statement_terminator: ;
++- statement:
++    select_statement:
++      select_clause:
++      - keyword: SELECT
++      - select_clause_element:
++          column_reference:
++            naked_identifier: a
++      - comma: ','
++      - select_clause_element:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++      from_clause:
++        keyword: FROM
++        from_expression:
++          from_expression_element:
++            table_expression:
++              table_reference:
++                naked_identifier: t
++      groupby_clause:
++      - keyword: GROUP
++      - keyword: BY
++      - column_reference:
++          naked_identifier: a
++      - keyword: WITH
++      - keyword: CUBE
++- statement_terminator: ;
++- statement:
++    select_statement:
++      select_clause:
++      - keyword: SELECT
++      - select_clause_element:
++          column_reference:
++            naked_identifier: a
++      - comma: ','
++      - select_clause_element:
++          column_reference:
++            naked_identifier: b
++      - comma: ','
++      - select_clause_element:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++      from_clause:
++        keyword: FROM
++        from_expression:
++          from_expression_element:
++            table_expression:
++              table_reference:
++                naked_identifier: t
++      groupby_clause:
++      - keyword: GROUP
++      - keyword: BY
++      - column_reference:
++          naked_identifier: a
++      - comma: ','
++      - column_reference:
++          naked_identifier: b
++      - keyword: WITH
++      - keyword: ROLLUP
++      - keyword: WITH
++      - keyword: TOTALS
++- statement_terminator: ;
++- statement:
++    select_statement:
++      select_clause:
++      - keyword: SELECT
++      - select_clause_element:
++          column_reference:
++            naked_identifier: a
++      - comma: ','
++      - select_clause_element:
++          column_reference:
++            naked_identifier: b
++      - comma: ','
++      - select_clause_element:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++      from_clause:
++        keyword: FROM
++        from_expression:
++          from_expression_element:
++            table_expression:
++              table_reference:
++                naked_identifier: t
++      groupby_clause:
++      - keyword: GROUP
++      - keyword: BY
++      - column_reference:
++          naked_identifier: a
++      - comma: ','
++      - column_reference:
++          naked_identifier: b
++      - keyword: WITH
++      - keyword: CUBE
++      - keyword: WITH
++      - keyword: TOTALS
++- statement_terminator: ;
++- statement:
++    select_statement:
++      select_clause:
++      - keyword: SELECT
++      - select_clause_element:
++          column_reference:
++            naked_identifier: a
++      - comma: ','
++      - select_clause_element:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++      from_clause:
++        keyword: FROM
++        from_expression:
++          from_expression_element:
++            table_expression:
++              table_reference:
++                naked_identifier: t
++      groupby_clause:
++      - keyword: GROUP
++      - keyword: BY
++      - column_reference:
++          naked_identifier: a
++      - keyword: WITH
++      - keyword: TOTALS
++      having_clause:
++        keyword: HAVING
++        expression:
++          function:
++            function_name:
++              function_name_identifier: count
++            function_contents:
++              bracketed:
++                start_bracket: (
++                end_bracket: )
++          comparison_operator:
++            raw_comparison_operator: '>'
++          numeric_literal: '1'
++- statement_terminator: ;

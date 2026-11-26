@@ -1,0 +1,7 @@
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_customMaterials
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_autoDepletable
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_compInitAmericiumCustomIso
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_compInitControlCustomIso
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_compInitIncompleteBurnChain
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_compInitThoriumBurnCustomIso
+armi/reactor/blueprints/tests/test_componentBlueprint.py::TestComponentBlueprint::test_compInitThoriumNoBurnCustomIso

@@ -1,0 +1,346 @@
+diff --git a/tests/conformance/ch09_nested_builtin_index.vera b/tests/conformance/ch09_nested_builtin_index.vera
+new file mode 100644
+index 000000000..e45f1f60c
+--- /dev/null
++++ b/tests/conformance/ch09_nested_builtin_index.vera
+@@ -0,0 +1,100 @@
++-- Conformance: directly indexing a NESTED type-variable-element builtin
++-- result (Chapter 9, Section 9.6.21)
++-- Tests: array_reverse, array_sort_by, array_flatten, map_values indexed
++--        directly at the outer call (no let binding), with the INNER call
++--        itself a type-variable-element builtin.
++--
++-- #1094: `array_reverse(array_reverse(x))[0]`,
++-- `array_sort_by(map_values(m), cmp)[0]`, `array_flatten(array_reverse(x))[0]`
++-- and friends check and verify, but codegen used to drop the enclosing
++-- function via [E602] because the outer builtin's element-type derivation
++-- resolved its argument through the shared consultor only, which cannot
++-- report a nested type-variable-element inner call.  The derivation now
++-- recurses through the same per-class resolver, so the element type is
++-- recovered and the direct-index spelling compiles and runs.
++--
++-- `main` calls every helper so a regression (a dropped helper) yields a
++-- dangling call and fails `vera run`, not just a silently skipped function.
++-- ================================================================
++-- reverse_of_reverse
++-- array_reverse(array_reverse(x))[0]: reverse twice is identity, so the
++-- head of the original array survives.
++-- ================================================================
++public fn reverse_of_reverse(-> @Int)
++  requires(true)
++  ensures(@Int.result == 10)
++  effects(pure)
++{
++  array_reverse(array_reverse([10, 20, 30]))[0]
++}
++
++-- ================================================================
++-- sort_by_of_reverse
++-- array_sort_by(array_reverse(x), asc)[0]: the inner array_reverse is a
++-- type-variable-element builtin; sorting ascending makes [0] the minimum.
++-- ================================================================
++public fn sort_by_of_reverse(-> @Int)
++  requires(true)
++  ensures(@Int.result == 10)
++  effects(pure)
++{
++  array_sort_by(array_reverse([30, 10, 20]), fn(@Int, @Int -> @Ordering) effects(pure) { if @Int.1 < @Int.0 then { Less } else { if @Int.1 > @Int.0 then { Greater } else { Equal } } })[0]
++}
++
++-- ================================================================
++-- reverse_of_map_values
++-- array_reverse(map_values(m))[0]: the inner map_values derives its element
++-- type from the Map<K, V> argument.  A single-entry map keeps the reversed
++-- head deterministic without depending on map iteration order.
++-- ================================================================
++public fn reverse_of_map_values(-> @Int)
++  requires(true)
++  ensures(@Int.result == 77)
++  effects(pure)
++{
++  let @Map<String, Int> = map_insert(map_new(), "k", 77);
++  array_reverse(map_values(@Map<String, Int>.0))[0]
++}
++
++-- ================================================================
++-- sort_by_of_map_values
++-- array_sort_by(map_values(m), asc)[0]: a three-entry map; sorting the
++-- values ascending is order-independent, so [0] is the minimum (10)
++-- regardless of map iteration order.
++-- ================================================================
++public fn sort_by_of_map_values(-> @Int)
++  requires(true)
++  ensures(@Int.result == 10)
++  effects(pure)
++{
++  let @Map<String, Int> = map_insert(map_insert(map_insert(map_new(), "a", 30), "b", 10), "c", 20);
++  array_sort_by(map_values(@Map<String, Int>.0), fn(@Int, @Int -> @Ordering) effects(pure) { if @Int.1 < @Int.0 then { Less } else { if @Int.1 > @Int.0 then { Greater } else { Equal } } })[0]
++}
++
++-- ================================================================
++-- flatten_of_reverse
++-- array_flatten(array_reverse(x))[0]: the flatten unwraps one Array<> layer
++-- off the reversed nested array.  reverse -> [[30, 40], [10, 20]];
++-- flatten -> [30, 40, 10, 20]; [0] = 30 (30, not 10, proves the reverse
++-- happened across the flatten boundary).
++-- ================================================================
++public fn flatten_of_reverse(-> @Int)
++  requires(true)
++  ensures(@Int.result == 30)
++  effects(pure)
++{
++  array_flatten(array_reverse([[10, 20], [30, 40]]))[0]
++}
++
++-- ================================================================
++-- main
++-- Aggregate every direct-nested-index form so the run exercises them all:
++-- 10 + 10 + 77 + 10 + 30 = 137.
++-- ================================================================
++public fn main(-> @Int)
++  requires(true)
++  ensures(@Int.result == 137)
++  effects(pure)
++{
++  reverse_of_reverse() + sort_by_of_reverse() + reverse_of_map_values() + sort_by_of_map_values() + flatten_of_reverse()
++}
+diff --git a/tests/conformance/manifest.json b/tests/conformance/manifest.json
+index a0b0e9cdc..c00dbb378 100644
+--- a/tests/conformance/manifest.json
++++ b/tests/conformance/manifest.json
+@@ -1677,6 +1677,20 @@
+       "array_sort_by"
+     ]
+   },
++  {
++    "id": "ch09_nested_builtin_index",
++    "file": "ch09_nested_builtin_index.vera",
++    "chapter": 9,
++    "title": "Direct index of a nested type-variable-element builtin (#1094)",
++    "level": "run",
++    "spec_ref": "Section 9.6.21",
++    "features": [
++      "array_reverse",
++      "array_sort_by",
++      "array_flatten",
++      "map_values"
++    ]
++  },
+   {
+     "id": "ch09_string_char_utilities",
+     "file": "ch09_string_char_utilities.vera",
+diff --git a/tests/test_codegen_arrays.py b/tests/test_codegen_arrays.py
+index 94bc08314..dcdb21a2f 100644
+--- a/tests/test_codegen_arrays.py
++++ b/tests/test_codegen_arrays.py
+@@ -657,6 +657,159 @@ def test_index_array_reverse_nested_chained(self) -> None:
+ """
+         assert _run(src, fn="g") == 31
+ 
++    # ---- #1094: a NESTED type-variable-element builtin as the inner call,
++    # the outer builtin's result indexed DIRECTLY (no let binding) ----------
++    # `array_reverse(array_reverse(x))[0]` etc.  The inner call is one of the
++    # eight type-variable-element builtins, so the shared consultor cannot
++    # report its return type; class 1's forwarding arm and array_flatten's
++    # unwrap arm now resolve a FnCall argument through
++    # `_builtin_call_ret_named_type` (consultor first, then this same
++    # per-class derivation), so the inner call's element type is recovered.
++    # The let-bound spelling of each already worked (call-emission path,
++    # #1053) and is pinned in TestNestedTypevarBuiltinArg.
++
++    def test_index_reverse_of_reverse_int(self) -> None:
++        """array_reverse(array_reverse([10, 20, 30]))[0] -> 10.  reverse twice
++        is identity, so [0] is the head of the original.  Inner array_reverse
++        is itself a type-variable-element builtin (arg0-forwarding), resolved
++        by recursing through `_builtin_call_ret_named_type`."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  array_reverse(array_reverse([10, 20, 30]))[0]
++}
++"""
++        assert _run(src, fn="g") == 10
++
++    def test_index_reverse_of_reverse_int_mid(self) -> None:
++        """... [2] -> 30 — a non-head index proves a real 3-element array is
++        materialised, not a constant-folded head."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  array_reverse(array_reverse([10, 20, 30]))[2]
++}
++"""
++        assert _run(src, fn="g") == 30
++
++    def test_index_reverse_of_reverse_string(self) -> None:
++        """Element-TYPE proof: String elements are (ptr, len) pairs, read back
++        via string_length.  reverse twice is identity; [0] = "a" (length 1).
++        If the derived element type were scalar-shaped the pair load would be
++        wrong, so the value 1 pins the String element type through the nested
++        resolution."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  string_length(array_reverse(array_reverse(["a", "bb", "ccc"]))[0])
++}
++"""
++        assert _run(src, fn="g") == 1
++
++    def test_index_sort_by_of_reverse_int(self) -> None:
++        """array_sort_by(array_reverse([30, 10, 20]), asc)[0] -> 10.  Outer is
++        class 1 (array_sort_by, arg0-forwarding); inner array_reverse is a
++        type-variable-element builtin.  Sorting makes the result independent of
++        the reverse, but the nested call must still resolve to compile."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  array_sort_by(array_reverse([30, 10, 20]), fn(@Int, @Int -> @Ordering) effects(pure) {
++    if @Int.1 < @Int.0 then { Less } else {
++      if @Int.1 > @Int.0 then { Greater } else { Equal }
++    }
++  })[0]
++}
++"""
++        assert _run(src, fn="g") == 10
++
++    def test_index_reverse_of_map_values_int(self) -> None:
++        """array_reverse(map_values(m))[0] -> 77.  The inner map_values is a
++        type-variable-element (container-arg-derived) builtin; the outer
++        array_reverse forwards its Array<Int> return.  Single-entry map keeps
++        the reversed value deterministic without relying on map order."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  let @Map<String, Int> = map_insert(map_new(), "k", 77);
++  array_reverse(map_values(@Map<String, Int>.0))[0]
++}
++"""
++        assert _run(src, fn="g") == 77
++
++    def test_index_sort_by_of_map_values_int(self) -> None:
++        """array_sort_by(map_values(m), asc)[0] -> 10 — the headline #1094 case.
++        Three-entry map {a:30, b:10, c:20}; sorting the values ascending is
++        order-independent, so [0] is deterministically the minimum (10)
++        regardless of map iteration order."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  let @Map<String, Int> = map_insert(map_insert(map_insert(map_new(), "a", 30), "b", 10), "c", 20);
++  array_sort_by(map_values(@Map<String, Int>.0), fn(@Int, @Int -> @Ordering) effects(pure) {
++    if @Int.1 < @Int.0 then { Less } else {
++      if @Int.1 > @Int.0 then { Greater } else { Equal }
++    }
++  })[0]
++}
++"""
++        assert _run(src, fn="g") == 10
++
++    def test_index_flatten_of_reverse_int(self) -> None:
++        """array_flatten(array_reverse([[10, 20], [30, 40]]))[0] -> 30.  The
++        array_flatten unwrap arm resolves its FnCall argument (inner
++        array_reverse) through the same recursion.  reverse -> [[30,40],
++        [10,20]]; flatten -> [30, 40, 10, 20]; [0] = 30 (30, not 10, proves the
++        reverse actually happened across the flatten boundary)."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  array_flatten(array_reverse([[10, 20], [30, 40]]))[0]
++}
++"""
++        assert _run(src, fn="g") == 30
++
++    def test_index_nested_typevar_inner_no_e602_drop(self) -> None:
++        """Structural: directly indexing a nested type-variable-element builtin
++        result must NOT drop the enclosing function via [E602].  Pins the
++        warning's absence so a regression (or the mutation-validation revert)
++        shows the loud skip returning."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  let @Map<String, Int> = map_insert(map_insert(map_new(), "a", 30), "b", 10);
++  array_sort_by(map_values(@Map<String, Int>.0), fn(@Int, @Int -> @Ordering) effects(pure) {
++    if @Int.1 < @Int.0 then { Less } else {
++      if @Int.1 > @Int.0 then { Greater } else { Equal }
++    }
++  })[0]
++}
++"""
++        result = _compile_ok(src)
++        assert "g" in result.exports, \
++            "nested type-var-element inner call, directly indexed, must compile"
++        assert not any(d.error_code == "E602" for d in result.diagnostics), \
++            "directly indexing a nested type-var builtin must not E602-drop"
++
++    def test_index_reverse_of_concat_pin(self) -> None:
++        """Pin: array_reverse's inner arg is a consultor-resolvable array_concat,
++        which resolved before #1094 too (via `_named_type_from_arg_info`).  Must
++        stay green — the fix routes FnCall args through
++        `_builtin_call_ret_named_type`, which tries the consultor first.
++        concat -> [10, 20, 30, 40]; reverse -> [40, 30, 20, 10]; [0] = 40."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  array_reverse(array_concat([10, 20], [30, 40]))[0]
++}
++"""
++        assert _run(src, fn="g") == 40
++
++    def test_index_map_over_map_values_pin(self) -> None:
++        """Pin: array_map(map_values(m), f)[0] resolves via class 3 (closure
++        return), which never reads arg0, so it worked before #1094.  Must stay
++        green.  map_values -> [5]; mapped |x| x + 100 -> [105]; [0] = 105."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  let @Map<String, Int> = map_insert(map_new(), "k", 5);
++  array_map(map_values(@Map<String, Int>.0), fn(@Int -> @Int) effects(pure) {
++    @Int.0 + 100
++  })[0]
++}
++"""
++        assert _run(src, fn="g") == 105
++
+     # ---- Class 2: container-arg-derived -----------------------------------
+ 
+     def test_index_map_keys_string(self) -> None:
+@@ -1096,6 +1249,18 @@ def test_reverse_of_reverse_typevar_pin(self) -> None:
+   let @Array<Int> = array_reverse(array_reverse([10, 20, 30]));
+   @Array<Int>.0[0]
+ }
++"""
++        assert _run(src, fn="g") == 10
++
++    def test_block_wrapped_nested_reverse_direct_index(self) -> None:
++        """A Block-wrapped nested builtin argument resolves via its tail
++        expression on both the emission-side element inference and the
++        index-side deep resolution (PR #1096 review).  reverse twice =
++        identity; [0] = 10."""
++        src = """
++public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
++  array_reverse({ array_reverse([10, 20]) })[0]
++}
+ """
+         assert _run(src, fn="g") == 10
+ 
+diff --git a/tests/test_verifier_adt_decreases.py b/tests/test_verifier_adt_decreases.py
+index be1d5d5c0..99bdc1a21 100644
+--- a/tests/test_verifier_adt_decreases.py
++++ b/tests/test_verifier_adt_decreases.py
+@@ -343,7 +343,7 @@ def test_list_ops_all_tier1(self) -> None:
+         assert result.summary.tier1_verified == 8
+ 
+     def test_overall_tier_counts(self) -> None:
+-        """All examples together: 290 T1 / 96 T3 / 386 total (current).
++        """All examples together: 298 T1 / 99 T3 / 397 total (current).
+ 
+         Counts move when examples are added or their contracts become
+         more / less verifiable.  Trajectory:
+@@ -569,9 +569,15 @@ def test_overall_tier_counts(self) -> None:
+         # 281/97/378 pre-#758).  The loop now resolves imports and threads
+         # CLI parity ends at 284/96/380; #379's Inference + JSON example adds
+         # six Tier-1 obligations, producing 290/96/386.
+-        assert t1 == 290, f"Expected 290 T1, got {t1}"
+-        assert t3 == 96, f"Expected 96 T3, got {t3}"
+-        assert total == 386, f"Expected 386 total, got {total}"
++        #
++        # #1094: examples/scoreboard.vera joins the corpus — build_board's
++        # `map_size(...) == 4` postcondition and the two callers' non-empty-map
++        # preconditions discharge statically (+8 T1) while the top_score /
++        # roster_size / summary bodies fall to runtime (+3 T3), +11 total:
++        # 290/96/386 -> 298/99/397.
++        assert t1 == 298, f"Expected 298 T1, got {t1}"
++        assert t3 == 99, f"Expected 99 T3, got {t3}"
++        assert total == 397, f"Expected 397 total, got {total}"
+         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
+ 
+ 

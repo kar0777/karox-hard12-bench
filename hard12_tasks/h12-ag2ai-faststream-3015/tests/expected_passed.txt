@@ -1,0 +1,17 @@
+tests/brokers/redis/test_config.py::test_stream_declare_without_group_warning
+tests/brokers/redis/test_config.py::test_broker_ack_policy
+tests/brokers/redis/test_config.py::test_broker_ack_policy_without_router
+tests/brokers/redis/test_config.py::test_channel_sub
+tests/brokers/redis/test_config.py::test_list_sub
+tests/brokers/redis/test_config.py::test_router_ack_policy
+tests/brokers/redis/test_config.py::test_router_overrides_broker
+tests/brokers/redis/test_config.py::test_stream_sub
+tests/brokers/redis/test_config.py::test_stream_sub_with_no_ack_group
+tests/brokers/redis/test_config.py::test_stream_with_group
+tests/brokers/redis/test_config.py::test_stream_with_group_and_min_idle_time
+tests/brokers/redis/test_config.py::test_sub_overrides_broker
+tests/brokers/redis/test_config.py::test_sub_overrides_broker_and_router
+tests/brokers/redis/test_config.py::test_sub_overrides_router
+tests/brokers/redis/test_consume.py::TestConsumeList::test_get_one_timeout
+tests/brokers/redis/test_consume.py::TestConsumeStream::test_consume_group
+tests/brokers/redis/test_consume.py::TestConsumeStream::test_consume_group_with_last_id

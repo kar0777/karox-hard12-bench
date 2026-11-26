@@ -1,0 +1,6 @@
+tests/commands/new/test_build_gui_context.py::test_pyside6_bootstrap
+tests/commands/new/test_build_gui_context.py::test_console_bootstrap
+tests/commands/new/test_build_gui_context.py::test_custom_bootstrap
+tests/commands/new/test_build_gui_context.py::test_no_bootstrap
+tests/commands/new/test_build_gui_context.py::test_pygame_bootstrap
+tests/commands/new/test_build_gui_context.py::test_toga_bootstrap

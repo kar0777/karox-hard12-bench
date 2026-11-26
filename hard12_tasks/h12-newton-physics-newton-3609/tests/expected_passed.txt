@@ -1,0 +1,4 @@
+.claude/skills/release-audit/scripts/test_cleanup_report.py::CleanupReportTest::test_rejects_nested_path
+.claude/skills/release-audit/scripts/test_cleanup_report.py::CleanupReportTest::test_rejects_symlink
+.claude/skills/release-audit/scripts/test_cleanup_report.py::CleanupReportTest::test_rejects_unexpected_filename
+.claude/skills/release-audit/scripts/test_cleanup_report.py::CleanupReportTest::test_removes_allowed_report

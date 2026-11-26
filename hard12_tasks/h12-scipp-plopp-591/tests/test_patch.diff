@@ -1,0 +1,41 @@
+diff --git a/tests/backends/matplotlib/mpl_line_test.py b/tests/backends/matplotlib/mpl_line_test.py
+index 3a838bf5..5f9e31e7 100644
+--- a/tests/backends/matplotlib/mpl_line_test.py
++++ b/tests/backends/matplotlib/mpl_line_test.py
+@@ -4,6 +4,7 @@
+ import numpy as np
+ import pytest
+ import scipp as sc
++from matplotlib.markers import MarkerStyle
+ 
+ from plopp.backends.matplotlib.canvas import Canvas
+ from plopp.backends.matplotlib.line import Line
+@@ -183,6 +184,14 @@ def test_kwarg_marker():
+     assert line._line.get_marker() == '+'
+ 
+ 
++def test_default_marker_is_visible_for_large_artist_number():
++    da = data_array(ndim=1)
++    canvas = Canvas()
++    for artist_number in range(50):
++        line = Line(canvas=canvas, data=da, artist_number=artist_number)
++        assert MarkerStyle(line.marker).is_filled()
++
++
+ @pytest.mark.parametrize("mode", ['band', 'bar', True])
+ def test_line_color_with_errorbars(mode):
+     from matplotlib.colors import to_hex
+diff --git a/tests/backends/matplotlib/mpl_plot_test.py b/tests/backends/matplotlib/mpl_plot_test.py
+index 398740f6..b753c184 100644
+--- a/tests/backends/matplotlib/mpl_plot_test.py
++++ b/tests/backends/matplotlib/mpl_plot_test.py
+@@ -202,3 +202,9 @@ def test_aspect_ratio():
+     da = data_array(ndim=2)
+     fig = da.plot(aspect='equal')
+     assert fig.canvas.ax.get_aspect() == 1.0
++
++
++def test_plot_many_lines():
++    da = data_array(ndim=1)
++    fig = pp.plot({str(i): da for i in range(50)})
++    assert len(fig.artists) == 50

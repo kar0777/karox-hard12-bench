@@ -1,0 +1,7 @@
+tests/qasm3/test_transformations.py::test_remove_idle_qubits_qasm3_shared_operand_nodes
+tests/qasm3/test_transformations.py::test_populate_idle_qubits_for_no_idle_qubits
+tests/qasm3/test_transformations.py::test_populate_idle_qubits_increases_depth_by_one
+tests/qasm3/test_transformations.py::test_populate_idle_qubits_qasm3
+tests/qasm3/test_transformations.py::test_remove_idle_qubits_qasm3
+tests/qasm3/test_transformations.py::test_remove_idle_qubits_qasm3_small
+tests/qasm3/test_transformations.py::test_reverse_qubit_order_qasm3

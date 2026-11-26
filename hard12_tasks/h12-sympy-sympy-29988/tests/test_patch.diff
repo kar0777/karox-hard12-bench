@@ -1,0 +1,46 @@
+diff --git a/sympy/integrals/tests/test_integrals.py b/sympy/integrals/tests/test_integrals.py
+index 5bbee2828704..7b8325093ee1 100644
+--- a/sympy/integrals/tests/test_integrals.py
++++ b/sympy/integrals/tests/test_integrals.py
+@@ -2237,6 +2237,18 @@ def test_issue_15566():
+ 
+     assert result.has(erf)
+ 
++
++@slow
++def test_issue_29910():
++    # integrate(x**2*exp(-x**2)*ln(x), x)
++    f = x**2*exp(-x**2)*log(x)
++    F = -x*hyper((Rational(1, 2), Rational(1, 2)), (Rational(3, 2), Rational(3, 2)), -x**2) \
++        * S.One/2 - x*exp(-x**2)*log(x) * S.One/2 + sqrt(pi)*log(x)*erf(x) * S.One/4 \
++        + sqrt(pi)*erf(x) * S.One/4
++
++    assert integrate(f, x) == F
++
++
+ def test_issue_29909():
+     f = x*exp(x)*erf(x)
+     F = x*exp(x)*erf(x) - exp(x)*erf(x) + exp(x)*exp(-x**2)/sqrt(pi) + exp(Rational(1, 4))*erf(x - Rational(1, 2))/2
+diff --git a/sympy/integrals/tests/test_manual.py b/sympy/integrals/tests/test_manual.py
+index 73fbfd072764..35891b335603 100644
+--- a/sympy/integrals/tests/test_manual.py
++++ b/sympy/integrals/tests/test_manual.py
+@@ -309,6 +309,18 @@ def test_manualintegrate_special():
+     assert_is_integral_of(f, F)
+ 
+ 
++def test_issue_29910():
++    f = x**2*exp(-x**2)
++    F = -x*exp(-x**2)/2 + sqrt(pi)*erf(x)/4
++    assert_is_integral_of(f, F)
++    f = x**2*sin(x**2)
++    F = -x*cos(x**2)/2 + sqrt(2)*sqrt(pi)*fresnelc(sqrt(2)*x/sqrt(pi))/4
++    assert_is_integral_of(f, F)
++    f = x**2*cos(x**2)
++    F = x*sin(x**2)/2 - sqrt(2)*sqrt(pi)*fresnels(sqrt(2)*x/sqrt(pi))/4
++    assert_is_integral_of(f, F)
++
++
+ @slow
+ def test_manualintegrate_special_slow():
+     f, F = exp(-x**2)*exp(x), Rational(1,2)*exp(Rational(1,4))*sqrt(pi)*erf(x - Rational(1,2))

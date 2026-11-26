@@ -1,0 +1,3 @@
+tests/test_version.py::test_resolve_version_falls_back_to_unknown
+tests/test_version.py::test_version_is_exposed
+tests/test_version.py::test_version_matches_installed_distribution

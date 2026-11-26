@@ -1,0 +1,78 @@
+diff --git a/tests/distributions/test_censored.py b/tests/distributions/test_censored.py
+index 0e064b296b..b306d7f6b8 100644
+--- a/tests/distributions/test_censored.py
++++ b/tests/distributions/test_censored.py
+@@ -128,6 +128,35 @@ def test_censored_categorical(self):
+             [0, 0, 0.3, 0.2, 0.5, 0, 0],
+         )
+ 
++    def test_censored_discrete_unbounded_side(self):
++        # An unbounded side must not upcast the censored variable to float
++        cat = pm.Categorical.dist([0.1, 0.2, 0.2, 0.3, 0.2], shape=())
++        eval_points = [-1, 0, 1, 2, 3, 4, 5]
++
++        # No censoring
++        censored_cat = pm.Censored.dist(cat, lower=None, upper=None, shape=())
++        assert censored_cat.dtype == "int64"
++        np.testing.assert_allclose(
++            logp(censored_cat, eval_points).exp().eval(),
++            [0, 0.1, 0.2, 0.2, 0.3, 0.2, 0],
++        )
++
++        # Left censoring
++        censored_cat = pm.Censored.dist(cat, lower=1, upper=None, shape=())
++        assert censored_cat.dtype == "int64"
++        np.testing.assert_allclose(
++            logp(censored_cat, eval_points).exp().eval(),
++            [0, 0, 0.3, 0.2, 0.3, 0.2, 0],
++        )
++
++        # Right censoring
++        censored_cat = pm.Censored.dist(cat, lower=None, upper=3, shape=())
++        assert censored_cat.dtype == "int64"
++        np.testing.assert_allclose(
++            logp(censored_cat, eval_points).exp().eval(),
++            [0, 0.1, 0.2, 0.2, 0.5, 0, 0],
++        )
++
+     def test_censored_logcdf_continuous(self):
+         norm = pm.Normal.dist(0, 1)
+         eval_points = np.array([-np.inf, -2, -1, 0, 1, 2, np.inf])
+diff --git a/tests/logprob/test_censoring.py b/tests/logprob/test_censoring.py
+index f50b01296b..3053896b01 100644
+--- a/tests/logprob/test_censoring.py
++++ b/tests/logprob/test_censoring.py
+@@ -113,6 +113,33 @@ def test_one_sided_clip():
+     np.testing.assert_almost_equal(logp_fn(1, -1), ref_scipy.logpdf(-1))
+ 
+ 
++@pytest.mark.parametrize("side", ("lower", "upper"))
++def test_one_sided_infinite_clip_discrete_base(side):
++    # Infinite bounds upcast the clip of a discrete variable to float,
++    # which must not prevent the logprob derivation
++    x_rv = pt.random.poisson(2)
++    cens_x_rv = pt.clip(x_rv, -np.inf, 4) if side == "upper" else pt.clip(x_rv, 1, np.inf)
++    assert cens_x_rv.dtype == "float64"
++
++    cens_x_vv = cens_x_rv.clone()
++    logprob = logp(cens_x_rv, cens_x_vv)
++    assert_no_rvs(logprob)
++
++    logp_fn = pytensor.function([cens_x_vv], logprob)
++    ref_scipy = st.poisson(2)
++
++    if side == "upper":
++        assert logp_fn(5) == -np.inf
++        np.testing.assert_allclose(logp_fn(0), ref_scipy.logpmf(0))
++        np.testing.assert_allclose(
++            logp_fn(4), np.logaddexp(ref_scipy.logsf(4), ref_scipy.logpmf(4))
++        )
++    else:
++        assert logp_fn(0) == -np.inf
++        np.testing.assert_allclose(logp_fn(1), ref_scipy.logcdf(1))
++        np.testing.assert_allclose(logp_fn(5), ref_scipy.logpmf(5))
++
++
+ def test_useless_clip():
+     x_rv = pt.random.normal(0.5, 1, size=3)
+     cens_x_rv = pt.clip(x_rv, x_rv, x_rv)

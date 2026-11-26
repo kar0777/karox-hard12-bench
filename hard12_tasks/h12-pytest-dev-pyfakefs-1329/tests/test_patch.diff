@@ -1,0 +1,219 @@
+diff --git a/pyfakefs/tests/fake_filesystem_shutil_test.py b/pyfakefs/tests/fake_filesystem_shutil_test.py
+index ec5864cb..6f3b4235 100644
+--- a/pyfakefs/tests/fake_filesystem_shutil_test.py
++++ b/pyfakefs/tests/fake_filesystem_shutil_test.py
+@@ -23,10 +23,11 @@
+ import sys
+ import tempfile
+ import unittest
++from os import stat_result
+ from pathlib import Path
+ 
+ from pyfakefs import fake_filesystem_unittest
+-from pyfakefs.helpers import get_uid, set_uid, is_root, IS_PYPY
++from pyfakefs.helpers import get_uid, set_uid, is_root, IS_PYPY, IS_WIN
+ from pyfakefs.tests.test_utils import RealFsTestMixin, skip_if_symlink_not_supported
+ 
+ is_windows = sys.platform == "win32"
+@@ -270,8 +271,7 @@ def test_copystat(self):
+         src_stat = os.stat(src_file)
+         dst_stat = os.stat(dst_file)
+         self.assertEqual(src_stat.st_mode, dst_stat.st_mode)
+-        self.assertAlmostEqual(src_stat.st_atime, dst_stat.st_atime, places=0)
+-        self.assertAlmostEqual(src_stat.st_mtime, dst_stat.st_mtime, places=2)
++        self.check_stat_times(dst_stat, src_stat)
+ 
+     @unittest.skipIf(IS_PYPY, "Functionality not supported in PyPy")
+     def test_copystat_symlinks(self):
+@@ -297,8 +297,7 @@ def test_copy2(self):
+         src_stat = os.stat(src_file)
+         dst_stat = os.stat(dst_file)
+         self.assertEqual(src_stat.st_mode, dst_stat.st_mode)
+-        self.assertAlmostEqual(src_stat.st_atime, dst_stat.st_atime, places=0)
+-        self.assertAlmostEqual(src_stat.st_mtime, dst_stat.st_mtime, places=2)
++        self.check_stat_times(dst_stat, src_stat)
+ 
+     def test_copy2_directory(self):
+         src_file = self.make_path("xyzzy")
+@@ -315,8 +314,14 @@ def test_copy2_directory(self):
+         src_stat = os.stat(src_file)
+         dst_stat = os.stat(dst_file)
+         self.assertEqual(src_stat.st_mode, dst_stat.st_mode)
+-        self.assertAlmostEqual(src_stat.st_atime, dst_stat.st_atime, places=0)
+-        self.assertAlmostEqual(src_stat.st_mtime, dst_stat.st_mtime, places=2)
++        self.check_stat_times(dst_stat, src_stat)
++
++    def check_stat_times(self, dst_stat: stat_result, src_stat: stat_result):
++        # these tests do not work in a specific pypy versions due to a pypy bug
++        # the bug is fixed in main, this check can be removed after the next release
++        if not IS_PYPY or not IS_WIN or sys.version_info < (3, 11, 15):
++            self.assertAlmostEqual(src_stat.st_atime, dst_stat.st_atime, places=0)
++            self.assertAlmostEqual(src_stat.st_mtime, dst_stat.st_mtime, places=2)
+ 
+     def test_copytree(self):
+         src_directory = self.make_path("xyzzy")
+diff --git a/pyfakefs/tests/fake_filesystem_test.py b/pyfakefs/tests/fake_filesystem_test.py
+index 266b7f85..97bcf5e1 100644
+--- a/pyfakefs/tests/fake_filesystem_test.py
++++ b/pyfakefs/tests/fake_filesystem_test.py
+@@ -38,7 +38,7 @@
+     reset_ids,
+     OSType,
+ )
+-from pyfakefs.helpers import IS_WIN
++from pyfakefs.helpers import IS_WIN, IS_PYPY
+ from pyfakefs.tests.test_utils import (
+     TestCase,
+     RealFsTestCase,
+@@ -2283,9 +2283,12 @@ def check_fake_file_stat(self, fake_file, real_file_path, target_path=None):
+         real_stat = os.stat(real_file_path)
+         self.assertIsNone(fake_file._byte_contents)
+         self.assertEqual(fake_file.st_size, real_stat.st_size)
+-        self.assertAlmostEqual(fake_file.st_ctime, real_stat.st_ctime, places=5)
+-        self.assertAlmostEqual(fake_file.st_atime, real_stat.st_atime, places=5)
+-        self.assertAlmostEqual(fake_file.st_mtime, real_stat.st_mtime, places=5)
++        # these tests do not work in a specific pypy versions due to a pypy bug
++        # the bug is fixed in main, this check can be removed after the next release
++        if not IS_PYPY or not IS_WIN or sys.version_info < (3, 11, 15):
++            self.assertAlmostEqual(fake_file.st_ctime, real_stat.st_ctime, places=5)
++            self.assertAlmostEqual(fake_file.st_atime, real_stat.st_atime, places=5)
++            self.assertAlmostEqual(fake_file.st_mtime, real_stat.st_mtime, places=5)
+         self.assertEqual(fake_file.st_uid, real_stat.st_uid)
+         self.assertEqual(fake_file.st_gid, real_stat.st_gid)
+ 
+diff --git a/pyfakefs/tests/fake_os_test.py b/pyfakefs/tests/fake_os_test.py
+index 01a49c8f..da50645a 100644
+--- a/pyfakefs/tests/fake_os_test.py
++++ b/pyfakefs/tests/fake_os_test.py
+@@ -645,31 +645,15 @@ def test_lexists_with_trailing_separator_macos(self):
+         self.check_macos_only()
+         file_path = self.make_path("foo")
+         self.os.symlink(file_path, file_path)
+-        self.assertTrue(self.os.path.lexists(file_path + self.os.sep))
++        self.assertFalse(self.os.path.lexists(file_path + self.os.sep))
+ 
+-    def test_islink_with_trailing_separator_linux_windows(self):
+-        self.check_linux_and_windows()
++    def test_islink_with_trailing_separator(self):
+         skip_if_symlink_not_supported()
+         file_path = self.make_path("foo")
+         self.os.symlink(file_path, file_path)
+         self.assertFalse(self.os.path.islink(file_path + self.os.sep))
+ 
+-    def test_islink_with_trailing_separator_macos(self):
+-        # regression test for #373
+-        self.check_macos_only()
+-        file_path = self.make_path("foo")
+-        self.os.symlink(file_path, file_path)
+-        self.assertTrue(self.os.path.islink(file_path + self.os.sep))
+-
+-    def test_isfile_with_trailing_separator_linux_windows(self):
+-        self.check_linux_and_windows()
+-        file_path = self.make_path("foo")
+-        self.create_file(file_path)
+-        self.assertFalse(self.os.path.isfile(file_path + self.os.sep))
+-
+-    def test_isfile_with_trailing_separator_macos(self):
+-        # regression test for #374
+-        self.check_macos_only()
++    def test_isfile_with_trailing_separator(self):
+         file_path = self.make_path("foo")
+         self.create_file(file_path)
+         self.assertFalse(self.os.path.isfile(file_path + self.os.sep))
+@@ -743,55 +727,36 @@ def test_readlink_raises_if_path_is_none(self):
+         with self.assertRaises(TypeError):
+             self.os.readlink(None)
+ 
+-    def test_broken_symlink_with_trailing_separator_linux(self):
+-        self.check_linux_only()
++    def check_broken_symlink_with_trailing_separator(self, subtype):
+         file_path = self.make_path("foo")
+         link_path = self.make_path("link")
+         self.os.symlink(file_path, link_path)
+-        self.assert_raises_os_error(
+-            errno.EEXIST,
+-            self.os.symlink,
+-            link_path + self.os.sep,
+-            link_path + self.os.sep,
+-        )
++        with self.raises_os_error(subtype):
++            self.os.symlink(link_path + self.os.sep, link_path + self.os.sep)
++
++    def test_broken_symlink_with_trailing_separator_linux(self):
++        self.check_linux_only()
++        self.check_broken_symlink_with_trailing_separator(errno.EEXIST)
+ 
+     def test_broken_symlink_with_trailing_separator_macos(self):
+         # regression test for #371
+         self.check_macos_only()
+-        file_path = self.make_path("foo")
+-        link_path = self.make_path("link")
+-        self.os.symlink(file_path, link_path)
+-        self.os.symlink(link_path + self.os.sep, link_path + self.os.sep)
++        self.check_broken_symlink_with_trailing_separator(errno.ENOENT)
+ 
+     def test_broken_symlink_with_trailing_separator_windows(self):
+         self.check_windows_only()
+         skip_if_symlink_not_supported()
+-        file_path = self.make_path("foo")
+-        link_path = self.make_path("link")
+-        self.os.symlink(file_path, link_path)
+-        self.assert_raises_os_error(
+-            errno.ENOTDIR,
+-            self.os.symlink,
+-            link_path + self.os.sep,
+-            link_path + self.os.sep,
+-        )
++        self.check_broken_symlink_with_trailing_separator(errno.ENOTDIR)
+ 
+-    def test_circular_readlink_with_trailing_separator_linux(self):
++    def test_circular_readlink_with_trailing_separator_posix(self):
+         # Regression test for #372
+-        self.check_linux_only()
++        self.check_posix_only()
+         file_path = self.make_path("foo")
+         self.os.symlink(file_path, file_path)
+         self.assert_raises_os_error(
+             errno.ELOOP, self.os.readlink, file_path + self.os.sep
+         )
+ 
+-    def test_circular_readlink_with_trailing_separator_macos(self):
+-        # Regression test for #372
+-        self.check_macos_only()
+-        file_path = self.make_path("foo")
+-        self.os.symlink(file_path, file_path)
+-        self.os.readlink(file_path + self.os.sep)
+-
+     def test_circular_readlink_with_trailing_separator_windows(self):
+         # Regression test for #372
+         self.check_windows_only()
+@@ -2676,13 +2641,15 @@ def test_readlink_circular_link_with_trailing_sep_linux(self):
+         self.assert_raises_os_error(errno.ELOOP, self.os.readlink, path0 + self.os.sep)
+ 
+     def test_readlink_circular_link_with_trailing_sep_macos(self):
+-        # Regression test for #392
++        # real behavior under macOS is inconsistent, exception is sometimes not raised
++        self.skip_real_fs()
+         self.check_macos_only()
+         path1 = self.make_path("foo")
+         path0 = self.make_path("bar")
+         self.os.symlink(path0, path1)
+         self.os.symlink(path1, path0)
+-        self.assertEqual(path0, self.os.readlink(path0 + self.os.sep))
++        with self.raises_os_error(errno.ELOOP):
++            self.os.readlink(path0 + self.os.sep)
+ 
+     def test_readlink_circular_link_with_trailing_sep_windows(self):
+         self.check_windows_only()
+@@ -2691,9 +2658,8 @@ def test_readlink_circular_link_with_trailing_sep_windows(self):
+         path0 = self.make_path("bar")
+         self.os.symlink(path0, path1)
+         self.os.symlink(path1, path0)
+-        self.assert_raises_os_error(
+-            errno.ENOTDIR, self.os.readlink, path0 + self.os.sep
+-        )
++        with self.raises_os_error(errno.ENOTDIR):
++            self.os.readlink(path0 + self.os.sep)
+ 
+     # hard link related tests
+     def test_link_bogus(self):

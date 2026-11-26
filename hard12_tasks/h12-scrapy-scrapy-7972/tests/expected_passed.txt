@@ -1,0 +1,11 @@
+tests/test_selector.py::TestSelector::test_flavor_detection_json_with_html_body
+tests/test_selector.py::TestJMESPath::test_html_has_json
+tests/test_selector.py::TestJMESPath::test_jmestpath_with_re
+tests/test_selector.py::TestSelector::test_badly_encoded_body
+tests/test_selector.py::TestSelector::test_flavor_detection
+tests/test_selector.py::TestSelector::test_flavor_detection_json
+tests/test_selector.py::TestSelector::test_flavor_detection_text
+tests/test_selector.py::TestSelector::test_http_header_encoding_precedence
+tests/test_selector.py::TestSelector::test_selector_bad_args
+tests/test_selector.py::TestSelector::test_simple_selection
+tests/test_selector.py::TestSelector::test_weakref_slots

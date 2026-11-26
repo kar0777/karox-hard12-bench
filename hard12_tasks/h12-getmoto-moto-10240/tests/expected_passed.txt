@@ -1,0 +1,6 @@
+tests/test_s3control/test_s3control_access_points.py::test_list_access_points_with_invalid_next_token
+tests/test_s3control/test_s3control_access_points.py::test_delete_access_point
+tests/test_s3control/test_s3control_access_points.py::test_get_access_point_full
+tests/test_s3control/test_s3control_access_points.py::test_get_access_point_minimal
+tests/test_s3control/test_s3control_access_points.py::test_get_unknown_access_point
+tests/test_s3control/test_s3control_access_points.py::test_list_access_points
