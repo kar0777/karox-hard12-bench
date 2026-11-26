@@ -1,0 +1,3 @@
+tests/test_language_precedence.py::test_settings_defaults_drop_language_default
+tests/test_language_precedence.py::test_boot_and_settings_panel_use_shared_locale_precedence
+tests/test_language_precedence.py::test_i18n_exposes_locale_resolvers

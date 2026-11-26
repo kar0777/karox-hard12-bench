@@ -1,0 +1,10 @@
+tests/test_lifecycle.py::test_warning_about_ignored_environment_variable[NICEGUI_HOST]
+tests/test_lifecycle.py::test_warning_about_ignored_environment_variable[NICEGUI_PORT]
+tests/test_lifecycle.py::test_warning_about_ignored_environment_variable[NICEGUI_PROTOCOL]
+tests/test_lifecycle.py::test_adding_elements_during_onconnect_on_auto_index_page
+tests/test_lifecycle.py::test_all_lifecycle_handlers_are_called
+tests/test_lifecycle.py::test_async_connect_handler
+tests/test_lifecycle.py::test_connect_disconnect_is_called_for_each_client
+tests/test_lifecycle.py::test_disconnect_without_client_id_in_connect_query
+tests/test_lifecycle.py::test_no_double_delete
+tests/test_lifecycle.py::test_startup_and_shutdown_handlers

@@ -1,0 +1,10 @@
+test/mitmproxy/addons/test_browser.py::test_browser_start_edge
+test/mitmproxy/addons/test_browser.py::test_browser_start_edge_not_found
+test/mitmproxy/addons/test_browser.py::test_browser
+test/mitmproxy/addons/test_browser.py::test_browser_start_firefox
+test/mitmproxy/addons/test_browser.py::test_browser_start_firefox_not_found
+test/mitmproxy/addons/test_browser.py::test_find_executable_cmd
+test/mitmproxy/addons/test_browser.py::test_find_executable_cmd_no_executable
+test/mitmproxy/addons/test_browser.py::test_find_flatpak_cmd
+test/mitmproxy/addons/test_browser.py::test_find_flatpak_cmd_no_flatpak
+test/mitmproxy/addons/test_browser.py::test_no_browser

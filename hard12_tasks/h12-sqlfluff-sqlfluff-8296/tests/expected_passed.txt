@@ -1,0 +1,6 @@
+test/rules/std_LT04_ST06_test.py::test_rules_std_LT04_and_ST06_interaction_trailing[SELECT
+test/rules/std_LT04_ST06_test.py::test_rule_st06_shorthand_casted_aggregates_are_complex[postgres]
+test/rules/std_LT04_ST06_test.py::test_rule_st06_shorthand_casted_aggregates_are_complex[redshift]
+test/rules/std_LT04_ST06_test.py::test_rule_st06_shorthand_casted_aggregates_are_complex[snowflake]
+test/rules/std_LT04_ST06_test.py::test_rule_st06_simple_expression_helpers_reject_non_simple_segments
+test/rules/std_LT04_ST06_test.py::test_rules_std_LT04_and_ST06_interaction_trailing[in_sql2-out_sql2]

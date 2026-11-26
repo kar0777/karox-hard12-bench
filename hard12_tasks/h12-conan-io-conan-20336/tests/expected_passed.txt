@@ -1,0 +1,10 @@
+test/integration/command/install/install_update_test.py::test_package_revision_timestamp_mismatch
+test/integration/command/install/install_update_test.py::TestUpdateOldPolicy::test_lockfile
+test/integration/command/install/install_update_test.py::TestUpdateOldPolicy::test_multi_remote_update_resolution
+test/integration/command/install/install_update_test.py::TestUpdateOldPolicy::test_multi_remote_update_resolution_2_remotes
+test/integration/command/install/install_update_test.py::test_install_update_repeated_tool_requires
+test/integration/command/install/install_update_test.py::test_reuse
+test/integration/command/install/install_update_test.py::test_update_binaries
+test/integration/command/install/install_update_test.py::test_update_binaries_failed
+test/integration/command/install/install_update_test.py::test_update_not_date
+test/integration/command/install/install_update_test.py::test_update_remote_not_latest_in_cache

@@ -1,0 +1,3 @@
+tests/runners/test_harness.py::TestClearOutObsoleteTestNames::test_obsolete_test_durations_are_dropped_and_persisted
+tests/runners/test_harness.py::TestClearOutObsoleteTestNames::test_obsolete_test_names_are_dropped_and_persisted
+tests/runners/test_harness.py::TestClearOutObsoleteTestNames::test_nothing_obsolete_leaves_stats_file_untouched

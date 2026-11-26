@@ -1,0 +1,13 @@
+tests/test_chart_extraction_tabledata.py::test_blank_cells_in_first_row[,2020,2021\nNorth,1,2\nSouth,3,4-header_texts0]
+tests/test_chart_extraction_tabledata.py::test_blank_first_column_cells_are_not_row_headers
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[1,2,3\n10,3,4-3-row_header_coords3]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[2020,2021,2022\n85,15,0\n10,60,30-3-row_header_coords2]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[2020,2021,2022\nNorth,12,13-3-row_header_coords6]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[Category,1,2,3\nInstitutional,85,15,0-4-row_header_coords1]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[Category,2020,2021\nNorth,85,15\nSouth,10,60-3-row_header_coords0]
+tests/test_chart_extraction_tabledata.py::test_text_in_data_columns_is_not_a_row_header
+tests/test_chart_extraction_tabledata.py::test_blank_cells_in_first_row[1,,3\n4,5,6\n7,8,9-header_texts1]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[1,2,3-0-row_header_coords5]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[1,2,3\n4,5,6-0-row_header_coords4]
+tests/test_chart_extraction_tabledata.py::test_chart_csv_table_header_classification[1,2.5,3\n4,5,6-0-row_header_coords7]
+tests/test_chart_extraction_tabledata.py::test_empty_chart_table_has_no_headers

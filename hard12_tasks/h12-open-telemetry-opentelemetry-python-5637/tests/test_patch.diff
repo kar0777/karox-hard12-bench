@@ -1,0 +1,143 @@
+diff --git a/opentelemetry-sdk/tests/metrics/test_aggregation.py b/opentelemetry-sdk/tests/metrics/test_aggregation.py
+index b85f022727d..2bdf17fe91f 100644
+--- a/opentelemetry-sdk/tests/metrics/test_aggregation.py
++++ b/opentelemetry-sdk/tests/metrics/test_aggregation.py
+@@ -210,7 +210,11 @@ def test_aggregate(self):
+         temporality
+         """
+ 
+-        last_value_aggregation = _LastValueAggregation(Mock(), _default_reservoir_factory(_LastValueAggregation))
++        last_value_aggregation = _LastValueAggregation(
++            Mock(),
++            _default_reservoir_factory(_LastValueAggregation),
++            instrument_is_synchronous=True,
++        )
+ 
+         last_value_aggregation.aggregate(measurement(1))
+         self.assertEqual(last_value_aggregation._value, 1)
+@@ -226,7 +230,11 @@ def test_collect(self):
+         `LastValueAggregation` collects number data points
+         """
+ 
+-        last_value_aggregation = _LastValueAggregation(Mock(), _default_reservoir_factory(_LastValueAggregation))
++        last_value_aggregation = _LastValueAggregation(
++            Mock(),
++            _default_reservoir_factory(_LastValueAggregation),
++            instrument_is_synchronous=True,
++        )
+ 
+         self.assertIsNone(last_value_aggregation.collect(AggregationTemporality.CUMULATIVE, 1))
+ 
+@@ -240,7 +248,7 @@ def test_collect(self):
+ 
+         self.assertIsNone(first_number_data_point.start_time_unix_nano)
+ 
+-        last_value_aggregation.aggregate(measurement(1))
++        last_value_aggregation.aggregate(measurement(2))
+ 
+         # CI fails the last assertion without this
+         sleep(0.1)
+@@ -249,7 +257,7 @@ def test_collect(self):
+         # collection process starts.
+         second_number_data_point = last_value_aggregation.collect(AggregationTemporality.CUMULATIVE, 2)
+ 
+-        self.assertEqual(second_number_data_point.value, 1)
++        self.assertEqual(second_number_data_point.value, 2)
+ 
+         self.assertIsNone(second_number_data_point.start_time_unix_nano)
+ 
+@@ -258,10 +266,44 @@ def test_collect(self):
+             first_number_data_point.time_unix_nano,
+         )
+ 
+-        # 3 is used here directly to simulate the instant the second
++        # 3 is used here directly to simulate the instant the third
+         # collection process starts.
+         third_number_data_point = last_value_aggregation.collect(AggregationTemporality.CUMULATIVE, 3)
+-        self.assertIsNone(third_number_data_point)
++        self.assertIsInstance(third_number_data_point, NumberDataPoint)
++        self.assertEqual(third_number_data_point.value, 2)
++        self.assertIsNone(third_number_data_point.start_time_unix_nano)
++        self.assertGreater(
++            third_number_data_point.time_unix_nano,
++            second_number_data_point.time_unix_nano,
++        )
++
++    def test_collect_delta_resets_value(self):
++        last_value_aggregation = _LastValueAggregation(
++            Mock(),
++            _default_reservoir_factory(_LastValueAggregation),
++            instrument_is_synchronous=True,
++        )
++
++        last_value_aggregation.aggregate(measurement(1))
++
++        number_data_point = last_value_aggregation.collect(AggregationTemporality.DELTA, 1)
++        self.assertEqual(number_data_point.value, 1)
++
++        self.assertIsNone(last_value_aggregation.collect(AggregationTemporality.DELTA, 2))
++
++    def test_collect_asynchronous_resets_value(self):
++        last_value_aggregation = _LastValueAggregation(
++            Mock(),
++            _default_reservoir_factory(_LastValueAggregation),
++            instrument_is_synchronous=False,
++        )
++
++        last_value_aggregation.aggregate(measurement(1))
++
++        number_data_point = last_value_aggregation.collect(AggregationTemporality.CUMULATIVE, 1)
++        self.assertEqual(number_data_point.value, 1)
++
++        self.assertIsNone(last_value_aggregation.collect(AggregationTemporality.CUMULATIVE, 2))
+ 
+ 
+ class TestExplicitBucketHistogramAggregation(TestCase):
+diff --git a/opentelemetry-sdk/tests/metrics/test_in_memory_metric_reader.py b/opentelemetry-sdk/tests/metrics/test_in_memory_metric_reader.py
+index d5ad7b161bf..486ab5fa282 100644
+--- a/opentelemetry-sdk/tests/metrics/test_in_memory_metric_reader.py
++++ b/opentelemetry-sdk/tests/metrics/test_in_memory_metric_reader.py
+@@ -142,3 +142,26 @@ def test_cumulative_multiple_collect(self):
+             number_data_point_1.time_unix_nano,
+             number_data_point_0.time_unix_nano,
+         )
++
++    def test_synchronous_gauge_cumulative_multiple_collect(self):
++        reader = InMemoryMetricReader()
++        meter = MeterProvider(metric_readers=[reader]).get_meter("test_meter")
++        gauge = meter.create_gauge("gauge1")
++        gauge.set(5, attributes={"key": "value"})
++
++        first_metrics_data = reader.get_metrics_data()
++        second_metrics_data = reader.get_metrics_data()
++
++        self.assertIsNotNone(second_metrics_data)
++
++        first_gauge_data = first_metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data
++        second_gauge_data = second_metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data
++
++        self.assertEqual(
++            [(point.attributes, point.value) for point in first_gauge_data.data_points],
++            [({"key": "value"}, 5)],
++        )
++        self.assertEqual(
++            [(point.attributes, point.value) for point in second_gauge_data.data_points],
++            [({"key": "value"}, 5)],
++        )
+diff --git a/opentelemetry-sdk/tests/metrics/test_metric_reader_storage.py b/opentelemetry-sdk/tests/metrics/test_metric_reader_storage.py
+index 281b39c4768..581e066216b 100644
+--- a/opentelemetry-sdk/tests/metrics/test_metric_reader_storage.py
++++ b/opentelemetry-sdk/tests/metrics/test_metric_reader_storage.py
+@@ -91,9 +91,9 @@ def test_creates_view_instrument_matches(self, MockViewInstrumentMatch: Mock):
+ 
+     @patch("opentelemetry.sdk.metrics._internal.metric_reader_storage._ViewInstrumentMatch")
+     def test_forwards_calls_to_view_instrument_match(self, MockViewInstrumentMatch: Mock):
+-        view_instrument_match1 = Mock(_aggregation=_LastValueAggregation({}, Mock()))
+-        view_instrument_match2 = Mock(_aggregation=_LastValueAggregation({}, Mock()))
+-        view_instrument_match3 = Mock(_aggregation=_LastValueAggregation({}, Mock()))
++        view_instrument_match1 = Mock(_aggregation=_LastValueAggregation({}, Mock(), instrument_is_synchronous=True))
++        view_instrument_match2 = Mock(_aggregation=_LastValueAggregation({}, Mock(), instrument_is_synchronous=True))
++        view_instrument_match3 = Mock(_aggregation=_LastValueAggregation({}, Mock(), instrument_is_synchronous=True))
+         MockViewInstrumentMatch.side_effect = [
+             view_instrument_match1,
+             view_instrument_match2,

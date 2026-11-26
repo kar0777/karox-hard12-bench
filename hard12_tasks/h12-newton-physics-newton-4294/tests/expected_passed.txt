@@ -1,0 +1,2 @@
+newton/tests/test_implicit_mpm_coupling_weights.py::TestImplicitMPMCouplingWeights::test_collider_contact_motion_and_moment_cpu
+newton/tests/test_implicit_mpm_coupling_weights.py::TestImplicitMPMCouplingWeights::test_proxy_feedback_preserves_contact_force_and_moment_cpu

@@ -1,0 +1,6 @@
+test/io/test_ugrid.py::test_connectivity_dims_renamed_to_ugrid
+test/io/test_ugrid.py::test_shared_source_dim_split_per_connectivity
+test/io/test_ugrid.py::test_encode_ugrid_copies_and_converts_bool_attr
+test/io/test_ugrid.py::test_read_ugrid
+test/io/test_ugrid.py::test_shared_source_dim_claimed_by_face_node_connectivity
+test/io/test_ugrid.py::test_to_xarray_ugrid

@@ -1,0 +1,9 @@
+tests/test_z3fdb_opener.py::test_build_mars_requests_daily_and_monthly_start
+tests/test_z3fdb_opener.py::test_build_mars_requests_hourly_partial_days
+tests/test_z3fdb_opener.py::test_build_mars_requests_years_and_dates_parsing
+tests/test_gsv.py::TestGsv::test_gsv_constructor_raise
+tests/test_gsv.py::TestGsv::test_gsv_constructor_raise_bridge
+tests/test_gsv.py::TestGsv::test_gsv_constructor_raise_bridge_path_not_exists
+tests/test_gsv.py::TestGsv::test_gsv_constructor_raise_path_not_exists
+tests/test_z3fdb_opener.py::test_z3fdb_healpix_unstructured_coordinate_checking
+tests/test_z3fdb_opener.py::test_z3fdb_lonlat_mismatch_aborts

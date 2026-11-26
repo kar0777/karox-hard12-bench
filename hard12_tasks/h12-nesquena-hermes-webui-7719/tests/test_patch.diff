@@ -1,0 +1,406 @@
+diff --git a/tests/test_anchor_scene_persistence.py b/tests/test_anchor_scene_persistence.py
+index fcd2a28f5cb..c6ff0055259 100644
+--- a/tests/test_anchor_scene_persistence.py
++++ b/tests/test_anchor_scene_persistence.py
+@@ -241,8 +241,18 @@ def test_anchor_scene_persistence_rejects_cross_profile_write(tmp_path, monkeypa
+         SimpleNamespace(command="POST"),
+         SimpleNamespace(path="/api/session/anchor-scene"),
+     ) is True
+-    assert captured.get("status") == 404
+-    assert "payload" not in captured  # success j() never called
++    # #7710: the generic request-guard now mirrors the detail-load
++    # endpoint's contract — a session owned by a KNOWN other profile
++    # yields 409 ``session_profile_mismatch`` so the client can offer
++    # to switch to it (#5419). The 404 self-heal path is preserved for
++    # the None-profile (unknown/legacy) case.
++    assert captured.get("status") == 409, captured
++    assert captured.get("payload") == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreignprofile1",
++        "profile": "profile-b",
++    }
+     raw = json.loads((session_dir / "foreignprofile1.json").read_text(encoding="utf-8"))
+     assert not raw.get("anchor_activity_scenes"), (
+         "cross-profile request must NOT persist anchor_activity_scenes"
+diff --git a/tests/test_issue4067_import_cli_cross_profile_guard.py b/tests/test_issue4067_import_cli_cross_profile_guard.py
+index 669604effa6..42274c325a2 100644
+--- a/tests/test_issue4067_import_cli_cross_profile_guard.py
++++ b/tests/test_issue4067_import_cli_cross_profile_guard.py
+@@ -41,7 +41,17 @@ def end_headers(self):
+ 
+ def _capture(monkeypatch):
+     cap = {}
+-    monkeypatch.setattr(routes, "j", lambda h, o: (cap.__setitem__("ok", o), True)[1])
++    # #7710: the real ``j`` signature is ``j(handler, payload, status=200,
++    # extra_headers=None, *, pretty=True)``; the mock has to accept the
++    # status keyword so the helper's 409 ``session_profile_mismatch``
++    # payload can be captured here. Capture the STATUS too — swallowing it
++    # into ``*_`` would let a wrong status (200/404) pass this test.
++    def _fake_j(h, o, status=200, *_, **__):
++        cap["ok"] = o
++        cap["ok_status"] = status
++        return True
++
++    monkeypatch.setattr(routes, "j", _fake_j)
+     monkeypatch.setattr(
+         routes,
+         "bad",
+@@ -72,7 +82,10 @@ def save(self, touch_updated_at=False):
+ 
+ def test_import_cli_existing_foreign_profile_unqualified_request_404(monkeypatch):
+     """Unqualified request (active profile=default) for a session stored under a
+-    foreign profile must 404 — not read or refresh the foreign session."""
++    foreign profile must yield 409 ``session_profile_mismatch`` (so the client
++    can offer to switch to it per #5419) — not 404, which would mask a
++    legitimate owned-by-other-profile session as missing and trigger a
++    destructive self-heal in the frontend (#7710)."""
+     foreign = _FakeSession("foreign_existing_001", "other")
+     monkeypatch.setattr(routes.Session, "load", staticmethod(lambda sid: foreign))
+     monkeypatch.setattr(routes, "_get_active_profile_name", lambda: "default")
+@@ -88,8 +101,14 @@ def test_import_cli_existing_foreign_profile_unqualified_request_404(monkeypatch
+         {"session_id": "foreign_existing_001"},
+     )
+ 
+-    assert "bad" in cap, f"expected 404, got {cap}"
+-    assert cap["bad"][1] == 404
++    assert "ok" in cap, f"expected 409 session_profile_mismatch, got {cap}"
++    assert cap["ok_status"] == 409, f"expected status 409, got {cap.get('ok_status')}"
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_existing_001",
++        "profile": "other",
++    }
+ 
+ 
+ def test_import_cli_existing_same_profile_still_refreshes(monkeypatch):
+diff --git a/tests/test_issue4812_session_sse_stream.py b/tests/test_issue4812_session_sse_stream.py
+index 27f9c771407..8746df737eb 100644
+--- a/tests/test_issue4812_session_sse_stream.py
++++ b/tests/test_issue4812_session_sse_stream.py
+@@ -507,7 +507,18 @@ def test_session_route_blocks_hidden_sessions_before_replay_or_live_attach(monke
+     handler = _FakeHandler()
+     routes.handle_get(handler, urlparse("/api/sessions/hidden_session/events"))
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: the generic request-guard now mirrors the detail-load
++    # endpoint's contract — a session owned by a KNOWN other profile
++    # yields 409 ``session_profile_mismatch`` so the client can offer
++    # to switch to it (#5419). The 404 self-heal path is preserved for
++    # the None-profile (unknown/legacy) case.
++    assert cap.get("status") == 409, cap
++    assert cap.get("ok") == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "hidden_session",
++        "profile": "other",
++    }
+ 
+ 
+ def test_session_route_live_delivery_skips_replayed_active_run_items(monkeypatch):
+diff --git a/tests/test_issue7710_cross_profile_404_to_409.py b/tests/test_issue7710_cross_profile_404_to_409.py
+new file mode 100644
+index 00000000000..73fbc4921b4
+--- /dev/null
++++ b/tests/test_issue7710_cross_profile_404_to_409.py
+@@ -0,0 +1,176 @@
++"""Regression tests for issue #7710 — cross-profile session guards return 409 + ``session_profile_mismatch`` instead of masking a known-other-profile session as 404.
++
++The detail-load endpoint (and the foreign-session synthesizer) already
++distinguish "session owned by a KNOWN other profile" (return ``409
++session_profile_mismatch``) from "session missing/legacy with no
++profile stamped" (return ``404 Session not found`` so the frontend
++self-heal clears the stale URL).
++
++The generic request-guard
++``_session_id_visible_to_request_profile`` (used by
++``_guard_request_session_visibility``) flattened both cases to a
++``404 Session not found``, so any cross-profile POST/PATCH/DELETE
++(archive, rename, pin, delete, …) failed with a misleading "Session
++not found" instead of the actionable 409 the detail endpoint emits.
++The fix mirrors the detail endpoint's contract in the generic guard.
++"""
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++REPO_ROOT = Path(__file__).resolve().parents[1]
++
++
++def _read_helper_body() -> str:
++    """Extract ``_session_id_visible_to_request_profile`` as importable text."""
++    import textwrap
++    src = (REPO_ROOT / "api" / "routes.py").read_text(encoding="utf-8")
++    start = src.index("def _session_id_visible_to_request_profile(")
++    end_marker = "def _stream_id_owner_session_id"
++    end = src.index(end_marker, start)
++    return textwrap.dedent(src[start:end])
++
++
++def _exec_helper(scope: dict) -> None:
++    """Execute the helper body inside ``scope``."""
++    body = _read_helper_body()
++    exec(body, scope)
++
++
++# ---------------------------------------------------------------------------
++# Profile-mismatch path: known other profile → 409 + session_profile_mismatch
++# ---------------------------------------------------------------------------
++
++
++class _FakeSession:
++    def __init__(self, profile: str | None) -> None:
++        self.profile = profile
++
++
++class _FakeHandler:
++    """Minimal stand-in for the routes handler the helper writes through."""
++
++    def __init__(self) -> None:
++        self.writes: list[tuple[int, dict | str | None]] = []
++
++
++@pytest.fixture
++def helper_scope():
++    """Build an exec scope with the helper's dependencies stubbed.
++
++    ``get_session`` is the only thing the helper actually calls into
++    (besides the visibility predicate which is itself inlined). The
++    visibility predicate is monkey-patched per-test so we can drive both
++    the "match" and "mismatch" branches deterministically.
++    """
++    scope: dict = {
++        # j / bad — the helper writes through these. Record instead of
++        # emit so the test can assert status + body.
++        "j": lambda handler, payload, status=200, **_: handler.writes.append((status, payload)),
++        "bad": lambda handler, msg, status=400: handler.writes.append((status, msg)),
++        # get_session is required so the helper can resolve the row.
++        "get_session": lambda sid, metadata_only=True: scope["_resolve"](sid),
++        # is_safe_session_id — accept anything that looks like a sid.
++        "is_safe_session_id": lambda sid: bool(sid) and len(str(sid)) < 256,
++    }
++    return scope
++
++
++def test_profile_mismatch_returns_409_with_code_and_profile(helper_scope) -> None:
++    """A session owned by a known other profile MUST yield 409 ``session_profile_mismatch``."""
++    handler = _FakeHandler()
++    helper_scope["_resolve"] = lambda sid: _FakeSession(profile="alpha")
++    # Visibility predicate: returns False (profile mismatch).
++    helper_scope["_session_visible_to_active_profile"] = lambda session_profile, _h: False
++
++    _exec_helper(helper_scope)
++    fn = helper_scope["_session_id_visible_to_request_profile"]
++    assert fn(handler, "sess-1") is False
++    assert len(handler.writes) == 1, handler.writes
++    status, body = handler.writes[0]
++    assert status == 409, body
++    assert body["code"] == "session_profile_mismatch"
++    assert body["session_id"] == "sess-1"
++    assert body["profile"] == "alpha"
++    assert "different profile" in body["error"].lower()
++
++
++def test_unknown_profile_returns_404_for_frontend_self_heal(helper_scope) -> None:
++    """A session with ``profile=None`` MUST keep 404 so the frontend's self-heal fires."""
++    handler = _FakeHandler()
++    helper_scope["_resolve"] = lambda sid: _FakeSession(profile=None)
++    helper_scope["_session_visible_to_active_profile"] = lambda session_profile, _h: False
++
++    _exec_helper(helper_scope)
++    fn = helper_scope["_session_id_visible_to_request_profile"]
++    assert fn(handler, "sess-1") is False
++    assert len(handler.writes) == 1, handler.writes
++    status, msg = handler.writes[0]
++    assert status == 404
++    assert msg == "Session not found"
++
++
++def test_visible_session_returns_no_error(helper_scope) -> None:
++    """A session owned by the active profile MUST pass the guard silently."""
++    handler = _FakeHandler()
++    helper_scope["_resolve"] = lambda sid: _FakeSession(profile="default")
++    helper_scope["_session_visible_to_active_profile"] = lambda session_profile, _h: True
++
++    _exec_helper(helper_scope)
++    fn = helper_scope["_session_id_visible_to_request_profile"]
++    assert fn(handler, "sess-1") is True
++    assert handler.writes == []
++
++
++def test_missing_session_returns_no_error(helper_scope) -> None:
++    """A session id that get_session cannot resolve MUST pass the guard silently (the route will 404 later)."""
++    handler = _FakeHandler()
++    helper_scope["_resolve"] = lambda sid: (_ for _ in ()).throw(KeyError(sid))
++
++    _exec_helper(helper_scope)
++    fn = helper_scope["_session_id_visible_to_request_profile"]
++    assert fn(handler, "sess-1") is True
++    assert handler.writes == []
++
++
++def test_emit_error_false_suppresses_response(helper_scope) -> None:
++    """``emit_error=False`` MUST return False without writing any response (used by the guard's exemption probe)."""
++    handler = _FakeHandler()
++    helper_scope["_resolve"] = lambda sid: _FakeSession(profile="alpha")
++    helper_scope["_session_visible_to_active_profile"] = lambda session_profile, _h: False
++
++    _exec_helper(helper_scope)
++    fn = helper_scope["_session_id_visible_to_request_profile"]
++    assert fn(handler, "sess-1", emit_error=False) is False
++    assert handler.writes == []
++
++
++# ---------------------------------------------------------------------------
++# Source-shape: the synthesised 409 payload MUST keep the four contract
++# fields and the status code, in the helper. A silent reversion to the
++# original single-line ``bad(..., 404)`` fails the suite.
++# ---------------------------------------------------------------------------
++
++
++def test_source_emits_409_not_404_in_helper() -> None:
++    """The helper body MUST contain a 409 ``session_profile_mismatch`` branch.
++
++    Catches a future regression that folds the two cases back together
++    (or drops the 409 status code in favour of 404). The 404 case is
++    still preserved for the None-profile self-heal path, but only as a
++    fall-through inside the same block — not as the sole outcome.
++    """
++    body = _read_helper_body()
++    assert "status=409" in body, (
++        "the helper no longer emits 409 for a known-other-profile session"
++    )
++    assert "session_profile_mismatch" in body, (
++        "the helper no longer carries the ``session_profile_mismatch`` code"
++    )
++    assert "Session not found" in body, (
++        "the None-profile 404 self-heal path was dropped — "
++        "keep the 404 for the None-profile branch so the frontend "
++        "self-heal still fires for actually-missing sids"
++    )
+diff --git a/tests/test_session_active_profile_authorization.py b/tests/test_session_active_profile_authorization.py
+index 83d13d42375..833e2f11ea0 100644
+--- a/tests/test_session_active_profile_authorization.py
++++ b/tests/test_session_active_profile_authorization.py
+@@ -108,7 +108,17 @@ def test_session_duplicate_foreign_profile_session_blocked_by_visibility_guard(m
+     cap = _capture(monkeypatch)
+     routes.handle_post(handler, urlparse("/api/session/duplicate"))
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: the generic request-guard mirrors the detail-load endpoint's
++    # contract — a session owned by a KNOWN other profile yields
++    # 409 ``session_profile_mismatch`` so the client can offer to
++    # switch to it (#5419). The 404 self-heal path is preserved for
++    # the None-profile (unknown/legacy) case.
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_duplicate",
++        "profile": "other",
++    }
+ 
+ 
+ def test_session_duplicate_same_profile_still_duplicates(monkeypatch):
+@@ -151,7 +161,13 @@ def test_file_read_foreign_profile_session_returns_404_before_file_ops(monkeypat
+ 
+     routes.handle_get(handler, urlparse("/api/file?session_id=foreign_file&path=notes.txt"))
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: see line 111 above — same generic-guard contract.
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_file",
++        "profile": "other",
++    }
+ 
+ 
+ def test_chat_start_foreign_persisted_session_returns_404_before_start_run(monkeypatch):
+@@ -171,7 +187,13 @@ def test_chat_start_foreign_persisted_session_returns_404_before_start_run(monke
+     cap = _capture(monkeypatch)
+     routes.handle_post(handler, urlparse("/api/chat/start"))
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: see line 111 above — same generic-guard contract.
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "chat_foreign",
++        "profile": "other",
++    }
+ 
+ 
+ def test_chat_start_body_profile_cannot_retag_visible_empty_session_without_active_profile(monkeypatch):
+@@ -287,7 +309,13 @@ def test_chat_stream_status_blocks_foreign_active_stream(monkeypatch):
+             config.ACTIVE_RUNS.clear()
+             config.ACTIVE_RUNS.update(previous)
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: see line 111 above — same generic-guard contract.
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_session",
++        "profile": "other",
++    }
+ 
+ 
+ def test_chat_stream_status_blocks_foreign_registered_stream_before_worker_start(monkeypatch):
+@@ -328,7 +356,15 @@ def test_chat_stream_status_blocks_foreign_registered_stream_before_worker_start
+             config.STREAM_SESSION_OWNERS.clear()
+             config.STREAM_SESSION_OWNERS.update(previous_owners)
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: see line 111 above — same generic-guard contract.
++    # The helper resolves the stream to its OWNER session id (not the
++    # stream id), so the mismatch payload carries the owner session id.
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_session",
++        "profile": "other",
++    }
+ 
+ 
+ def test_chat_stream_status_keeps_same_profile_stream_visible(monkeypatch):
+@@ -392,7 +428,17 @@ def test_chat_cancel_blocks_foreign_owned_stream_before_cancel_call(monkeypatch)
+             config.ACTIVE_RUNS.update(previous)
+ 
+     assert calls["cancel"] == 0
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: see line 111 above — same generic-guard contract.
++    # The helper resolves the stream to its OWNER session id (not the
++    # stream id), so the mismatch payload carries the owner session id.
++    # This test's stream is owned by ``foreign_session`` (see the
++    # ACTIVE_RUNS fixture above).
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_session",
++        "profile": "other",
++    }
+ 
+ 
+ def test_chat_cancel_same_profile_stream_still_passes_through(monkeypatch):
+@@ -443,7 +489,17 @@ def test_chat_stream_blocks_foreign_owned_dead_stream_before_replay(monkeypatch)
+     cap = _capture(monkeypatch)
+     routes.handle_get(handler, urlparse("/api/chat/stream?stream_id=stream-dead-foreign"))
+ 
+-    assert cap["bad"] == ("Session not found", 404)
++    # #7710: see line 111 above — same generic-guard contract.
++    # The helper resolves the stream to its OWNER session id (not the
++    # stream id), so the mismatch payload carries the owner session id.
++    # This test's stream is owned by ``foreign_session`` (see the
++    # ``find_run_summary`` mock above).
++    assert cap["ok"] == {
++        "error": "Session belongs to a different profile",
++        "code": "session_profile_mismatch",
++        "session_id": "foreign_session",
++        "profile": "other",
++    }
+ 
+ 
+ def test_chat_stream_allows_unknown_dead_stream_fallback_replay_path(monkeypatch):

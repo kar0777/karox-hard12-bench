@@ -1,0 +1,6 @@
+tests/test_lazy_imports.py::test_esm_modules_registered_on_import
+tests/test_lazy_imports.py::test_all_names_resolve
+tests/test_lazy_imports.py::test_dir_returns_expected_names
+tests/test_lazy_imports.py::test_lazy_imports_match_all
+tests/test_lazy_imports.py::test_module_access_does_not_import_others
+tests/test_lazy_imports.py::test_nonexistent_attribute_raises

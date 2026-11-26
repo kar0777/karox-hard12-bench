@@ -1,0 +1,9 @@
+tests/qasm3/test_end.py::test_end_in_both_runtime_branches_terminates_program
+tests/qasm3/test_end.py::test_end_propagates_from_box
+tests/qasm3/test_end.py::test_end_propagates_from_inlined_subroutine
+tests/qasm3/test_end.py::test_end_propagates_from_static_control_flow[for
+tests/qasm3/test_end.py::test_end_propagates_from_static_control_flow[if
+tests/qasm3/test_end.py::test_end_propagates_from_static_control_flow[int
+tests/qasm3/test_end.py::test_end_stops_global_unrolling_and_bookkeeping
+tests/qasm3/test_end.py::test_end_stops_while_loop_and_program
+tests/qasm3/test_end.py::test_runtime_conditional_end_remains_conditional

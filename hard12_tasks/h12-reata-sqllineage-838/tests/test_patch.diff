@@ -1,0 +1,189 @@
+diff --git a/tests/sql/column/test_column_select_from_cte.py b/tests/sql/column/test_column_select_from_cte.py
+index 22d5d28a..3bdebabf 100644
+--- a/tests/sql/column/test_column_select_from_cte.py
++++ b/tests/sql/column/test_column_select_from_cte.py
+@@ -159,3 +159,128 @@ def test_select_column_from_cte_and_table_with_to_resolved_column_referenced_mul
+             (ColumnQualifierTuple("col1", "tab2"), ColumnQualifierTuple("b", "tab1")),
+         ],
+     )
++
++
++def test_select_wildcard_from_cte():
++    sql = """WITH cte1 AS (SELECT col1, col2 FROM tab2)
++INSERT INTO tab1
++SELECT * FROM cte1"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col2", "tab1"),
++            ),
++        ],
++    )
++
++
++def test_select_qualified_wildcard_from_cte_with_alias():
++    sql = """WITH cte1 AS (SELECT col1, col2 FROM tab2)
++INSERT INTO tab1
++SELECT c.* FROM cte1 AS c"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col2", "tab1"),
++            ),
++        ],
++    )
++
++
++def test_select_column_and_wildcard_from_cte():
++    sql = """WITH cte1 AS (SELECT col1, col2 FROM tab2)
++INSERT INTO tab1
++SELECT col1 AS renamed, * FROM cte1"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("renamed", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col2", "tab1"),
++            ),
++        ],
++    )
++
++
++def test_select_wildcard_from_union_of_ctes():
++    sql = """WITH cte1 AS (SELECT col1 FROM tab2),
++cte2 AS (SELECT col1 FROM tab3)
++INSERT INTO tab1
++SELECT * FROM cte1
++UNION ALL
++SELECT * FROM cte2"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col1", "tab3"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++        ],
++    )
++
++
++def test_select_wildcard_from_cte_selecting_wildcard_from_previous_cte():
++    sql = """WITH cte1 AS (SELECT col1, col2 FROM tab2),
++cte2 AS (SELECT * FROM cte1)
++INSERT INTO tab1
++SELECT * FROM cte2"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col2", "tab1"),
++            ),
++        ],
++        test_sqlparse=False,
++    )
++
++
++def test_create_table_as_select_wildcard_from_cte():
++    sql = """CREATE TABLE tab1 AS (
++    WITH cte1 AS (SELECT col1, col2 FROM tab2)
++    SELECT * FROM cte1
++)"""
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("col1", "tab2"),
++                ColumnQualifierTuple("col1", "tab1"),
++            ),
++            (
++                ColumnQualifierTuple("col2", "tab2"),
++                ColumnQualifierTuple("col2", "tab1"),
++            ),
++        ],
++        test_sqlparse=False,
++    )
+diff --git a/tests/sql/column/test_column_select_from_subquery.py b/tests/sql/column/test_column_select_from_subquery.py
+index e583e3b4..dd3809b2 100644
+--- a/tests/sql/column/test_column_select_from_subquery.py
++++ b/tests/sql/column/test_column_select_from_subquery.py
+@@ -144,3 +144,13 @@ def test_select_column_in_subquery_quoted_alias_case_sensitive():
+         sql,
+         [(ColumnQualifierTuple("col1", "tab2"), ColumnQualifierTuple("col1", "tab1"))],
+     )
++
++
++def test_nested_subquery_with_partial_wildcard_expansion():
++    sql = """INSERT INTO tab1
++SELECT *
++FROM (SELECT col1, * FROM (SELECT * FROM tab2) t2) t3"""
++    assert_column_lineage_equal(
++        sql,
++        [(ColumnQualifierTuple("*", "tab2"), ColumnQualifierTuple("*", "tab1"))],
++    )
+diff --git a/tests/sql/column/test_metadata_wildcard.py b/tests/sql/column/test_metadata_wildcard.py
+index 29b77da7..a1553993 100644
+--- a/tests/sql/column/test_metadata_wildcard.py
++++ b/tests/sql/column/test_metadata_wildcard.py
+@@ -445,6 +445,33 @@ def test_wildcard_reference_from_previous_statements(provider: MetaDataProvider)
+     )
+ 
+ 
++def test_select_wildcard_from_cte_selecting_table_wildcard(provider: MetaDataProvider):
++    sql = """with cte as (
++        select * from marts.dim_credit_card
++    )
++    insert into temp.creditcard_snapshot
++    select * from cte
++    """
++    assert_column_lineage_equal(
++        sql,
++        [
++            (
++                ColumnQualifierTuple("creditcard_key", "marts.dim_credit_card"),
++                ColumnQualifierTuple("creditcard_key", "temp.creditcard_snapshot"),
++            ),
++            (
++                ColumnQualifierTuple("creditcardid", "marts.dim_credit_card"),
++                ColumnQualifierTuple("creditcardid", "temp.creditcard_snapshot"),
++            ),
++            (
++                ColumnQualifierTuple("cardtype", "marts.dim_credit_card"),
++                ColumnQualifierTuple("cardtype", "temp.creditcard_snapshot"),
++            ),
++        ],
++        metadata_provider=provider,
++    )
++
++
+ # The following tests use locally-defined schema instead of the global conftest fixture because they require tables
+ # with identical or structurally-paired column layouts (union compatibility, partition exclusion) that don't exist in
+ # the shared dimensional model schema
