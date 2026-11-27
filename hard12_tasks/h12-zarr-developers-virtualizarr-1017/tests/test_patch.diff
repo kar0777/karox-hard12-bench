@@ -1,0 +1,164 @@
+diff --git a/virtualizarr/tests/test_manifests/test_store.py b/virtualizarr/tests/test_manifests/test_store.py
+index c7167c1ef..a37e24561 100644
+--- a/virtualizarr/tests/test_manifests/test_store.py
++++ b/virtualizarr/tests/test_manifests/test_store.py
+@@ -2,6 +2,7 @@
+ 
+ import json
+ import pickle
++import warnings
+ from typing import TYPE_CHECKING
+ 
+ import numpy as np
+@@ -515,3 +516,50 @@ def test_single_group_to_dataset(
+             # check dims info is not duplicated in two places
+             assert var.data.metadata.dimension_names is None
+             assert var.attrs == {}
++
++    def _store_with_oversized_chunk(self, manifest_array, store):
++        # a (non-coordinate) variable whose chunk is larger than its shape, e.g.
++        # as produced for a variable along an unlimited dimension - see issue #803
++        oversized = manifest_array(
++            shape=(5,), chunks=(512,), dimension_names=["x"], codecs=None
++        )
++        # populate the backing store so the variable can actually be loaded
++        for path in {v["path"] for v in oversized.manifest.values()}:
++            obs.put(
++                store,
++                path.split("/")[-1],
++                np.ones(oversized.chunks, dtype=oversized.dtype).tobytes(),
++            )
++        registry = ObjectStoreRegistry({"file://": store})
++        manifest_group = ManifestGroup(arrays={"data": oversized}, attributes={})
++        return ManifestStore(manifest_group, registry=registry)
++
++    def test_warns_about_oversized_virtual_chunks(self, manifest_array):
++        manifest_store = self._store_with_oversized_chunk(manifest_array, MemoryStore())
++
++        with pytest.warns(UserWarning, match="loadable_variables") as record:
++            manifest_store.to_virtual_dataset(loadable_variables=[])
++        # the warning must name the offending variable
++        assert any("data" in str(w.message) for w in record)
++
++    def test_no_warning_when_oversized_chunk_is_loaded(self, manifest_array):
++        manifest_store = self._store_with_oversized_chunk(manifest_array, MemoryStore())
++
++        # loading the variable resolves the issue, so no warning is emitted
++        with warnings.catch_warnings(record=True) as record:
++            warnings.simplefilter("always")
++            manifest_store.to_virtual_dataset(loadable_variables=["data"])
++        assert not [w for w in record if "loadable_variables" in str(w.message)]
++
++    def test_no_warning_for_regular_chunks(self, manifest_array):
++        registry = ObjectStoreRegistry({"file://": MemoryStore()})
++        regular = manifest_array(
++            shape=(5,), chunks=(5,), dimension_names=["x"], codecs=None
++        )
++        manifest_group = ManifestGroup(arrays={"data": regular}, attributes={})
++        manifest_store = ManifestStore(manifest_group, registry=registry)
++
++        with warnings.catch_warnings(record=True) as record:
++            warnings.simplefilter("always")
++            manifest_store.to_virtual_dataset(loadable_variables=[])
++        assert not [w for w in record if "loadable_variables" in str(w.message)]
+diff --git a/virtualizarr/tests/test_parsers/conftest.py b/virtualizarr/tests/test_parsers/conftest.py
+index d1fe22efa..ae77a510e 100644
+--- a/virtualizarr/tests/test_parsers/conftest.py
++++ b/virtualizarr/tests/test_parsers/conftest.py
+@@ -53,6 +53,38 @@ def fill_value_scalar_no_chunks_nc4_url(tmpdir):
+     return f"file://{filepath}"
+ 
+ 
++@pytest.fixture
++def unlimited_dimension_netcdf4_url(tmpdir):
++    # a coordinate variable along an unlimited dimension - HDF5 reports a chunk
++    # shape sized for the (unlimited) maxshape rather than the actual extent
++    filepath = f"{tmpdir}/unlimited_dimension.nc"
++    f = Dataset(filepath, "w")
++    f.createDimension("time", None)
++    var_time = f.createVariable("time", "i8", ("time",))
++    var_time[:5] = 10
++    f.close()
++    return f"file://{filepath}"
++
++
++@pytest.fixture
++def unlimited_dimension_compressed_hdf5_url(tmpdir):
++    # an oversized chunk along an unlimited dim that is compressed cannot be
++    # safely trimmed to the array shape (its bytes are not a contiguous prefix)
++    filepath = f"{tmpdir}/unlimited_dimension_compressed.nc"
++    f = h5py.File(filepath, "w")
++    d = f.create_dataset(
++        "data",
++        shape=(5,),
++        maxshape=(None,),
++        chunks=(512,),
++        dtype="i8",
++        compression="gzip",
++    )
++    d[:] = 10
++    f.close()
++    return f"file://{filepath}"
++
++
+ @pytest.fixture
+ def chunked_hdf5_url(tmpdir):
+     filepath = f"{tmpdir}/chunks.nc"
+diff --git a/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py b/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py
+index 9c7442c40..d89565e5b 100644
+--- a/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py
++++ b/virtualizarr/tests/test_parsers/test_hdf/test_hdf.py
+@@ -1,3 +1,5 @@
++import warnings
++
+ import h5py  # type: ignore
+ import numpy as np
+ import pytest
+@@ -78,6 +80,47 @@ def test_not_chunked_dataset(self, single_dimension_scale_hdf5_url):
+         manifest_store = manifest_store_from_hdf_url(single_dimension_scale_hdf5_url)
+         assert manifest_store._group.arrays["data"].chunks == (2,)
+ 
++    def test_unlimited_dimension_chunks(self, unlimited_dimension_netcdf4_url):
++        # see https://github.com/zarr-developers/VirtualiZarr/issues/803
++        # HDF5 reports chunks=(512,) for an unlimited dim holding only 5 values;
++        # the reported chunk shape is trimmed to the actual array shape
++        manifest_store = manifest_store_from_hdf_url(unlimited_dimension_netcdf4_url)
++        time = manifest_store._group.arrays["time"]
++        assert time.shape == (5,)
++        assert time.chunks == (5,)
++        # the trimmed manifest must still read back the written values
++        result = zarr.open(manifest_store, mode="r")["time"][:]
++        np.testing.assert_array_equal(result, np.full(5, 10, dtype="i8"))
++
++    def test_unlimited_dimension_compressed_chunks_not_trimmed(
++        self, unlimited_dimension_compressed_hdf5_url
++    ):
++        # a compressed oversized chunk cannot be byte-trimmed to the array shape,
++        # so the parser leaves it as-is (reading still works by cropping); the
++        # user is warned later, at to_virtual_dataset time, to load the variable
++        manifest_store = manifest_store_from_hdf_url(
++            unlimited_dimension_compressed_hdf5_url
++        )
++        data = manifest_store._group.arrays["data"]
++        assert data.shape == (5,)
++        assert data.chunks == (512,)
++
++    def test_unlimited_dimension_compressed_chunks_warn_unless_loaded(
++        self, unlimited_dimension_compressed_hdf5_url
++    ):
++        manifest_store = manifest_store_from_hdf_url(
++            unlimited_dimension_compressed_hdf5_url
++        )
++        # left virtual, the oversized chunk warns and points at loadable_variables
++        with pytest.warns(UserWarning, match="loadable_variables"):
++            manifest_store.to_virtual_dataset()
++        # loading the variable silences the warning and reads back correctly
++        with warnings.catch_warnings(record=True) as record:
++            warnings.simplefilter("always")
++            vds = manifest_store.to_virtual_dataset(loadable_variables=["data"])
++        assert not [w for w in record if "loadable_variables" in str(w.message)]
++        np.testing.assert_array_equal(vds["data"].values, np.full(5, 10, dtype="i8"))
++
+     def test_dataset_attributes(self, string_attributes_hdf5_url):
+         manifest_store = manifest_store_from_hdf_url(string_attributes_hdf5_url)
+         metadata = manifest_store._group.arrays["data"].metadata

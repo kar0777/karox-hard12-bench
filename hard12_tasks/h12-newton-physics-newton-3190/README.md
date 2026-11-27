@@ -1,0 +1,13 @@
+# HARD12 task `h12-newton-physics-newton-3190`
+
+| item | value |
+|---|---|
+| source | https://github.com/newton-physics/newton/pull/3190 |
+| issue | #3094 (created 2026-06-08) |
+| PR created / merged | 2026-06-16 / 2026-06-24 |
+| base | `d4a98997e643575f6f7e4c2db9bdf9036cc2e609` |
+| image base | `swerebench/sweb.eval.x86_64.newton-physics_1776_newton-1653:latest` |
+| F2P / P2P | 2 / 11 |
+| test files | newton/tests/test_recorder.py |
+
+Fresh task: the fix post-dates the DeepSeek-V4.1-Flash-1017 checkpoint; agents have no internet during the agent phase (allowlist = docker bridge only).

@@ -1,0 +1,2 @@
+tests/test_protobuf_serializer.py::TestProtobufFrameSerializer::test_interruption_frame_roundtrip
+tests/test_protobuf_serializer.py::TestProtobufFrameSerializer::test_roundtrip

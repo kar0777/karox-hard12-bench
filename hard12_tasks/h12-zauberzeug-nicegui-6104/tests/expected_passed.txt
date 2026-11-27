@@ -1,0 +1,16 @@
+tests/test_input.py::test_validation_with_lagging_value_change_events
+tests/test_input.py::test_autocompletion
+tests/test_input.py::test_clearable_input
+tests/test_input.py::test_input
+tests/test_input.py::test_input_validation[async]
+tests/test_input.py::test_input_validation[dict]
+tests/test_input.py::test_input_validation[sync]
+tests/test_input.py::test_input_with_multi_word_error_message
+tests/test_input.py::test_password
+tests/test_input.py::test_prefix_and_suffix
+tests/test_input.py::test_setting_error_without_validation
+tests/test_input.py::test_setting_value_via_props_overrides_user_input
+tests/test_input.py::test_switching_focus
+tests/test_input.py::test_toggle_button
+tests/test_input.py::test_update_input
+tests/test_input.py::test_validate_after_removing_error_prop

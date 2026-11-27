@@ -1,0 +1,48 @@
+diff --git a/tests/test_feedexport.py b/tests/test_feedexport.py
+index d7ea60cc845..7d751f188ab 100644
+--- a/tests/test_feedexport.py
++++ b/tests/test_feedexport.py
+@@ -746,7 +746,7 @@ async def test_export_based_on_item_classes(self):
+         ]
+ 
+         formats = {
+-            "csv": b"baz,egg,foo\r\n,spam1,bar1\r\n",
++            "csv": b"foo,egg,baz\r\nbar1,spam1,\r\n",
+             "json": b'[\n{"hello": "world2", "foo": "bar2"}\n]',
+             "jsonlines": (
+                 b'{"foo": "bar1", "egg": "spam1"}\n{"hello": "world2", "foo": "bar2"}\n'
+diff --git a/tests/test_item.py b/tests/test_item.py
+index 34b054e12ad..7b4c2e918b7 100644
+--- a/tests/test_item.py
++++ b/tests/test_item.py
+@@ -142,6 +142,30 @@ class TestItem(Item):
+         self.assertSortedEqual(list(item.keys()), ["new"])
+         self.assertSortedEqual(list(item.values()), ["New"])
+ 
++    def test_fields_order(self):
++        class TestItem(Item):
++            name = Field()
++            keys = Field()
++            values = Field()
++
++        assert list(TestItem.fields) == ["name", "keys", "values"]
++
++    def test_fields_order_inheritance(self):
++        class ParentItem(Item):
++            name = Field()
++            keys = Field()
++            values = Field()
++
++        class TestItem(ParentItem):
++            extra = Field()
++            keys = Field(serializer=str)
++
++        # Inherited fields come first, in their definition order, followed by
++        # the fields newly defined in the subclass. A redefined field keeps the
++        # position of its first definition while taking the new metadata.
++        assert list(TestItem.fields) == ["name", "keys", "values", "extra"]
++        assert TestItem.fields["keys"] == {"serializer": str}
++
+     def test_metaclass_inheritance(self):
+         class ParentItem(Item):
+             name = Field()

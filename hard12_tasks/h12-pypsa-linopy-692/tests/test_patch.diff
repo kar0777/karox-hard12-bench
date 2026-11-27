@@ -1,0 +1,573 @@
+diff --git a/test/test_piecewise_constraints.py b/test/test_piecewise_constraints.py
+index 3c91a88e7..c44af394b 100644
+--- a/test/test_piecewise_constraints.py
++++ b/test/test_piecewise_constraints.py
+@@ -41,7 +41,11 @@
+     SEGMENT_DIM,
+ )
+ from linopy.piecewise import _slopes_to_points
+-from linopy.solver_capabilities import SolverFeature, get_available_solvers_with_feature
++from linopy.solver_capabilities import (
++    SolverFeature,
++    get_available_solvers_with_feature,
++    solver_supports,
++)
+ 
+ if TYPE_CHECKING:
+     from linopy.piecewise import BreaksLike, _PwlInputs
+@@ -52,6 +56,13 @@
+ _sos2_solvers = get_available_solvers_with_feature(
+     SolverFeature.SOS_CONSTRAINTS, available_solvers
+ )
++_sos2_direct_solvers = sorted(
++    s for s in _sos2_solvers if solver_supports(s, SolverFeature.DIRECT_API)
++)
++_SOS_PATHS = [
++    *[pytest.param(s, "direct", id=f"{s}-direct") for s in _sos2_direct_solvers],
++    *[pytest.param(s, "lp", id=f"{s}-lp") for s in sorted(_sos2_solvers)],
++]
+ _any_solvers = [
+     s for s in ["highs", "gurobi", "glpk", "cplex"] if s in available_solvers
+ ]
+@@ -2313,23 +2324,37 @@ def test_lp_per_entity_nan_padding(
+         Per-entity NaN-padded breakpoints with method='lp': padded
+         segments must be masked out so they don't create spurious
+         ``y ≤ 0`` constraints (bug-2 regression).
+-
+-        ``method='sos2'`` would emit a masked SOS lambda variable, which the
+-        native SOS path doesn't yet support (#688) — exercised separately in
+-        :py:meth:`test_sos2_per_entity_nan_padding_errors`.
+         """
+         m = nan_padded_pwl_model("lp")
+         m.solve()
+         # f_b(10) on chord (5,10)→(15,15) is 12.5
+         assert abs(float(m.solution.sel({"entity": "b"})["y"]) - 12.5) < 1e-3
+ 
+-    def test_sos2_per_entity_nan_padding_errors(
+-        self, nan_padded_pwl_model: Callable[[Method], Model]
++    @pytest.mark.skipif(not _SOS_PATHS, reason="No SOS-capable solver installed")
++    @pytest.mark.parametrize(("solver", "io_api"), _SOS_PATHS)
++    def test_sos2_per_entity_nan_padding(
++        self,
++        nan_padded_pwl_model: Callable[[Method], Model],
++        solver: str,
++        io_api: str,
+     ) -> None:
+-        """Masked SOS lambdas hit the #688 guard at solve time."""
++        """
++        Per-entity NaN-padded breakpoints with method='sos2': the SOS
++        lambda variable's masked entries must flow through both the
++        direct API (via label→position resolution) and the LP writer
++        (via masked-member filtering) so the solve returns the same
++        answer as ``method='lp'``. Regression for #688.
++
++        Parametrized across every SOS-capable solver × io_api so the
++        bug surfaces no matter which backend handles the SOS section
++        (gurobi-lp masked the bug on master by silently dropping
++        unknown ``x-1`` members; cplex-lp and gurobi-direct surfaced
++        it as a parse / OOB error).
++        """
+         m = nan_padded_pwl_model("sos2")
+-        with pytest.raises(NotImplementedError, match="masked"):
+-            m.solve()
++        m.solve(solver_name=solver, io_api=io_api)
++        # f_b(10) on chord (5,10)→(15,15) is 12.5 — same oracle as lp variant
++        assert abs(float(m.solution.sel({"entity": "b"})["y"]) - 12.5) < 1e-3
+ 
+     def test_lp_rejects_decreasing_x_concave_ge(self) -> None:
+         """
+diff --git a/test/test_sos_constraints.py b/test/test_sos_constraints.py
+index a9529dc01..8160d5242 100644
+--- a/test/test_sos_constraints.py
++++ b/test/test_sos_constraints.py
+@@ -8,19 +8,6 @@
+ import xarray as xr
+ 
+ from linopy import Model, available_solvers
+-from linopy.solver_capabilities import (
+-    SolverFeature,
+-    get_available_solvers_with_feature,
+-    solver_supports,
+-)
+-
+-_direct_sos_solvers = [
+-    s
+-    for s in get_available_solvers_with_feature(
+-        SolverFeature.SOS_CONSTRAINTS, available_solvers
+-    )
+-    if solver_supports(s, SolverFeature.DIRECT_API)
+-]
+ 
+ 
+ def test_add_sos_constraints_registers_variable() -> None:
+@@ -209,66 +196,6 @@ def test_qp_sos1_xpress_direct() -> None:
+     assert np.isclose(m.objective.value, -25)
+ 
+ 
+-@pytest.fixture
+-def masked_sos_model() -> Model:
+-    """Tiny model with a single masked SOS1 variable."""
+-    m = Model()
+-    coords = pd.Index([0, 1, 2, 3], name="i")
+-    mask = pd.Series([True, True, False, True], index=coords)
+-    var = m.add_variables(lower=0, upper=1, coords=[coords], mask=mask, name="sos_var")
+-    m.add_sos_constraints(var, sos_type=1, sos_dim="i")
+-    m.add_objective(-var.sum())
+-    return m
+-
+-
+-@pytest.mark.parametrize("solver_name", _direct_sos_solvers)
+-def test_direct_api_raises_on_masked_sos(
+-    solver_name: str, masked_sos_model: Model
+-) -> None:
+-    with pytest.raises(NotImplementedError, match="masked"):
+-        masked_sos_model.solve(solver_name=solver_name, io_api="direct")
+-
+-
+-def test_lp_writer_raises_on_masked_sos(
+-    masked_sos_model: Model, tmp_path: Path
+-) -> None:
+-    with pytest.raises(NotImplementedError, match="masked"):
+-        masked_sos_model.to_file(tmp_path / "sos.lp", io_api="lp")
+-
+-
+-@pytest.mark.parametrize(
+-    "solver_name",
+-    [
+-        pytest.param(
+-            "gurobi",
+-            marks=pytest.mark.skipif(
+-                "gurobi" not in available_solvers, reason="Gurobi not installed"
+-            ),
+-        ),
+-        pytest.param(
+-            "highs",
+-            marks=pytest.mark.skipif(
+-                "highs" not in available_solvers, reason="HiGHS not installed"
+-            ),
+-        ),
+-    ],
+-)
+-def test_reformulate_sos_true_solves_masked_sos(
+-    solver_name: str, masked_sos_model: Model
+-) -> None:
+-    """The documented workaround for the masked-SOS bug actually solves."""
+-    masked_sos_model.solve(solver_name=solver_name, reformulate_sos=True)
+-    sol = masked_sos_model.variables["sos_var"].solution.values
+-    # SOS1 over 3 unmasked entries, max sum, each in [0, 1]:
+-    # one entry == 1, others == 0, masked stays NaN.
+-    assert masked_sos_model.objective.value is not None
+-    assert np.isclose(masked_sos_model.objective.value, -1.0)
+-    assert np.isnan(sol[2])
+-    nonzero = np.flatnonzero(~np.isnan(sol) & (sol > 1e-6))
+-    assert len(nonzero) == 1
+-    assert np.isclose(sol[nonzero[0]], 1.0)
+-
+-
+ @pytest.mark.skipif("gurobi" not in available_solvers, reason="Gurobi not installed")
+ def test_reformulate_sos_true_reformulates_on_native_solver(tmp_path: Path) -> None:
+     """
+diff --git a/test/test_sos_masked.py b/test/test_sos_masked.py
+new file mode 100644
+index 000000000..46906ba14
+--- /dev/null
++++ b/test/test_sos_masked.py
+@@ -0,0 +1,338 @@
++"""
++Regression coverage for SOS constraints on masked variables (#688).
++
++The bug being pinned here has two related failure modes:
++
++1. **Position-vs-label**: direct-API builds (gurobi, xpress) pass linopy variable
++   labels straight to vendor ``addSOS`` as if they were 0-based column positions
++   in the active-variable array. They only happen to coincide when no variable
++   in the model is masked anywhere.
++
++2. **LP file emits ``x-1``**: the LP writer iterates raw label arrays and emits
++   names like ``x-1`` for masked SOS entries, which LP parsers either reject
++   outright or (gurobi LP reader) silently corrupt into wrong SOS sets.
++
++The fixture asymmetric-coefficient design plus three-layer oracle (status,
++objective, element-wise solution) ensures any wrong indexing surfaces as a
++visible failure rather than a permutation-equivalent silent pass.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Callable
++from pathlib import Path
++from typing import Literal
++
++import numpy as np
++import pandas as pd
++import pytest
++import xarray as xr
++
++from linopy import Model, available_solvers
++from linopy.solver_capabilities import SolverFeature, solver_supports
++
++# ---------------------------------------------------------------------------
++# Capability-derived solver / io_api parametrization
++# ---------------------------------------------------------------------------
++
++SOS_DIRECT = sorted(
++    s
++    for s in available_solvers
++    if solver_supports(s, SolverFeature.SOS_CONSTRAINTS)
++    and solver_supports(s, SolverFeature.DIRECT_API)
++)
++SOS_FILE = sorted(
++    s for s in available_solvers if solver_supports(s, SolverFeature.SOS_CONSTRAINTS)
++)
++SOS_PATHS = [
++    *[pytest.param(s, "direct", id=f"{s}-direct") for s in SOS_DIRECT],
++    *[pytest.param(s, "lp", id=f"{s}-lp") for s in SOS_FILE],
++]
++
++# ---------------------------------------------------------------------------
++# Analytical optimum (matches solver semantics: list-position adjacency for SOS2)
++# ---------------------------------------------------------------------------
++
++
++def _optimize_sos_set(
++    active_i: list[int], coefs: dict[int, float], sos_type: int
++) -> tuple[float, dict[int, float]]:
++    """
++    Closed-form optimum for one SOS set with binary [0,1] members.
++
++    ``active_i`` is the sorted list of active (unmasked) member indices in the
++    SOS dimension. ``coefs`` maps each active index to its objective coefficient
++    (minimization). For SOS2, adjacency is list-position adjacency, matching the
++    semantics of gurobi/xpress ``addSOS``.
++    """
++    if not active_i:
++        return 0.0, {}
++
++    best_obj = 0.0
++    best_sol: dict[int, float] = {}
++
++    # singletons
++    for i in active_i:
++        if coefs[i] < best_obj:
++            best_obj = coefs[i]
++            best_sol = {i: 1.0}
++
++    if sos_type == 2:
++        # adjacent pairs in the (sorted-by-weight) list
++        for k in range(len(active_i) - 1):
++            i1, i2 = active_i[k], active_i[k + 1]
++            pair_obj = coefs[i1] + coefs[i2]
++            if pair_obj < best_obj:
++                best_obj = pair_obj
++                best_sol = {i1: 1.0, i2: 1.0}
++
++    return best_obj, best_sol
++
++
++# ---------------------------------------------------------------------------
++# Fixture
++# ---------------------------------------------------------------------------
++
++MaskOnSos = Literal[None, "sos_dim", "non_sos_dim", "both_dims"]
++
++
++@pytest.fixture
++def sos_masked_model() -> Callable[..., tuple[Model, float, np.ndarray]]:  # noqa: E501
++    """
++    Factory producing SOS{1,2} models with controllable mask placement.
++
++    Objective coefficients along the SOS dim are ``[-1, -2, -3, -4]``,
++    asymmetric to break permutation symmetry — wrong indexing then produces an
++    observably different objective AND solution.
++
++    Returns ``(model, expected_obj, expected_sol)``. ``expected_sol`` is shaped
++    like ``sos_var.solution`` (with ``NaN`` where the mask removes a slot).
++    """
++
++    def _build(
++        sos_type: Literal[1, 2] = 1,
++        sos_var_2d: bool = False,
++        mask_on_sos: MaskOnSos = None,
++        mask_on_other: bool = False,
++    ) -> tuple[Model, float, np.ndarray]:
++        if not sos_var_2d and mask_on_sos in ("non_sos_dim", "both_dims"):
++            raise ValueError(f"mask_on_sos={mask_on_sos!r} requires sos_var_2d=True")
++
++        m = Model()
++
++        # Optional unrelated masked variable: shifts label->position mapping
++        # for all subsequent variables, exposing the position-vs-label bug.
++        if mask_on_other:
++            ck = pd.Index([0, 1, 2, 3], name="k")
++            m.add_variables(
++                lower=0,
++                upper=1,
++                coords=[ck],
++                mask=pd.Series([False, True, True, True], index=ck),
++                name="other",
++            )
++
++        ci = pd.Index([0, 1, 2, 3], name="i")
++        cj = pd.Index([0, 1], name="j")
++
++        # Construct sos_var mask
++        if mask_on_sos is None:
++            sos_mask = None
++        elif mask_on_sos == "sos_dim":
++            mask_i = np.array([True, True, False, True])
++            if sos_var_2d:
++                sos_mask = xr.DataArray(
++                    np.broadcast_to(mask_i[:, None], (4, 2)).copy(),
++                    coords=[ci, cj],
++                    dims=["i", "j"],
++                )
++            else:
++                sos_mask = pd.Series(mask_i, index=ci)
++        elif mask_on_sos == "non_sos_dim":
++            assert sos_var_2d
++            mask_j = np.array([False, True])
++            sos_mask = xr.DataArray(
++                np.broadcast_to(mask_j[None, :], (4, 2)).copy(),
++                coords=[ci, cj],
++                dims=["i", "j"],
++            )
++        elif mask_on_sos == "both_dims":
++            assert sos_var_2d
++            mask_i = np.array([True, True, False, True])
++            mask_j = np.array([False, True])
++            combined = mask_i[:, None] & mask_j[None, :]
++            sos_mask = xr.DataArray(combined, coords=[ci, cj], dims=["i", "j"])
++        else:
++            raise ValueError(f"unknown mask_on_sos={mask_on_sos!r}")
++
++        sos_coords = [ci, cj] if sos_var_2d else [ci]
++        sos_var = m.add_variables(
++            lower=0,
++            upper=1,
++            coords=sos_coords,
++            mask=sos_mask,
++            name="sos_var",
++        )
++        m.add_sos_constraints(sos_var, sos_type=sos_type, sos_dim="i")
++
++        # Asymmetric coefficients along the SOS dim; broadcast across j in 2D
++        coefs_i = np.array([-1.0, -2.0, -3.0, -4.0])
++        if sos_var_2d:
++            coefs = xr.DataArray(
++                np.broadcast_to(coefs_i[:, None], (4, 2)).copy(),
++                coords=[ci, cj],
++                dims=["i", "j"],
++            )
++        else:
++            coefs = xr.DataArray(coefs_i, coords=[ci], dims=["i"])
++        m.add_objective(sos_var * coefs)
++
++        # ------------------------------------------------------------------
++        # Compute expected_obj and expected_sol from the same mask logic
++        # ------------------------------------------------------------------
++        coefs_dict = {i: float(coefs_i[i]) for i in range(4)}
++
++        # active_per_j[j] = sorted list of active i for SOS set at j (or for
++        # the single 1D set we use j=None as a sentinel)
++        if sos_var_2d:
++            # Reconstruct the 2D mask (default to all True if none)
++            if sos_mask is None:
++                mask_arr = np.ones((4, 2), dtype=bool)
++            else:
++                mask_arr = np.asarray(sos_mask.values, dtype=bool)
++            active_per_j: dict[int | None, list[int]] = {
++                j: [i for i in range(4) if mask_arr[i, j]] for j in range(2)
++            }
++        else:
++            if sos_mask is None:
++                active = list(range(4))
++            else:
++                active = [i for i in range(4) if bool(sos_mask.iloc[i])]
++            active_per_j = {None: active}
++
++        expected_obj = 0.0
++        # Build expected_sol with the right shape and NaN-fill masked slots
++        if sos_var_2d:
++            expected_sol: np.ndarray = np.full((4, 2), 0.0)
++            if sos_mask is not None:
++                mask_arr = np.asarray(sos_mask.values, dtype=bool)
++                expected_sol[~mask_arr] = np.nan
++        else:
++            expected_sol = np.full(4, 0.0)
++            if sos_mask is not None:
++                for i in range(4):
++                    if not bool(sos_mask.iloc[i]):
++                        expected_sol[i] = np.nan
++
++        for j_key, active in active_per_j.items():
++            obj_j, sol_j = _optimize_sos_set(active, coefs_dict, sos_type)
++            expected_obj += obj_j
++            for i, value in sol_j.items():
++                if sos_var_2d:
++                    expected_sol[i, j_key] = value
++                else:
++                    expected_sol[i] = value
++
++        return m, expected_obj, expected_sol
++
++    return _build
++
++
++# ---------------------------------------------------------------------------
++# Test matrix: 11 fixture configs × 2 SOS types × (solver, io_api)
++# ---------------------------------------------------------------------------
++
++# Each entry: (sos_var_2d, mask_on_sos, mask_on_other)
++FIXTURE_CONFIGS = [
++    pytest.param(False, None, False, id="1d-no_mask"),
++    pytest.param(False, "sos_dim", False, id="1d-mask_sos"),
++    pytest.param(False, None, True, id="1d-mask_other"),
++    pytest.param(False, "sos_dim", True, id="1d-mask_both"),
++    pytest.param(True, None, False, id="2d-no_mask"),
++    pytest.param(True, "sos_dim", False, id="2d-mask_sos_dim"),
++    pytest.param(True, "non_sos_dim", False, id="2d-mask_non_sos_dim"),
++    pytest.param(True, "both_dims", False, id="2d-mask_both_dims"),
++    pytest.param(True, "sos_dim", True, id="2d-mask_sos_dim+other"),
++    pytest.param(True, "non_sos_dim", True, id="2d-mask_non_sos_dim+other"),
++    pytest.param(True, "both_dims", True, id="2d-mask_both_dims+other"),
++]
++
++
++@pytest.mark.skipif(not SOS_PATHS, reason="No SOS-capable solver installed")
++@pytest.mark.parametrize("sos_type", [1, 2])
++@pytest.mark.parametrize(("solver", "io_api"), SOS_PATHS)
++@pytest.mark.parametrize(
++    ("sos_var_2d", "mask_on_sos", "mask_on_other"), FIXTURE_CONFIGS
++)
++def test_sos_with_masked_variables(
++    sos_masked_model: Callable[..., tuple[Model, float, np.ndarray]],
++    solver: str,
++    io_api: str,
++    sos_type: int,
++    sos_var_2d: bool,
++    mask_on_sos: MaskOnSos,
++    mask_on_other: bool,
++) -> None:
++    """
++    Three-oracle test: status + objective + element-wise solution.
++
++    Asymmetric objective + element-wise solution check ensures we catch:
++    - direct-path OOB raises (status != ok)
++    - LP parser rejections (status != ok)
++    - silent SOS-set corruption (objective and/or solution differ)
++    """
++    m, expected_obj, expected_sol = sos_masked_model(
++        sos_type=sos_type,
++        sos_var_2d=sos_var_2d,
++        mask_on_sos=mask_on_sos,
++        mask_on_other=mask_on_other,
++    )
++    m.solve(solver_name=solver, io_api=io_api)
++
++    # Oracle 1: did the solve succeed?
++    assert m.status == "ok", (
++        f"solver={solver} io_api={io_api} status={m.status!r} "
++        f"termination={m.termination_condition!r}"
++    )
++
++    # Oracle 2: is the objective at the analytical optimum?
++    assert m.objective.value is not None
++    assert m.objective.value == pytest.approx(expected_obj, abs=1e-5)
++
++    # Oracle 3: are the right slots at the right values?
++    actual_sol = m.variables["sos_var"].solution.values
++    np.testing.assert_allclose(
++        actual_sol,
++        expected_sol,
++        atol=1e-5,
++        equal_nan=True,
++        err_msg=(
++            f"sos_var.solution mismatch for solver={solver} io_api={io_api} "
++            f"sos_type={sos_type} sos_var_2d={sos_var_2d} "
++            f"mask_on_sos={mask_on_sos!r} mask_on_other={mask_on_other}"
++        ),
++    )
++
++
++def test_sos_to_file_skips_fully_masked_sos_variable(tmp_path: Path) -> None:
++    """A fully-masked SOS variable writes no LP ``sos`` set entries."""
++    m = Model()
++    ci = pd.Index([0, 1, 2, 3], name="i")
++    free = m.add_variables(lower=0, upper=1, name="free")
++    sos_var = m.add_variables(
++        lower=0,
++        upper=1,
++        coords=[ci],
++        mask=pd.Series(False, index=ci),
++        name="sos_var",
++    )
++    m.add_sos_constraints(sos_var, sos_type=1, sos_dim="i")
++    m.add_objective(free)
++
++    fn = tmp_path / "model.lp"
++    m.to_file(fn)
++    lp = fn.read_text()
++
++    assert "x-1" not in lp
++    sos_section = lp.partition("\nsos\n")[2]
++    assert "S1 ::" not in sos_section
+diff --git a/test/test_sos_reformulation.py b/test/test_sos_reformulation.py
+index 51ec1770b..0e9dc9da6 100644
+--- a/test/test_sos_reformulation.py
++++ b/test/test_sos_reformulation.py
+@@ -479,6 +479,55 @@ def boom(*args: object, **kwargs: object) -> None:
+ class TestSolveWithReformulation:
+     """Tests for solving with SOS reformulation."""
+ 
++    @pytest.mark.parametrize(
++        "solver_name",
++        [
++            pytest.param(
++                "gurobi",
++                marks=pytest.mark.skipif(
++                    "gurobi" not in available_solvers, reason="Gurobi not installed"
++                ),
++            ),
++            pytest.param(
++                "highs",
++                marks=pytest.mark.skipif(
++                    "highs" not in available_solvers, reason="HiGHS not installed"
++                ),
++            ),
++        ],
++    )
++    def test_reformulate_handles_masked_sos_variables(self, solver_name: str) -> None:
++        """
++        ``reformulate_sos=True`` must handle SOS variables with masked entries.
++
++        Exercises the reformulation pipeline (``apply_sos_reformulation`` →
++        binary + linking constraints → solve → ``undo``) on a model whose SOS
++        variable has a masked slot. Parametrized to cover both the native-SOS
++        case (gurobi: reformulation runs anyway under ``reformulate_sos=True``,
++        per #689) and the no-native-SOS case (highs: reformulation is the only
++        way to solve).
++        """
++        m = Model()
++        coords = pd.Index([0, 1, 2, 3], name="i")
++        mask = pd.Series([True, True, False, True], index=coords)
++        var = m.add_variables(
++            lower=0, upper=1, coords=[coords], mask=mask, name="sos_var"
++        )
++        m.add_sos_constraints(var, sos_type=1, sos_dim="i")
++        m.add_objective(-var.sum())
++
++        m.solve(solver_name=solver_name, reformulate_sos=True)
++
++        sol = m.variables["sos_var"].solution.values
++        # SOS1 over 3 unmasked entries, all in [0, 1], obj = -sum:
++        # one slot at 1, others at 0, masked stays NaN.
++        assert m.objective.value is not None
++        assert np.isclose(m.objective.value, -1.0)
++        assert np.isnan(sol[2])
++        nonzero = np.flatnonzero(~np.isnan(sol) & (sol > 1e-6))
++        assert len(nonzero) == 1
++        assert np.isclose(sol[nonzero[0]], 1.0)
++
+     def test_sos1_maximize_with_highs(self) -> None:
+         """Test SOS1 maximize problem with HiGHS using reformulation."""
+         m = Model()

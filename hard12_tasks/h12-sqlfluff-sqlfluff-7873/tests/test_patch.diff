@@ -1,0 +1,110 @@
+diff --git a/test/cli/commands_test.py b/test/cli/commands_test.py
+index 1cd843377f..059fe02ddc 100644
+--- a/test/cli/commands_test.py
++++ b/test/cli/commands_test.py
+@@ -1787,34 +1787,35 @@ def safe_load_config_at_path(path):
+ @patch("click.utils.should_strip_ansi")
+ @patch("sys.stdout.isatty")
+ @pytest.mark.parametrize(
+-    "flag, env_var, has_color",
++    "flag, env_var, is_tty, has_color",
+     [
+-        (None, None, True),
+-        ("--nocolor", None, False),
+-        ("--color", None, True),
+-        (None, "1", False),
+-        (None, "true", False),
+-        (None, "True", False),
+-        (None, "False", False),
+-        (None, "anything", False),
+-        (None, "", True),
+-        ("--color", "1", True),
++        (None, None, True, True),
++        (None, None, False, False),
++        ("--nocolor", None, True, False),
++        ("--color", None, True, True),
++        ("--color", None, False, True),
++        (None, "1", True, False),
++        (None, "true", True, False),
++        (None, "True", True, False),
++        (None, "False", True, False),
++        (None, "anything", True, False),
++        (None, "", True, True),
++        ("--color", "1", True, True),
++        ("--color", "1", False, True),
+     ],
+ )
+ def test__cli__command_lint_nocolor(
+-    isatty, should_strip_ansi, capsys, tmpdir, flag, env_var, has_color
++    isatty, should_strip_ansi, capsys, tmpdir, flag, env_var, is_tty, has_color
+ ):
+     """Test the --nocolor option prevents color output."""
+-    # Patch these two functions to make it think every output stream is a TTY.
+-    # In spite of this, the output should not contain ANSI color codes because
+-    # we specify "--nocolor" below.
++    # Patch these two functions to control whether output behaves like a TTY.
+     no_color_flag = [flag] if flag else []
+     if env_var is not None:
+         os.environ["NO_COLOR"] = env_var
+     elif "NO_COLOR" in os.environ:
+         os.environ.pop("NO_COLOR")
+ 
+-    isatty.return_value = True
++    isatty.return_value = is_tty
+     should_strip_ansi.return_value = False
+     fpath = "test/fixtures/linter/indentation_errors.sql"
+     output_file = str(tmpdir / "result.txt")
+@@ -2322,6 +2323,15 @@ def test_cli_get_default_config():
+     assert config.get("verbose") == 2
+ 
+ 
++def test_cli_get_config_color_override():
++    """`--color` and `--nocolor` set click's output color behavior explicitly."""
++    color_config = get_config(None, True, nocolor=False, require_dialect=False)
++    no_color_config = get_config(None, True, nocolor=True, require_dialect=False)
++
++    assert color_config.get("color") is True
++    assert no_color_config.get("color") is False
++
++
+ @patch(
+     "sqlfluff.core.linter.linter.progress_bar_configuration",
+     disable_progress_bar=False,
+diff --git a/test/cli/formatters_test.py b/test/cli/formatters_test.py
+index 674b6e2871..6ad2723f14 100644
+--- a/test/cli/formatters_test.py
++++ b/test/cli/formatters_test.py
+@@ -70,6 +70,33 @@ def test__cli__helpers__colorize(tmpdir):
+     assert formatter.colorize("foo", Color.red) == "\u001b[31mfoo\u001b[0m"
+ 
+ 
++@pytest.mark.parametrize(
++    "nocolor,isatty,no_color_env,expected_plain_output",
++    [
++        (None, True, None, False),
++        (None, False, None, True),
++        (True, True, None, True),
++        (False, False, None, False),
++        (False, False, "1", False),
++        (None, True, "1", True),
++    ],
++)
++def test__cli__helpers__plain_output_color_decision(
++    monkeypatch, nocolor, isatty, no_color_env, expected_plain_output
++):
++    """Test when output should be plain rather than colored."""
++    monkeypatch.setattr("sys.stdout.isatty", lambda: isatty)
++    if no_color_env is None:
++        monkeypatch.delenv("NO_COLOR", raising=False)
++    else:
++        monkeypatch.setenv("NO_COLOR", no_color_env)
++
++    assert (
++        OutputStreamFormatter.should_produce_plain_output(nocolor)
++        is expected_plain_output
++    )
++
++
+ def test__cli__helpers__cli_table(tmpdir):
+     """Test making tables."""
+     vals = [("a", 3), ("b", "c"), ("d", 4.7654), ("e", 9)]

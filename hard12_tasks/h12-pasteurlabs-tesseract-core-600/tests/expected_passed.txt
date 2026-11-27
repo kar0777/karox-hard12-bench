@@ -1,0 +1,14 @@
+tests/sdk_tests/test_api_parse.py::test_config_python_version_rejects_inherit_base_image_packages
+tests/sdk_tests/test_api_parse.py::test_api_not_defined_raises_filenotfound
+tests/sdk_tests/test_api_parse.py::test_apply_signature_errors
+tests/sdk_tests/test_api_parse.py::test_config_metadata_defaults_to_empty
+tests/sdk_tests/test_api_parse.py::test_config_python_version_defaults_to_none
+tests/sdk_tests/test_api_parse.py::test_config_python_version_rejects_conda
+tests/sdk_tests/test_api_parse.py::test_config_with_metadata
+tests/sdk_tests/test_api_parse.py::test_config_with_python_version
+tests/sdk_tests/test_api_parse.py::test_invalid_config_error
+tests/sdk_tests/test_api_parse.py::test_invalid_syntax
+tests/sdk_tests/test_api_parse.py::test_missing_required_definition_error
+tests/sdk_tests/test_api_parse.py::test_optional_signature_check
+tests/sdk_tests/test_api_parse.py::test_schema_parent_class_is_checked
+tests/sdk_tests/test_api_parse.py::test_valid_input_passes_checks

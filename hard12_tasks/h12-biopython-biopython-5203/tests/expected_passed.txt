@@ -1,0 +1,11 @@
+Tests/test_GenBank.py::LineOneTests::test_topology_genbank
+Tests/test_GenBank.py::GenBankTests::test_genbank_date_correct
+Tests/test_GenBank.py::GenBankTests::test_genbank_date_datetime
+Tests/test_GenBank.py::GenBankTests::test_genbank_date_default
+Tests/test_GenBank.py::GenBankTests::test_genbank_date_invalid
+Tests/test_GenBank.py::GenBankTests::test_genbank_date_list
+Tests/test_GenBank.py::LineOneTests::test_first_line_imgt
+Tests/test_GenBank.py::LineOneTests::test_topology_embl
+Tests/test_GenBank.py::OutputTests::test_mad_dots
+Tests/test_GenBank.py::OutputTests::test_seqrecord_default_description
+Tests/test_GenBank.py::TestBasics::test_ensembl_locus

@@ -1,0 +1,2 @@
+tests/test_issue4768_cron_module_missing.py::test_api_crons_guards_missing_cron_module
+tests/test_issue4768_cron_module_missing.py::test_api_crons_still_lists_jobs_on_happy_path

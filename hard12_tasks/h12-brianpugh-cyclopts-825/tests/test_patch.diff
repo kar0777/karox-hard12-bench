@@ -1,0 +1,88 @@
+diff --git a/tests/completion/conftest.py b/tests/completion/conftest.py
+index 02e748de..55df95ea 100644
+--- a/tests/completion/conftest.py
++++ b/tests/completion/conftest.py
+@@ -294,7 +294,7 @@ class ZshCompletionTester(CompletionTesterBase):
+ 
+     def validate_script_syntax(self) -> bool:
+         with tempfile.TemporaryDirectory() as tmpdir:
+-            comp_file = Path(tmpdir) / f"_{self.prog_name}"
++            comp_file = Path(tmpdir) / f"_cyclopts_{self.prog_name}"
+             comp_file.write_text(self.completion_script)
+             result = subprocess.run(
+                 ["zsh", "-n", str(comp_file)],
+@@ -312,7 +312,7 @@ def get_completions(self, partial_command: str) -> list[str]:
+ 
+         with tempfile.TemporaryDirectory() as tmpdir:
+             td = Path(tmpdir)
+-            (td / f"_{self.prog_name}").write_text(self.completion_script)
++            (td / f"_cyclopts_{self.prog_name}").write_text(self.completion_script)
+ 
+             (td / ".zshrc").write_text(
+                 "PROMPT='ZTEST> '\n"
+diff --git a/tests/completion/test_install.py b/tests/completion/test_install.py
+index 526e2c54..1a7fb8ea 100644
+--- a/tests/completion/test_install.py
++++ b/tests/completion/test_install.py
+@@ -336,11 +336,11 @@ def test_install_completion_command_fish(temp_home, monkeypatch, capsys):
+ 
+ 
+ def test_install_completion_zsh_ohmyzsh_default_path(omz_dir):
+-    """Test that $ZSH set with valid dir installs to $ZSH/custom/completions/_testapp."""
++    """Test that $ZSH set with valid dir installs to $ZSH/custom/completions/_cyclopts_testapp."""
+     app = App(name="testapp")
+     install_path = app.install_completion(shell="zsh", add_to_startup=True)
+ 
+-    assert install_path == omz_dir / "custom" / "completions" / "_testapp"
++    assert install_path == omz_dir / "custom" / "completions" / "_cyclopts_testapp"
+     assert install_path.exists()
+ 
+ 
+@@ -353,7 +353,7 @@ def test_install_completion_zsh_ohmyzsh_zsh_custom_env(omz_dir, temp_home, monke
+     app = App(name="testapp")
+     install_path = app.install_completion(shell="zsh", add_to_startup=True)
+ 
+-    assert install_path == custom_dir / "completions" / "_testapp"
++    assert install_path == custom_dir / "completions" / "_cyclopts_testapp"
+     assert install_path.exists()
+ 
+ 
+@@ -373,7 +373,7 @@ def test_install_completion_zsh_ohmyzsh_dir_missing(temp_home, monkeypatch):
+     app = App(name="testapp")
+     install_path = app.install_completion(shell="zsh", add_to_startup=False)
+ 
+-    expected = temp_home / ".zsh" / "completions" / "_testapp"
++    expected = temp_home / ".zsh" / "completions" / "_cyclopts_testapp"
+     assert install_path == expected
+     assert install_path.exists()
+ 
+diff --git a/tests/completion/test_zsh.py b/tests/completion/test_zsh.py
+index 2e9785ad..123ccdec 100644
+--- a/tests/completion/test_zsh.py
++++ b/tests/completion/test_zsh.py
+@@ -1167,6 +1167,13 @@ def test_collection_option_repeats(zsh_tester):
+     Without ``*`` prefix on the spec, zsh would refuse to complete a second
+     ``--file`` value, breaking the natural ``--file a --file b --file c``
+     usage of collection-typed parameters.
++
++    Doubles as a regression test for issue #821: prog_name ``files`` happens
++    to match zsh's built-in ``_files`` completion helper, so the generated
++    autoload entry must be namespaced (e.g. ``_cyclopts_files``) — otherwise
++    ``_arguments``'s ``:file:_files`` action recurses into our own function
++    and zsh hits its recursion limit (visible on macOS as a captured error
++    string, fatal pty EOF on aarch64 Linux/Nix).
+     """
+     import os
+     import tempfile
+@@ -1187,7 +1194,10 @@ def m(file: Annotated[list[_Path], Parameter(help="files")] = []):  # noqa: B006
+             completions = tester.get_completions("files --file first.txt --file ")
+         finally:
+             os.chdir(cwd)
+-    assert completions, f"expected file completion on second --file, got {completions!r}"
++    # Assert the actual file appears — not just *some* output. Without a
++    # tight assertion zsh's "recursion limit exceeded" error gets scraped
++    # as a "completion" and the test silently passes.
++    assert "first.txt" in completions, f"expected 'first.txt' in file completion on second --file, got {completions!r}"
+ 
+ 
+ def test_multiple_iterable_positionals_emit_one_rest_spec(zsh_tester):

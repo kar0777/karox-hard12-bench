@@ -1,0 +1,5 @@
+tests/asyncapi/test_fastapi_router.py::test_fastapi_asyncapi_try_it_out_delivers_message
+tests/asyncapi/test_fastapi_router.py::test_fastapi_asyncapi_try_it_out_follows_schema_url
+tests/asyncapi/test_fastapi_router.py::test_fastapi_asyncapi_not_fount
+tests/asyncapi/test_fastapi_router.py::test_fastapi_asyncapi_not_fount_by_url
+tests/asyncapi/test_fastapi_router.py::test_fastapi_asyncapi_routes

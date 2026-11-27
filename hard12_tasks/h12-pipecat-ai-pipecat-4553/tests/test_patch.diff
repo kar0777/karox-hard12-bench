@@ -1,0 +1,26 @@
+diff --git a/tests/test_protobuf_serializer.py b/tests/test_protobuf_serializer.py
+index 14d7d1aa7e0..c6c3f122f6a 100644
+--- a/tests/test_protobuf_serializer.py
++++ b/tests/test_protobuf_serializer.py
+@@ -7,6 +7,7 @@
+ import unittest
+ 
+ from pipecat.frames.frames import (
++    InterruptionFrame,
+     OutputAudioRawFrame,
+     TextFrame,
+     TranscriptionFrame,
+@@ -39,6 +40,13 @@ async def test_roundtrip(self):
+         self.assertEqual(frame.sample_rate, audio_frame.sample_rate)
+         self.assertEqual(frame.num_channels, audio_frame.num_channels)
+ 
++    async def test_interruption_frame_roundtrip(self):
++        interruption_frame = InterruptionFrame()
++        frame = await self.serializer.deserialize(
++            await self.serializer.serialize(interruption_frame)
++        )
++        self.assertIsInstance(frame, InterruptionFrame)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

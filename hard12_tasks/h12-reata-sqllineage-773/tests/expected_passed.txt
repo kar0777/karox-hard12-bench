@@ -1,0 +1,2 @@
+tests/sql/column/test_column_select_column_specified_in_dml_dialect_specific.py::test_column_lineage_with_column_type_definitions[databricks]
+tests/sql/column/test_column_select_column_specified_in_dml_dialect_specific.py::test_column_lineage_with_column_type_definitions[sparksql]

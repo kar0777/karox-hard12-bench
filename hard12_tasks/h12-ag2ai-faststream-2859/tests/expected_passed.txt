@@ -1,0 +1,2 @@
+tests/brokers/confluent/test_lazy_logger_proxy.py::test_proxy_drops_records_before_setup
+tests/brokers/confluent/test_lazy_logger_proxy.py::test_proxy_forwards_after_setup

@@ -1,0 +1,3 @@
+opentelemetry-api/tests/util/test__importlib_metadata.py::TestEntryPoints::test_as_entry_points_selectable_groups_compat
+opentelemetry-api/tests/util/test__importlib_metadata.py::TestEntryPoints::test_entry_points
+opentelemetry-api/tests/util/test__importlib_metadata.py::TestEntryPoints::test_uniform_behavior

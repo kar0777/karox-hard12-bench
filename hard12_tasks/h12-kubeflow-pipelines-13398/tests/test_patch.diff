@@ -1,0 +1,14 @@
+diff --git a/sdk/python/kfp/cli/component_test.py b/sdk/python/kfp/cli/component_test.py
+index fb0af92c79d..46374fa68dc 100644
+--- a/sdk/python/kfp/cli/component_test.py
++++ b/sdk/python/kfp/cli/component_test.py
+@@ -607,9 +607,6 @@ def test_existing_dockerfile_can_be_overwritten(self):
+                 COPY . .
+                 '''))
+ 
+-    @unittest.skip(
+-        "Skipping this test as it's failing. Refer to https://github.com/kubeflow/pipelines/issues/11038"
+-    )
+     def test_dockerfile_can_contain_custom_kfp_package(self):
+         component = _make_component(
+             func_name='train', target_image='custom-image')

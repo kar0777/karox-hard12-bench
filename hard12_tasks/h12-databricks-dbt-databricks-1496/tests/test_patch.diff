@@ -1,0 +1,193 @@
+diff --git a/tests/functional/adapter/iceberg/fixtures.py b/tests/functional/adapter/iceberg/fixtures.py
+index 7fc30f655..f72f0da3b 100644
+--- a/tests/functional/adapter/iceberg/fixtures.py
++++ b/tests/functional/adapter/iceberg/fixtures.py
+@@ -95,3 +95,25 @@
+ union all
+ select 2 as id, 'new' as status
+ """
++
++incremental_iceberg_partition_schema = """
++version: 2
++models:
++  - name: iceberg_partition_inc
++    config:
++      materialized: incremental
++      table_format: iceberg
++      incremental_strategy: merge
++      unique_key: id
++      partition_by: ["business_date"]
++"""
++
++incremental_iceberg_partition_base = """
++select 1 as id, 'initial' as status, cast('2024-01-01' as date) as business_date
++"""
++
++incremental_iceberg_partition_update = """
++select 1 as id, 'updated' as status, cast('2024-01-01' as date) as business_date
++union all
++select 2 as id, 'new' as status, cast('2024-01-02' as date) as business_date
++"""
+diff --git a/tests/functional/adapter/iceberg/test_iceberg_support.py b/tests/functional/adapter/iceberg/test_iceberg_support.py
+index 8bbb53050..aba705030 100644
+--- a/tests/functional/adapter/iceberg/test_iceberg_support.py
++++ b/tests/functional/adapter/iceberg/test_iceberg_support.py
+@@ -59,6 +59,45 @@ def models(self):
+         return {"first_model.sql": fixtures.invalid_iceberg_format}
+ 
+ 
++@pytest.mark.skip_profile("databricks_cluster")
++class TestIcebergIncrementalPartitionClustering(ManagedIcebergMixin):
++    """Regression test for https://github.com/databricks/dbt-databricks/issues/1495.
++
++    Managed Iceberg normalizes `partition_by` into liquid clustering keys server-side.
++    The clustering must survive the first incremental MERGE.
++    """
++
++    @pytest.fixture(scope="class")
++    def models(self):
++        return {
++            "iceberg_partition_inc.sql": fixtures.incremental_iceberg_partition_base,
++            "schema.yml": fixtures.incremental_iceberg_partition_schema,
++        }
++
++    def _clustering_state(self, project, table="iceberg_partition_inc"):
++        rows = project.run_sql(f"describe detail {table}", fetch="all")
++        return " | ".join(str(cell) for cell in rows[0])
++
++    def test_clustering_survives_incremental_run(self, project):
++        util.run_dbt(["run"])
++        initial = self._clustering_state(project)
++        assert "business_date" in initial, (
++            f"expected clustering on business_date after CREATE, got: {initial}"
++        )
++
++        util.write_file(
++            fixtures.incremental_iceberg_partition_update,
++            "models",
++            "iceberg_partition_inc.sql",
++        )
++        util.run_dbt(["run"])
++
++        final = self._clustering_state(project)
++        assert "business_date" in final, (
++            f"clustering was wiped after the incremental run; DESCRIBE DETAIL: {final}"
++        )
++
++
+ class TestManagedIcebergTables(TestIcebergTables, ManagedIcebergMixin):
+     pass
+ 
+diff --git a/tests/unit/relation_configs/test_liquid_clustering.py b/tests/unit/relation_configs/test_liquid_clustering.py
+new file mode 100644
+index 000000000..ca0d68f6b
+--- /dev/null
++++ b/tests/unit/relation_configs/test_liquid_clustering.py
+@@ -0,0 +1,107 @@
++from unittest.mock import Mock
++
++import pytest
++
++from dbt.adapters.databricks import constants
++from dbt.adapters.databricks.global_state import GlobalState
++from dbt.adapters.databricks.relation_configs.liquid_clustering import (
++    LiquidClusteringConfig,
++    LiquidClusteringProcessor,
++)
++
++
++@pytest.fixture(autouse=True)
++def reset_managed_iceberg():
++    original = GlobalState.get_use_managed_iceberg()
++    yield
++    GlobalState.set_use_managed_iceberg(original)
++
++
++class TestLiquidClusteringProcessor:
++    def test_from_model_node__none(self):
++        model = Mock()
++        model.config.extra = {}
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=[], auto_cluster=False)
++
++    def test_from_model_node__liquid_clustered_by_string(self):
++        model = Mock()
++        model.config.extra = {"liquid_clustered_by": "id"}
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=["id"], auto_cluster=False)
++
++    def test_from_model_node__liquid_clustered_by_list(self):
++        model = Mock()
++        model.config.extra = {"liquid_clustered_by": ["a", "b"]}
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=["a", "b"], auto_cluster=False)
++
++    def test_from_model_node__auto_cluster(self):
++        model = Mock()
++        model.config.extra = {"auto_liquid_cluster": True}
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=[], auto_cluster=True)
++
++    def test_from_model_node__managed_iceberg_partition_by_treated_as_cluster(self):
++        # On managed Iceberg, partition_by is stored as liquid clustering server-side,
++        # so the desired clustering must include partition_by to avoid a phantom wipe.
++        GlobalState.set_use_managed_iceberg(True)
++        model = Mock()
++        model.config.extra = {
++            "table_format": constants.ICEBERG_TABLE_FORMAT,
++            "partition_by": ["business_date"],
++        }
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=["business_date"], auto_cluster=False)
++
++    def test_from_model_node__managed_iceberg_table_format_case_insensitive(self):
++        # table_format is casefolded by the create path (parse_model._get), so a model
++        # written as "Iceberg"/"ICEBERG" must still be detected as managed Iceberg.
++        GlobalState.set_use_managed_iceberg(True)
++        model = Mock()
++        model.config.extra = {
++            "table_format": "Iceberg",
++            "partition_by": ["business_date"],
++        }
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=["business_date"], auto_cluster=False)
++
++    def test_from_model_node__managed_iceberg_partition_by_string(self):
++        GlobalState.set_use_managed_iceberg(True)
++        model = Mock()
++        model.config.extra = {
++            "table_format": constants.ICEBERG_TABLE_FORMAT,
++            "partition_by": "business_date",
++        }
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=["business_date"], auto_cluster=False)
++
++    def test_from_model_node__delta_partition_by_not_treated_as_cluster(self):
++        # Non-iceberg: partition_by is real partitioning, not clustering.
++        GlobalState.set_use_managed_iceberg(True)
++        model = Mock()
++        model.config.extra = {"partition_by": ["business_date"]}
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=[], auto_cluster=False)
++
++    def test_from_model_node__uniform_iceberg_partition_by_not_treated_as_cluster(self):
++        # UniForm (use_managed_iceberg=False) is Delta-backed; partition_by stays partitioning.
++        GlobalState.set_use_managed_iceberg(False)
++        model = Mock()
++        model.config.extra = {
++            "table_format": constants.ICEBERG_TABLE_FORMAT,
++            "partition_by": ["business_date"],
++        }
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=[], auto_cluster=False)
++
++    def test_from_model_node__liquid_clustered_by_wins_over_partition_by(self):
++        GlobalState.set_use_managed_iceberg(True)
++        model = Mock()
++        model.config.extra = {
++            "table_format": constants.ICEBERG_TABLE_FORMAT,
++            "liquid_clustered_by": ["id"],
++            "partition_by": ["business_date"],
++        }
++        spec = LiquidClusteringProcessor.from_relation_config(model)
++        assert spec == LiquidClusteringConfig(cluster_by=["id"], auto_cluster=False)

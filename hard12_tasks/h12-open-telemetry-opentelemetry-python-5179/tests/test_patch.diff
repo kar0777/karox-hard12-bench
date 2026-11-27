@@ -1,0 +1,147 @@
+diff --git a/opentelemetry-sdk/tests/logs/test_multi_log_processor.py b/opentelemetry-sdk/tests/logs/test_multi_log_processor.py
+index bdd9276cca1..1bc1d4faae1 100644
+--- a/opentelemetry-sdk/tests/logs/test_multi_log_processor.py
++++ b/opentelemetry-sdk/tests/logs/test_multi_log_processor.py
+@@ -161,6 +161,36 @@ def delay(_):
+         self.assertEqual(mock_processor1.force_flush.call_count, 1)
+         self.assertEqual(mock_processor2.force_flush.call_count, 0)
+ 
++    def test_force_flush_processor_returns_false(self):
++        multi_log_record_processor = SynchronousMultiLogRecordProcessor()
++
++        mock_processor1 = Mock(spec=LogRecordProcessor)
++        mock_processor1.force_flush = Mock(return_value=False)
++        multi_log_record_processor.add_log_record_processor(mock_processor1)
++        mock_processor2 = Mock(spec=LogRecordProcessor)
++        mock_processor2.force_flush = Mock(return_value=True)
++        multi_log_record_processor.add_log_record_processor(mock_processor2)
++
++        ret_value = multi_log_record_processor.force_flush(50)
++        self.assertFalse(ret_value)
++        self.assertEqual(mock_processor1.force_flush.call_count, 1)
++        self.assertEqual(mock_processor2.force_flush.call_count, 1)
++
++    def test_force_flush_processor_returns_none(self):
++        multi_log_record_processor = SynchronousMultiLogRecordProcessor()
++
++        mock_processor1 = Mock(spec=LogRecordProcessor)
++        mock_processor1.force_flush = Mock(return_value=None)
++        multi_log_record_processor.add_log_record_processor(mock_processor1)
++        mock_processor2 = Mock(spec=LogRecordProcessor)
++        mock_processor2.force_flush = Mock(return_value=True)
++        multi_log_record_processor.add_log_record_processor(mock_processor2)
++
++        ret_value = multi_log_record_processor.force_flush(50)
++        self.assertTrue(ret_value)
++        self.assertEqual(mock_processor1.force_flush.call_count, 1)
++        self.assertEqual(mock_processor2.force_flush.call_count, 1)
++
+ 
+ class TestConcurrentMultiLogRecordProcessor(
+     MultiLogRecordProcessorTestBase, unittest.TestCase
+@@ -189,3 +219,39 @@ def delay(_):
+         for mock in mocks:
+             self.assertEqual(1, mock.force_flush.call_count)
+         multi_log_record_processor.shutdown()
++
++    def test_force_flush_processor_returns_false(self):
++        multi_log_record_processor = ConcurrentMultiLogRecordProcessor()
++
++        false_mock = Mock(spec=LogRecordProcessor)
++        false_mock.force_flush = Mock(return_value=False)
++        mocks = [Mock(spec=LogRecordProcessor) for _ in range(4)]
++        mocks.insert(0, false_mock)
++
++        for mock_processor in mocks:
++            multi_log_record_processor.add_log_record_processor(mock_processor)
++
++        ret_value = multi_log_record_processor.force_flush()
++
++        self.assertFalse(ret_value)
++        for mock in mocks:
++            self.assertEqual(1, mock.force_flush.call_count)
++        multi_log_record_processor.shutdown()
++
++    def test_force_flush_processor_returns_none(self):
++        multi_log_record_processor = ConcurrentMultiLogRecordProcessor()
++
++        none_mock = Mock(spec=LogRecordProcessor)
++        none_mock.force_flush = Mock(return_value=None)
++        mocks = [Mock(spec=LogRecordProcessor) for _ in range(4)]
++        mocks.insert(0, none_mock)
++
++        for mock_processor in mocks:
++            multi_log_record_processor.add_log_record_processor(mock_processor)
++
++        ret_value = multi_log_record_processor.force_flush()
++
++        self.assertTrue(ret_value)
++        for mock in mocks:
++            self.assertEqual(1, mock.force_flush.call_count)
++        multi_log_record_processor.shutdown()
+diff --git a/opentelemetry-sdk/tests/trace/test_span_processor.py b/opentelemetry-sdk/tests/trace/test_span_processor.py
+index 6a80f83160c..4499427cc1a 100644
+--- a/opentelemetry-sdk/tests/trace/test_span_processor.py
++++ b/opentelemetry-sdk/tests/trace/test_span_processor.py
+@@ -423,7 +423,35 @@ def test_force_flush_late_by_span_processor(self):
+         flushed = multi_processor.force_flush(50)
+         self.assertFalse(flushed)
+         self.assertEqual(1, mock_processor1.force_flush.call_count)
+-        self.assertEqual(0, mock_processor2.force_flush.call_count)
++        self.assertEqual(1, mock_processor2.force_flush.call_count)
++
++    def test_force_flush_processor_returns_none(self):
++        multi_processor = trace.SynchronousMultiSpanProcessor()
++
++        mock_processor1 = mock.Mock(spec=trace.SpanProcessor)
++        mock_processor1.force_flush = mock.Mock(return_value=None)
++        multi_processor.add_span_processor(mock_processor1)
++        mock_processor2 = mock.Mock(spec=trace.SpanProcessor)
++        mock_processor2.force_flush = mock.Mock(return_value=True)
++        multi_processor.add_span_processor(mock_processor2)
++
++        flushed = multi_processor.force_flush(50)
++        self.assertTrue(flushed)
++        self.assertEqual(1, mock_processor1.force_flush.call_count)
++        self.assertEqual(1, mock_processor2.force_flush.call_count)
++
++    def test_force_flush_default_processor(self):
++        multi_processor = trace.SynchronousMultiSpanProcessor()
++
++        default_processor = trace.SpanProcessor()
++        multi_processor.add_span_processor(default_processor)
++        mock_processor = mock.Mock(spec=trace.SpanProcessor)
++        mock_processor.force_flush = mock.Mock(return_value=True)
++        multi_processor.add_span_processor(mock_processor)
++
++        flushed = multi_processor.force_flush(50)
++        self.assertTrue(flushed)
++        self.assertEqual(1, mock_processor.force_flush.call_count)
+ 
+ 
+ class TestConcurrentMultiSpanProcessor(
+@@ -476,6 +504,24 @@ def test_force_flush_late_by_span_processor(self):
+             self.assertEqual(1, mock_processor.force_flush.call_count)
+         multi_processor.shutdown()
+ 
++    def test_force_flush_processor_returns_none(self):
++        multi_processor = trace.ConcurrentMultiSpanProcessor(5)
++
++        none_mock = mock.Mock(spec=trace.SpanProcessor)
++        none_mock.force_flush = mock.Mock(return_value=None)
++        mocks = [mock.Mock(spec=trace.SpanProcessor) for _ in range(0, 4)]
++        mocks.insert(0, none_mock)
++
++        for mock_processor in mocks:
++            multi_processor.add_span_processor(mock_processor)
++
++        flushed = multi_processor.force_flush()
++
++        self.assertTrue(flushed)
++        for mock_processor in mocks:
++            self.assertEqual(1, mock_processor.force_flush.call_count)
++        multi_processor.shutdown()
++
+     def test_processor_gc(self):
+         multi_processor = trace.ConcurrentMultiSpanProcessor(5)
+         weak_ref = weakref.ref(multi_processor)

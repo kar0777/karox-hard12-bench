@@ -1,0 +1,8 @@
+test/core/component/test_sockets.py::test_input_socket_variadic_without_type_arg_raises_component_error
+test/core/component/test_sockets.py::TestSockets::test_contains
+test/core/component/test_sockets.py::TestSockets::test_get
+test/core/component/test_sockets.py::TestSockets::test_getattribute
+test/core/component/test_sockets.py::TestSockets::test_getattribute_non_existing_socket
+test/core/component/test_sockets.py::TestSockets::test_init
+test/core/component/test_sockets.py::TestSockets::test_init_with_empty_sockets
+test/core/component/test_sockets.py::TestSockets::test_repr

@@ -1,0 +1,279 @@
+diff --git a/tests/platforms/macOS/app/package/test_notarize.py b/tests/platforms/macOS/app/package/test_notarize.py
+index 38f91367eb..f045e65e56 100644
+--- a/tests/platforms/macOS/app/package/test_notarize.py
++++ b/tests/platforms/macOS/app/package/test_notarize.py
+@@ -1308,3 +1308,49 @@ def test_interrupt_notarization(
+ 
+     # Notarization was interrupted, so the marker is retained so it can be resumed.
+     assert package_command.notarization_request_path(first_app_dmg).exists()
++
++
++def test_notarize_app_no_wait(
++    package_command,
++    first_app_zip,
++    sekrit_identity,
++    tmp_path,
++):
++    """With --no-wait, an app is submitted but notarization is not finalized."""
++    archive_path = tmp_path / "base_path/build/first-app/macos/app/First App.app.zip"
++
++    # Mock the creation of the ditto archive
++    package_command.ditto_archive = MagicMock()
++
++    # Mock the return values of subprocesses: only the submission is performed.
++    submission_id = str(uuid.uuid4())
++    package_command.tools.subprocess.parse_output.side_effect = [
++        # notarytool submit
++        {"id": submission_id},
++    ]
++
++    package_command.notarize(first_app_zip, identity=sekrit_identity, wait=False)
++
++    # Only the submission was made; notarization status was never checked.
++    assert package_command.tools.subprocess.parse_output.mock_calls == [
++        mock.call(
++            json_parser,
++            [
++                "xcrun",
++                "notarytool",
++                "submit",
++                archive_path,
++                "--keychain-profile",
++                "briefcase-macOS-DEADBEEF",
++                "--output-format",
++                "json",
++            ],
++            quiet=1,
++        ),
++    ]
++
++    # Notarization was not finalized, so nothing was stapled.
++    package_command.tools.subprocess.run.assert_not_called()
++
++    # The notarization request marker is left in place for a later resume.
++    assert package_command.notarization_request_path(first_app_zip).exists()
+diff --git a/tests/platforms/macOS/app/package/test_package.py b/tests/platforms/macOS/app/package/test_package.py
+index 4ace779fca..d7a4e684f5 100644
+--- a/tests/platforms/macOS/app/package/test_package.py
++++ b/tests/platforms/macOS/app/package/test_package.py
+@@ -72,6 +72,7 @@ def test_no_notarize_option(package_command):
+         "packaging_format": None,
+         "submission_id": None,
+         "update": False,
++        "wait": True,
+     }
+     assert overrides == {}
+ 
+@@ -91,6 +92,7 @@ def test_installer_identity_option(package_command):
+         "packaging_format": None,
+         "submission_id": None,
+         "update": False,
++        "wait": True,
+     }
+     assert overrides == {}
+ 
+@@ -108,6 +110,7 @@ def test_no_sign_installer(package_command):
+         "packaging_format": None,
+         "submission_id": None,
+         "update": False,
++        "wait": True,
+     }
+     assert overrides == {}
+ 
+@@ -125,6 +128,7 @@ def test_resume(package_command):
+         "packaging_format": None,
+         "submission_id": "cafe-beef-1234",
+         "update": False,
++        "wait": True,
+     }
+     assert overrides == {}
+ 
+@@ -227,6 +231,7 @@ def test_package_app(
+     package_command.notarize.assert_called_once_with(
+         first_app_with_binaries,
+         identity=sekrit_identity,
++        wait=True,
+     )
+ 
+     # The app doesn't specify an app icon or installer icon, so there's no
+diff --git a/tests/platforms/macOS/app/package/test_package_dmg.py b/tests/platforms/macOS/app/package/test_package_dmg.py
+index 601a4f4289..e51c391a29 100644
+--- a/tests/platforms/macOS/app/package/test_package_dmg.py
++++ b/tests/platforms/macOS/app/package/test_package_dmg.py
+@@ -352,6 +352,7 @@ def test_dmg_external_app(
+     package_command.notarize.assert_called_once_with(
+         external_first_app,
+         identity=sekrit_identity,
++        wait=True,
+     )
+ 
+     # The app doesn't specify an app icon or installer icon, so there's no
+diff --git a/tests/platforms/macOS/app/package/test_package_pkg.py b/tests/platforms/macOS/app/package/test_package_pkg.py
+index 4b6d68142e..14a3233c10 100644
+--- a/tests/platforms/macOS/app/package/test_package_pkg.py
++++ b/tests/platforms/macOS/app/package/test_package_pkg.py
+@@ -122,6 +122,7 @@ def test_gui_app(
+         first_app_with_binaries,
+         identity=sekrit_identity,
+         installer_identity=sekrit_installer_identity,
++        wait=True,
+     )
+ 
+ 
+@@ -321,6 +322,7 @@ def test_console_app(
+         first_app_with_binaries,
+         identity=sekrit_identity,
+         installer_identity=sekrit_installer_identity,
++        wait=True,
+     )
+ 
+ 
+@@ -520,6 +522,7 @@ def test_no_license(
+         first_app_with_binaries,
+         identity=sekrit_identity,
+         installer_identity=sekrit_installer_identity,
++        wait=True,
+     )
+ 
+ 
+@@ -740,4 +743,5 @@ def test_external_app(
+         external_first_app,
+         identity=sekrit_identity,
+         installer_identity=sekrit_installer_identity,
++        wait=True,
+     )
+diff --git a/tests/platforms/macOS/app/package/test_package_zip.py b/tests/platforms/macOS/app/package/test_package_zip.py
+index 22efc0b782..66874d2d0f 100644
+--- a/tests/platforms/macOS/app/package/test_package_zip.py
++++ b/tests/platforms/macOS/app/package/test_package_zip.py
+@@ -29,6 +29,7 @@ def test_package_zip(
+     package_command.notarize.assert_called_once_with(
+         first_app_with_binaries,
+         identity=sekrit_identity,
++        wait=True,
+     )
+ 
+     # No dmg was built.
+@@ -118,6 +119,7 @@ def test_external_app(
+     package_command.notarize.assert_called_once_with(
+         external_first_app,
+         identity=sekrit_identity,
++        wait=True,
+     )
+ 
+     # No dmg was built.
+diff --git a/tests/platforms/macOS/app/package/test_resume_notarization.py b/tests/platforms/macOS/app/package/test_resume_notarization.py
+index b0984dc0f3..60dda24fa0 100644
+--- a/tests/platforms/macOS/app/package/test_resume_notarization.py
++++ b/tests/platforms/macOS/app/package/test_resume_notarization.py
+@@ -1,5 +1,6 @@
+ import shutil
+ import subprocess
++import time
+ import uuid
+ from pathlib import Path
+ from unittest import mock
+@@ -1595,3 +1596,103 @@ def test_notarization_rejected(
+ 
+     # No staple attempt is made.
+     package_command.tools.subprocess.run.assert_not_called()
++
++
++def test_resume_no_wait_incomplete(
++    package_command,
++    first_app_with_binaries,
++    sekrit_identity,
++    tmp_path,
++    sleep_zero,
++):
++    """Resuming with --no-wait errors if notarization is still pending."""
++    package_command.select_identity.return_value = sekrit_identity
++    package_command.ditto_archive = mock.MagicMock()
++
++    submission_id = str(uuid.uuid4())
++    package_command.tools.subprocess.parse_output.side_effect = [
++        # notarytool history returns the app's submission ID
++        {
++            "history": [
++                {
++                    "id": submission_id,
++                    "name": "First App.app.zip",
++                    "status": "In Progress",
++                },
++            ]
++        },
++        # notarytool log: still not ready.
++        subprocess.CalledProcessError(
++            returncode=69,
++            cmd=["xcrun", "notarytool", "log"],
++        ),
++    ]
++
++    with pytest.raises(
++        BriefcaseCommandError,
++        match=r"Apple has not completed notarising the app; try again later",
++    ):
++        package_command._package_app(
++            first_app_with_binaries,
++            update=False,
++            packaging_format="zip",
++            identity=sekrit_identity.id,
++            submission_id=submission_id,
++            wait=False,
++        )
++
++    # History + exactly one status check were made; no retry loop.
++    assert package_command.tools.subprocess.parse_output.call_count == 2
++    time.sleep.assert_not_called()
++
++
++def test_resume_no_wait_single_attempt(
++    package_command,
++    first_app_with_binaries,
++    sekrit_identity,
++    tmp_path,
++    sleep_zero,
++):
++    """Resuming with --no-wait checks notarization status exactly once."""
++    package_command.select_identity.return_value = sekrit_identity
++    package_command.ditto_archive = mock.MagicMock()
++
++    submission_id = str(uuid.uuid4())
++    package_command.tools.subprocess.parse_output.side_effect = [
++        # notarytool history returns the app's submission ID
++        {
++            "history": [
++                {
++                    "id": submission_id,
++                    "name": "First App.app.zip",
++                    "status": "Accepted",
++                },
++            ]
++        },
++        # notarytool log: accepted on the first (and only) check.
++        {"status": "Accepted"},
++    ]
++
++    package_command._package_app(
++        first_app_with_binaries,
++        update=False,
++        packaging_format="zip",
++        identity=sekrit_identity.id,
++        submission_id=submission_id,
++        wait=False,
++    )
++
++    # History + exactly one status check; no retry loop and no sleeping.
++    assert package_command.tools.subprocess.parse_output.call_count == 2
++    time.sleep.assert_not_called()
++
++    # Notarization succeeded, so the artefact was stapled.
++    package_command.tools.subprocess.run.assert_called_once_with(
++        [
++            "xcrun",
++            "stapler",
++            "staple",
++            tmp_path / "base_path/build/first-app/macos/app/First App.app",
++        ],
++        check=True,
++    )

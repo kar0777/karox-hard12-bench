@@ -1,0 +1,2 @@
+tests/core/test_drawing.py::test_handler
+tests/core/test_drawing.py::test_port_already_in_use

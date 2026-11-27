@@ -1,0 +1,288 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+index b99272611..495b0e9ad 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -47,7 +47,6 @@ def tmp_context(tmp_path: pathlib.Path) -> context.WorkContext:
+     variant = "cpu"
+     ctx = context.WorkContext(
+         active_settings=None,
+-        constraints_file=None,
+         patches_dir=patches_dir,
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -73,7 +72,6 @@ def testdata_context(
+             variant=variant,
+             max_jobs=None,
+         ),
+-        constraints_file=None,
+         patches_dir=overrides / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -107,7 +105,6 @@ def make_sbom_ctx(
+         settings._package_settings[ps.name] = ps
+     return context.WorkContext(
+         active_settings=settings,
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index d98845b75..85d97506f 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -1,5 +1,6 @@
+ import pathlib
+ 
++import requests_mock
+ from click.testing import CliRunner
+ 
+ from fromager.__main__ import main as fromager
+@@ -96,6 +97,40 @@ def test_output_dir_overridden_by_explicit_flags(
+     assert not (out / "sdists-repo").exists()
+ 
+ 
++def test_multiple_constraints_files(
++    tmp_path: pathlib.Path, cli_runner: CliRunner
++) -> None:
++    constraints1 = tmp_path / "constraints1.txt"
++    constraints1.write_text("foo==1.0\nbar!=2.1.1\n")
++    constraints2 = tmp_path / "constraints2.txt"
++    constraints2.write_text("bar>=2.0\n")
++
++    url = "https://fromager.test/remote-constraints.txt"
++
++    with requests_mock.Mocker() as r:
++        r.get(
++            url,
++            text="remote>=1.0\n",
++        )
++        result = cli_runner.invoke(
++            fromager,
++            [
++                "--verbose",
++                "-c",
++                str(constraints1),
++                "--constraints-file",
++                str(constraints2),
++                "--constraints-file",
++                url,
++                "lint",
++            ],
++        )
++    assert result.exit_code == 0, result.output
++    assert "foo==1.0" in result.output
++    assert "bar!=2.1.1,>=2.0" in result.output
++    assert "remote>=1.0" in result.output
++
++
+ KNOWN_COMMANDS: set[str] = {
+     "bootstrap",
+     "bootstrap-parallel",
+diff --git a/tests/test_constraints.py b/tests/test_constraints.py
+index e7acf8d18..219e1ce0f 100644
+--- a/tests/test_constraints.py
++++ b/tests/test_constraints.py
+@@ -1,7 +1,9 @@
++import io
+ import pathlib
+ from unittest import mock
+ 
+ import pytest
++import requests_mock
+ from packaging import markers
+ from packaging.requirements import Requirement
+ from packaging.version import Version
+@@ -11,7 +13,10 @@
+ 
+ def test_constraint_is_satisfied_by() -> None:
+     c = Constraints()
++    assert not c
+     c.add_constraint("foo<=1.1")
++    assert c
++    assert len(c) == 1
+     assert c.is_satisfied_by("foo", Version("1.1"))
+     assert c.is_satisfied_by("foo", Version("1.0"))
+     assert c.is_satisfied_by("bar", Version("2.0"))
+@@ -91,6 +96,22 @@ def test_add_constraint_conflict() -> None:
+     assert len(c) == 4  # flit_core, foo, bar, and baz
+ 
+ 
++def test_dump_constraints() -> None:
++    c = Constraints()
++
++    out = io.StringIO()
++    c.dump_constraints(out)
++    assert out.getvalue() == ""
++
++    c.add_constraint("foo>=1.0")
++    c.add_constraint("foo<2.0")
++    c.add_constraint("bar==1.1")
++
++    out = io.StringIO()
++    c.dump_constraints(out)
++    assert out.getvalue() == "bar==1.1\nfoo<2.0,>=1.0\n"
++
++
+ def test_allow_prerelease() -> None:
+     c = Constraints()
+     c.add_constraint("foo>=1.1")
+@@ -117,6 +138,18 @@ def test_load_constraints_file(tmp_path: pathlib.Path) -> None:
+     assert c.get_constraint("torch") == Requirement("torch==3.1.0")
+ 
+ 
++def test_load_constraints_url() -> None:
++    c = Constraints()
++    url = "https://fromager.test/remote-constraints.txt"
++    with requests_mock.Mocker() as r:
++        r.get(
++            url,
++            text="remote>=1.0\n",
++        )
++        c.load_constraints_file(url)
++    assert c.get_constraint("remote") == Requirement("remote>=1.0")
++
++
+ def test_invalid_constraints() -> None:
+     c = Constraints()
+     with pytest.raises(InvalidConstraintError, match=r".*no specifier"):
+diff --git a/tests/test_context.py b/tests/test_context.py
+index c4b193396..948ca2a3c 100644
+--- a/tests/test_context.py
++++ b/tests/test_context.py
+@@ -10,13 +10,13 @@
+ 
+ def _make_context(
+     tmp_path: pathlib.Path,
+-    constraints_file: str | None = None,
++    constraints_files: tuple[str, ...] = (),
+     wheel_server_url: str = "",
+     cleanup: bool = True,
+ ) -> context.WorkContext:
+     return context.WorkContext(
+         active_settings=None,
+-        constraints_file=constraints_file,
++        constraints_files=constraints_files,
+         patches_dir=tmp_path / "overrides/patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -43,16 +43,57 @@ def _all_setup_dirs(ctx: context.WorkContext) -> list[pathlib.Path]:
+ 
+ def test_pip_constraints_args(tmp_path: pathlib.Path) -> None:
+     constraints_file = tmp_path / "constraints.txt"
+-    constraints_file.write_text("\n")  # the file has to exist
+-    ctx = _make_context(tmp_path, constraints_file=str(constraints_file))
++    constraints_file.write_text("test==1.0\n")
++    ctx = _make_context(tmp_path, constraints_files=(str(constraints_file),))
+     ctx.setup()
+-    assert ["--constraint", os.fspath(constraints_file)] == ctx.pip_constraint_args
++    assert ctx.merged_constraints == tmp_path / "work-dir" / "merged-constraints.txt"
++    assert ctx.pip_constraint_args == [
++        "--constraint",
++        os.fspath(ctx.merged_constraints),
++    ]
++
++    assert ctx.merged_constraints.read_text() == "\n".join(
++        (
++            "# auto-generated constraints file",
++            f"# {constraints_file}",
++            "",
++            "test==1.0",
++            "",
++        )
++    )
+ 
+     ctx = _make_context(tmp_path)
+     ctx.setup()
+     assert [] == ctx.pip_constraint_args
+ 
+ 
++def test_multiple_constraints_files(tmp_path: pathlib.Path) -> None:
++    constraints1 = tmp_path / "constraints1.txt"
++    constraints1.write_text("test==1.0\n")
++    constraints2 = tmp_path / "constraints2.txt"
++    constraints2.write_text("foo>=2.0\n")
++    constraints3 = tmp_path / "constraints3.txt"
++    constraints3.write_text("foo!=2.1.1\n")
++    ctx = _make_context(
++        tmp_path,
++        constraints_files=(str(constraints1), str(constraints2), str(constraints3)),
++    )
++    ctx.setup()
++
++    assert ctx.merged_constraints.read_text() == "\n".join(
++        (
++            "# auto-generated constraints file",
++            f"# {constraints1}",
++            f"# {constraints2}",
++            f"# {constraints3}",
++            "",
++            "foo!=2.1.1,>=2.0",
++            "test==1.0",
++            "",
++        )
++    )
++
++
+ def test_setup_creates_directories(tmp_path: pathlib.Path) -> None:
+     ctx = _make_context(tmp_path)
+     ctx.setup()
+diff --git a/tests/test_cooldown.py b/tests/test_cooldown.py
+index aa27916d8..37c9ea063 100644
+--- a/tests/test_cooldown.py
++++ b/tests/test_cooldown.py
+@@ -223,7 +223,6 @@ def test_cooldown_applied_automatically_via_ctx(tmp_path: pathlib.Path) -> None:
+     """
+     ctx = context.WorkContext(
+         active_settings=None,
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -259,7 +258,6 @@ def test_toplevel_equality_pin_bypasses_cooldown_via_resolve(
+     """
+     ctx = context.WorkContext(
+         active_settings=None,
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -294,7 +292,6 @@ def test_cooldown_applied_via_get_source_provider(tmp_path: pathlib.Path) -> Non
+     """
+     ctx = context.WorkContext(
+         active_settings=None,
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -323,7 +320,6 @@ def test_non_pypi_index_allows_without_upload_time(
+     """
+     ctx = context.WorkContext(
+         active_settings=None,
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -382,7 +378,6 @@ def _make_ctx(
+             variant="cpu",
+             max_jobs=None,
+         ),
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -451,7 +446,6 @@ def test_per_package_cooldown_disable_via_ctx(tmp_path: pathlib.Path) -> None:
+             variant="cpu",
+             max_jobs=None,
+         ),
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",
+@@ -674,7 +668,6 @@ def test_local_wheel_server_allows_without_upload_time(
+     local_server_url = "http://127.0.0.1:9999/simple/"
+     ctx = context.WorkContext(
+         active_settings=None,
+-        constraints_file=None,
+         patches_dir=tmp_path / "patches",
+         sdists_repo=tmp_path / "sdists-repo",
+         wheels_repo=tmp_path / "wheels-repo",

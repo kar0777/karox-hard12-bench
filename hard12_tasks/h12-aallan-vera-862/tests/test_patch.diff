@@ -1,0 +1,256 @@
+diff --git a/tests/conformance/ch09_async.vera b/tests/conformance/ch09_async.vera
+index 1e4a7f4c6..aec8f1400 100644
+--- a/tests/conformance/ch09_async.vera
++++ b/tests/conformance/ch09_async.vera
+@@ -33,13 +33,16 @@ public fn test_async_multiple(@Unit -> @Int)
+ }
+ 
+ private fn async_helper(@Int -> @Int)
+-  requires(@Int.0 >= 0)
++  requires(true)
+   ensures(true)
+   effects(<Async>)
+ {
+-  -- `async` infers Future<Nat> from the Nat-typed `@Int.0 * 2`, so the
+-  -- @Int argument narrows into a @Nat formal (#747); the precondition
+-  -- discharges it.
++  -- `@Int.0 * 2` types as Int (#755), so `async` infers Future<Int> and no
++  -- non-negativity precondition is needed.  Dropping the old
++  -- requires(@Int.0 >= 0) workaround was cleanup, NOT a regression pin —
++  -- this program passes with or without the #755 fix (the let annotation
++  -- accepts Future<Nat> via the binding-site narrowing relaxation); the fix
++  -- is pinned by tests/test_checker_int_nat.py + the overflow differential.
+   let @Future<Int> = async(@Int.0 * 2);
+   await(@Future<Int>.0)
+ }
+diff --git a/tests/test_checker_int_nat.py b/tests/test_checker_int_nat.py
+new file mode 100644
+index 000000000..cbdb31023
+--- /dev/null
++++ b/tests/test_checker_int_nat.py
+@@ -0,0 +1,153 @@
++"""Regression tests for #755 — mixed ``Int <op> Nat`` arithmetic must type as
++``Int``, not ``Nat``.
++
++The type checker used to join a mixed ``Int``/``Nat`` binary-arithmetic
++expression to ``Nat`` (``vera/checker/expressions.py``): the join at the ADD /
++SUB / MUL / DIV / MOD branch consulted the *bidirectional* ``is_subtype``, and
++because the checker permits ``Int <: Nat`` as a verifier-mediated relaxation
++(spec §2.8 rule 5 implementation note), ``is_subtype(Int, Nat)`` returns
++``True`` — so ``Int <op> Nat`` picked the *right* operand's ``Nat`` base.
++
++That is dishonest: only ``Nat <: Int`` is a *formal* subtyping rule (``Nat`` is
++``{ @Int | @Int.0 >= 0 }``, a refinement subtype of ``Int`` — spec §2.2.1).
++The least-upper-bound of ``{Int, Nat}`` under the formal lattice is ``Int``.
++Typing ``@Int.0 - 2`` as ``Nat`` silently asserts non-negativity with no
++verifier obligation, violating §0.2.2 ("no implicit behaviour"), and drives
++spurious ``@Nat`` narrowings downstream (see the #747 tuple-destructure note on
++the issue).
++
++Written test-first: :meth:`test_int_minus_literal_types_as_int` and the sibling
++join cases FAIL on the unfixed checker (they synthesise ``Nat``) and pass once
++the join returns the formal LUB (``Int``).
++"""
++from __future__ import annotations
++
++from vera.checker.core import typecheck_with_artifacts
++from vera.parser import parse_to_ast
++
++
++def _synth_type(source: str, line: int, col: int, end_col: int) -> str:
++    """Pretty-printed synthesised type of the expression spanning
++    ``line:col..end_col`` (1-based, matching ``ast.Span``).
++
++    Reads the ``expr_types`` side-table the checker populates for every
++    synthesised expression — the exact type the binop join produced, so a
++    wrong join (``Nat``) cannot masquerade as a fallback/default.
++    """
++    prog = parse_to_ast(source)
++    _diags, arts = typecheck_with_artifacts(prog, source=source)
++    key = (line, col, line, end_col)
++    assert key in arts.expr_types, (
++        f"no expr recorded at {key}; recorded spans: "
++        f"{sorted(arts.expr_types)}"
++    )
++    return arts.expr_types[key]
++
++
++class TestMixedIntNatJoin755:
++    """The formal LUB of a mixed ``Int``/``Nat`` binop is ``Int`` (#755)."""
++
++    def test_int_minus_literal_types_as_int(self) -> None:
++        # `@Int.0 - 2` (the literal `2` is checked against the @Nat return, so
++        # it types as Nat): Int <op> Nat must join to Int, not Nat.  Pre-fix:
++        # synthesised Nat.
++        src = """public fn f(@Int -> @Nat)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @Int.0 - 2
++}
++"""
++        # `@Int.0 - 2` spans line 6, cols 3..13 (1-based, end exclusive of the
++        # newline per ast.Span).
++        assert _synth_type(src, 6, 3, 13) == "Int"
++
++    def test_int_plus_nat_slot_types_as_int(self) -> None:
++        # `@Int.0 + @Nat.0`: a genuine mixed-slot join, no literal involved.
++        src = """public fn h(@Int, @Nat -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @Int.0 + @Nat.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Int"
++
++    def test_nat_plus_int_slot_types_as_int(self) -> None:
++        # Order-independent: `@Nat.0 + @Int.0` also joins to Int.
++        src = """public fn h(@Int, @Nat -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @Nat.0 + @Int.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Int"
++
++    def test_int_times_nat_slot_types_as_int(self) -> None:
++        # Multiplication (a non-subtractive op) still joins mixed to Int.
++        src = """public fn h(@Int, @Nat -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @Int.0 * @Nat.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Int"
++
++    def test_int_div_nat_slot_types_as_int(self) -> None:
++        # Division joins mixed to Int too.  The ADD/SUB/MUL/DIV/MOD branch is
++        # one shared join, but nothing else pins `/`: a per-operator bypass
++        # reintroducing the bidirectional is_subtype for DIV alone survived
++        # the entire suite until this test existed.
++        src = """public fn h(@Int, @Nat -> @Int)
++  requires(@Nat.0 > 0)
++  ensures(true)
++  effects(pure)
++{
++  @Int.0 / @Nat.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Int"
++
++    def test_int_mod_nat_slot_types_as_int(self) -> None:
++        # Modulo likewise: `Int % Nat` joins to Int.  The result has the sign
++        # of the dividend (spec §4.4), so it can be negative — typing it Nat
++        # would be the same silent non-negativity assertion as `-`.
++        src = """public fn h(@Int, @Nat -> @Int)
++  requires(@Nat.0 > 0)
++  ensures(true)
++  effects(pure)
++{
++  @Int.0 % @Nat.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Int"
++
++    def test_nat_plus_nat_stays_nat(self) -> None:
++        # Guard against over-correction: a pure Nat/Nat join is still Nat.
++        src = """public fn h(@Nat, @Nat -> @Nat)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @Nat.1 + @Nat.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Nat"
++
++    def test_int_plus_int_stays_int(self) -> None:
++        # And a pure Int/Int join is still Int.
++        src = """public fn h(@Int, @Int -> @Int)
++  requires(true)
++  ensures(true)
++  effects(pure)
++{
++  @Int.1 + @Int.0
++}
++"""
++        assert _synth_type(src, 6, 3, 18) == "Int"
+diff --git a/tests/test_int_overflow_differential.py b/tests/test_int_overflow_differential.py
+index c52622b7d..1fcac39be 100644
+--- a/tests/test_int_overflow_differential.py
++++ b/tests/test_int_overflow_differential.py
+@@ -294,13 +294,15 @@ def test_literal_left_int_overflow_is_caught(self) -> None:
+         assert verifier._overflow_arith_type(site) == "Int"
+ 
+     def test_narrowed_result_classified_at_i64_not_result_type(self) -> None:
+-        """An @Int add narrowed into a @Nat slot is i64 arithmetic (#798).
+-
+-        ``@Int.0 + 1`` stored as @Nat resolves the *expression* to @Nat, but the
+-        addition runs at i64 (both operands @Int) — classifying on the result
+-        would mis-range it to u64 and drop an i64 overflow.  The operands' common
+-        type (@Int) is the correct width.  This pins the shape a result-type
+-        classifier silently gets wrong.
++        """An @Int add returned into a @Nat slot is i64 arithmetic (#798).
++
++        ``@Int.0 + 1`` is an @Int add whose result is *returned* into a @Nat
++        slot.  Since #755, ``Int <op> Nat`` joins to the formal LUB @Int, so the
++        whole-expression type is honestly @Int (not the pre-#755 @Nat) — and the
++        arithmetic width the classifier obligates on (the operands' common type)
++        is @Int either way.  The soundness point the classifier must never break:
++        the add runs at i64, so its overflow obligation is discharged at the i64
++        range, never mis-ranged to u64.
+         """
+         source = """
+ public fn f(@Int -> @Nat)
+@@ -316,10 +318,42 @@ def test_narrowed_result_classified_at_i64_not_result_type(self) -> None:
+             expr_target_types=arts.expr_target_types,
+         )
+         site = _binary_sites(program)[0]
+-        # Result resolves to @Nat (narrowed); the *arithmetic* width is @Int.
+-        assert verifier._overflow_int_type(site) == "Nat"     # the result type
++        # Post-#755 the mixed-join result is the formal LUB @Int (was @Nat), and
++        # the arithmetic width is @Int — both agree on the i64-add classification.
++        assert verifier._overflow_int_type(site) == "Int"     # the result type
+         assert verifier._overflow_arith_type(site) == "Int"   # the i64 width
+ 
++    def test_mixed_operand_classified_at_i64_not_operand_self_type(self) -> None:
++        """A mixed ``@Int + @Nat`` add is i64 arithmetic (#798, #755).
++
++        The right operand ``@Nat.0`` is a u64 value on its own, so a per-operand
++        classifier that read *that* operand's self-type would obligate the site
++        at u64 and drop an i64 overflow.  ``_overflow_arith_type`` combines the
++        operands to the common width @Int (either operand @Int ⇒ i64 add).  This
++        keeps the "don't classify on one operand's self-type" coverage that the
++        sibling narrowed-result case lost once #755 made the mixed-join result
++        honestly @Int.
++        """
++        source = """
++public fn f(@Int, @Nat -> @Int)
++  requires(true) ensures(true) effects(pure)
++{ @Int.0 + @Nat.0 }
++"""
++        program = parse_to_ast(source)
++        diags, arts = typecheck_with_artifacts(program, source)
++        assert not [d for d in diags if d.severity == "error"]
++        verifier = ContractVerifier(
++            source=source,
++            expr_types=arts.expr_semantic_types,
++            expr_target_types=arts.expr_target_types,
++        )
++        site = _binary_sites(program)[0]
++        # The right operand's self-type is @Nat (u64) — the arithmetic width is
++        # @Int (i64), the common type; classifying on the u64 operand drops an
++        # i64 overflow.
++        assert verifier._overflow_int_type(site.right) == "Nat"  # operand self
++        assert verifier._overflow_arith_type(site) == "Int"      # i64 width
++
+ 
+ class TestCorpusOverflowDifferential798:
+     """Corpus-wide RISK-7 sweep: across every example + verify/run conformance

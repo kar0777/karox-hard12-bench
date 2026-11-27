@@ -1,0 +1,9 @@
+tests/test_api/test_api_host.py::TestHostTempDirConfig::test_get_temp_dir_config_prefers_ctx_config_override
+tests/test_api/test_api_host.py::TestHostData::test_host_data
+tests/test_api/test_api_host.py::TestHostData::test_host_data_missing
+tests/test_api/test_api_host.py::TestHostData::test_host_data_multiple
+tests/test_api/test_api_host.py::TestHostData::test_host_data_override
+tests/test_api/test_api_host.py::TestHostDeployContext::test_deploy_restores_state_after_exception
+tests/test_api/test_api_host.py::TestHostDeployContext::test_nested_deploy_restores_outer_name_after_exception
+tests/test_api/test_api_host.py::TestHostTempDirConfig::test_get_temp_dir_config_falls_back_to_state_default
+tests/test_api/test_api_host.py::TestHostTempDirConfig::test_get_temp_dir_config_state_config_wins_over_empty_ctx

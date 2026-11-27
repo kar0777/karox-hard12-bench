@@ -1,0 +1,136 @@
+diff --git a/tests/functional/adapter/column_tags/test_column_tags.py b/tests/functional/adapter/column_tags/test_column_tags.py
+index 4170031a1..6e70e8458 100644
+--- a/tests/functional/adapter/column_tags/test_column_tags.py
++++ b/tests/functional/adapter/column_tags/test_column_tags.py
+@@ -120,6 +120,43 @@ class TestColumnTagsView(ColumnTagsMixin):
+     relation_type = "view"
+ 
+ 
++@pytest.mark.skip_profile("databricks_cluster")
++class TestColumnTagsViewUpdateViaAlter(ColumnTagsMixin):
++    relation_type = "view"
++
++    @pytest.fixture(scope="class")
++    def project_config_update(self):
++        # With view_update_via_alter, a subsequent run whose only change is its column
++        # tags takes the alter_view path instead of a full replace; the changed tags
++        # must be applied there too.
++        return {
++            "flags": {"use_materialization_v2": True},
++            "models": {"+view_update_via_alter": True},
++        }
++
++    def test_unchanged_rerun_keeps_column_tags(self, project):
++        util.run_dbt(["run"])
++        util.run_dbt(["run"])
++
++        column_tags_query = f"""
++            SELECT column_name, tag_name, tag_value
++            FROM `system`.`information_schema`.`column_tags`
++            WHERE catalog_name = '{project.database}'
++              AND schema_name = '{project.test_schema}'
++              AND table_name = 'base_model'
++            ORDER BY column_name, tag_name
++            """
++        tags = project.run_sql(column_tags_query, fetch="all")
++        expected_tags = {
++            ("account_number", "pii", "true"),
++            ("account_number", "sensitive", "true"),
++            ("account_number", "key_only", ""),
++            ("account_number", "null_value", ""),
++        }
++        actual_tags = {(row[0], row[1], row[2]) for row in tags}
++        assert actual_tags == expected_tags
++
++
+ @pytest.mark.skip_profile("databricks_cluster")
+ class TestColumnTagsTableV1(ColumnTagsMixin):
+     relation_type = "table"
+diff --git a/tests/unit/macros/relations/test_view_macros.py b/tests/unit/macros/relations/test_view_macros.py
+index 5a84232ff..c478d551f 100644
+--- a/tests/unit/macros/relations/test_view_macros.py
++++ b/tests/unit/macros/relations/test_view_macros.py
+@@ -52,6 +52,7 @@ def mocks(self, context):
+         context["apply_tags"] = Mock()
+         context["apply_tblproperties"] = Mock()
+         context["alter_query"] = Mock()
++        context["apply_column_tags"] = Mock()
+ 
+     def render_alter_view(self, template_bundle, changes):
+         return self.run_macro(
+@@ -84,3 +85,11 @@ def test_macros__alter_view_with_query(self, context, template_bundle):
+         context["apply_tags"].assert_not_called()
+         context["apply_tblproperties"].assert_not_called()
+         context["alter_query"].assert_called_once()
++
++    def test_macros__alter_view_with_column_tags(self, context, template_bundle):
++        column_tags = Mock()
++        self.render_alter_view(template_bundle, {"column_tags": column_tags})
++        context["apply_tags"].assert_not_called()
++        context["apply_tblproperties"].assert_not_called()
++        context["alter_query"].assert_not_called()
++        context["apply_column_tags"].assert_called_once_with(template_bundle.relation, column_tags)
+diff --git a/tests/unit/test_adapter.py b/tests/unit/test_adapter.py
+index 3ba5a23c1..d22078b38 100644
+--- a/tests/unit/test_adapter.py
++++ b/tests/unit/test_adapter.py
+@@ -1539,8 +1539,16 @@ def _create_incremental_config(
+         )
+ 
+     @staticmethod
+-    def _create_view_config(tags: dict[str, str] | None = None) -> ViewConfig:
+-        return ViewConfig(config={TagsProcessor.name: TagsConfig(set_tags=tags or {})})
++    def _create_view_config(
++        tags: dict[str, str] | None = None,
++        column_tags: dict[str, dict[str, str]] | None = None,
++    ) -> ViewConfig:
++        return ViewConfig(
++            config={
++                TagsProcessor.name: TagsConfig(set_tags=tags or {}),
++                ColumnTagsProcessor.name: ColumnTagsConfig(set_column_tags=column_tags or {}),
++            }
++        )
+ 
+     @staticmethod
+     def _create_mv_config(tags: dict[str, str] | None = None) -> MaterializedViewConfig:
+@@ -1687,6 +1695,40 @@ def test_view_describe_relation_fetches_tag_query_when_tags_present(self):
+         assert "fetch_tags" in called_macro_names
+         assert "get_view_description" in called_macro_names
+ 
++    def test_view_describe_relation_skips_column_tag_query_without_tags(self):
++        adapter = self._create_adapter()
++        relation = self._create_view_relation()
++        relation_config = self._create_view_config()
++
++        results = ViewAPI._describe_relation(adapter, relation, relation_config)
++
++        assert results["information_schema.column_tags"] is None
++        called_macro_names = self._called_macro_names(adapter)
++        assert "fetch_column_tags" not in called_macro_names
++
++    def test_view_describe_relation_fetches_column_tag_query_when_present(self):
++        adapter = self._create_adapter()
++        relation = self._create_view_relation()
++        relation_config = self._create_view_config(
++            column_tags={"id": {"classification": "internal"}}
++        )
++
++        results = ViewAPI._describe_relation(adapter, relation, relation_config)
++
++        assert results["information_schema.column_tags"] == "fetch_column_tags_result"
++        called_macro_names = self._called_macro_names(adapter)
++        assert "fetch_column_tags" in called_macro_names
++
++    def test_view_describe_relation_fetches_column_tags_when_relation_config_is_none(self):
++        adapter = self._create_adapter()
++        relation = self._create_view_relation()
++
++        results = ViewAPI._describe_relation(adapter, relation, None)
++
++        assert results["information_schema.column_tags"] == "fetch_column_tags_result"
++        called_macro_names = self._called_macro_names(adapter)
++        assert "fetch_column_tags" in called_macro_names
++
+     def test_mv_describe_relation_skips_tag_query_without_tags(self):
+         adapter = self._create_adapter()
+         relation = self._create_mv_relation()

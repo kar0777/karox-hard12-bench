@@ -1,0 +1,80 @@
+diff --git a/armi/materials/tests/test_materials.py b/armi/materials/tests/test_materials.py
+index 67dc92675c..0e0c37d222 100644
+--- a/armi/materials/tests/test_materials.py
++++ b/armi/materials/tests/test_materials.py
+@@ -1446,41 +1446,6 @@ def loadAssembly(self, materialModifications):
+         design._prepConstruction(settings.Settings())
+         return design.assemblies["fuel a"]
+ 
+-    def test_class1Class2Class1WtFrac(self):
+-        # should error because class1_wt_frac not in (0,1)
+-        with self.assertRaises(ValueError):
+-            _a = self.loadAssembly(
+-                """
+-        material modifications:
+-            class1_wt_frac: [2.0]
+-            class1_custom_isotopics: [customIsotopic1]
+-            class2_custom_isotopics: [customIsotopic2]
+-        """
+-            )
+-
+-    def test_class1Class2ClassXCustomIsotopics(self):
+-        # should error because class1_custom_isotopics does not exist
+-        with self.assertRaises(KeyError):
+-            _a = self.loadAssembly(
+-                """
+-        material modifications:
+-            class1_wt_frac: [0.5]
+-            class1_custom_isotopics: [fakeIsotopic]
+-            class2_custom_isotopics: [customIsotopic2]
+-        """
+-            )
+-
+-        # should error because class2_custom_isotopics does not exist
+-        with self.assertRaises(KeyError):
+-            _a = self.loadAssembly(
+-                """
+-        material modifications:
+-            class1_wt_frac: [0.5]
+-            class1_custom_isotopics: [customIsotopic1]
+-            class2_custom_isotopics: [fakeIsotopic]
+-        """
+-            )
+-
+ 
+ class PickledMaterialsTests(unittest.TestCase):
+     def test_simpleReload(self):
+diff --git a/armi/reactor/blueprints/tests/test_materialModifications.py b/armi/reactor/blueprints/tests/test_materialModifications.py
+index eae389e029..a9ce95f2c4 100644
+--- a/armi/reactor/blueprints/tests/test_materialModifications.py
++++ b/armi/reactor/blueprints/tests/test_materialModifications.py
+@@ -337,14 +337,10 @@ def test_matModsUpTheMRO(self):
+         material modifications:
+             ZR_wt_frac: [1]
+             class1_wt_frac: [1]
+-            class1_custom_isotopics: [dummy]
+-            class2_custom_isotopics: [dummy]
+             by component:
+                 fuel2:
+                     ZR_wt_frac: [0]
+                     class1_wt_frac: [1]
+-                    class1_custom_isotopics: [dummy]
+-                    class2_custom_isotopics: [dummy]
+ custom isotopics:
+     dummy:
+         input format: mass fractions
+@@ -359,14 +355,10 @@ def test_matModsUpTheMRO(self):
+         material modifications:
+             ZR_wt_frac: [1]
+             klass1_wt_frac: [1]
+-            klass1_custom_isotopics: [dummy]
+-            klass2_custom_isotopics: [dummy]
+             by component:
+                 fuel2:
+                     ZR_wt_frac: [0]
+                     klass1_wt_frac: [1]
+-                    klass1_custom_isotopics: [dummy]
+-                    klass2_custom_isotopics: [dummy]
+ custom isotopics:
+     dummy:
+         input format: mass fractions

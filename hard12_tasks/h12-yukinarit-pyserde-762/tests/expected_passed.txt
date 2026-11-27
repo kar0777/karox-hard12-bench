@@ -1,0 +1,12 @@
+tests/test_custom.py::test_global_class_serializer_top_level
+tests/test_custom.py::test_custom_class_serializer
+tests/test_custom.py::test_custom_class_serializer_dataclass
+tests/test_custom.py::test_custom_class_serializer_optional
+tests/test_custom.py::test_custom_field_serializer
+tests/test_custom.py::test_custom_serializer_union
+tests/test_custom.py::test_custom_serializer_with_class_attributes
+tests/test_custom.py::test_custom_serializer_with_field_attributes
+tests/test_custom.py::test_field_serialize_override_class_serializer
+tests/test_custom.py::test_global_class_serializer_top_level_no_match
+tests/test_custom.py::test_raise_error
+tests/test_custom.py::test_wrong_signature

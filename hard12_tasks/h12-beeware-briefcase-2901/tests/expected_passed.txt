@@ -1,0 +1,9 @@
+tests/platforms/linux/system/test_build.py::test_custom_man_page
+tests/platforms/linux/system/test_build.py::test_custom_man_page_missing
+tests/platforms/linux/system/test_build.py::test_build_app
+tests/platforms/linux/system/test_build.py::test_build_bootstrap_failed
+tests/platforms/linux/system/test_build.py::test_missing_changelog
+tests/platforms/linux/system/test_build.py::test_missing_manpage
+tests/platforms/linux/system/test_build.py::test_multiple_license_files_concatenated
+tests/platforms/linux/system/test_build.py::test_no_license_files
+tests/platforms/linux/system/test_build.py::test_specified_license_file_is_copied

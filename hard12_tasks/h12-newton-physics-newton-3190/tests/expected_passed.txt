@@ -1,0 +1,13 @@
+newton/tests/test_recorder.py::TestRecorder::test_viewer_file_is_running_reflects_close
+newton/tests/test_recorder.py::TestRecorder::test_viewer_file_playback_cpu
+newton/tests/test_recorder.py::TestRecorder::test_model_and_state_recorder_binary_cpu
+newton/tests/test_recorder.py::TestRecorder::test_model_and_state_recorder_json_cpu
+newton/tests/test_recorder.py::TestRecorder::test_real_model_recording_roundtrip_cpu
+newton/tests/test_recorder.py::TestRecorder::test_recorder_backward_compatibility_cpu
+newton/tests/test_recorder.py::TestRecorder::test_recorder_ringbuffer_save_load_cpu
+newton/tests/test_recorder.py::TestRecorder::test_recorder_with_ringbuffer_cpu
+newton/tests/test_recorder.py::TestRecorder::test_ringbuffer_basic_cpu
+newton/tests/test_recorder.py::TestRecorder::test_ringbuffer_edge_cases_cpu
+newton/tests/test_recorder.py::TestRecorder::test_warp_dtype_file_roundtrip_cpu
+newton/tests/test_recorder.py::TestRecorder::test_warp_dtype_roundtrip_binary_cpu
+newton/tests/test_recorder.py::TestRecorder::test_warp_dtype_roundtrip_cpu

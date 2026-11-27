@@ -1,0 +1,22 @@
+diff --git a/test/mitmproxy/test_certs.py b/test/mitmproxy/test_certs.py
+index 6fe5ee84fe..b365cbf2ae 100644
+--- a/test/mitmproxy/test_certs.py
++++ b/test/mitmproxy/test_certs.py
+@@ -145,6 +145,17 @@ def test_asterisk_forms(self, input, output):
+ 
+ 
+ class TestDummyCert:
++    def test_validity_period(self, tstore):
++        r = certs.dummy_cert(
++            tstore.default_privatekey,
++            tstore.default_ca._cert,
++            "foo.com",
++            [],
++        )
++        validity_period = r.notafter - r.notbefore
++        assert validity_period == certs.CERT_EXPIRY
++        assert validity_period < timedelta(days=200)
++
+     def test_with_ca(self, tstore):
+         r = certs.dummy_cert(
+             tstore.default_privatekey,

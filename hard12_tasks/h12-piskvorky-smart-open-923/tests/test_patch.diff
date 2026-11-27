@@ -1,0 +1,76 @@
+diff --git a/tests/test_azure.py b/tests/test_azure.py
+index ebcc5ae0..2c017d9b 100644
+--- a/tests/test_azure.py
++++ b/tests/test_azure.py
+@@ -12,6 +12,7 @@
+ import os
+ import time
+ import unittest
++import unittest.mock
+ import uuid
+ from collections import OrderedDict
+ from typing import Literal
+@@ -467,6 +468,31 @@ def test_seek_end(self):
+         self.assertEqual(seek, len(content) - 4)
+         self.assertEqual(fin.read(), b'you?')
+ 
++    def test_seek_forward_within_buffer(self):
++        """Does forward seeking within buffered data avoid additional download_blob requests?"""
++        content = u"hello wořld\nhow are you?".encode('utf8')
++        blob_name = "test_seek_forward_within_buffer_%s" % BLOB_NAME
++        put_to_container(blob_name, contents=content)
++
++        fin = smart_open.azure.Reader(CONTAINER_NAME, blob_name, CLIENT, buffer_size=32)
++        self.assertEqual(fin.read(5), b'hello')
++
++        # Account for the initial download_blob call from the read above.
++        with unittest.mock.patch.object(
++            fin._blob, 'download_blob', wraps=fin._blob.download_blob
++        ) as mock_download:
++            # Forward seek within buffer using WHENCE_CURRENT - no new download
++            seek = fin.seek(1, whence=smart_open.constants.WHENCE_CURRENT)
++            self.assertEqual(seek, 6)
++            self.assertEqual(fin.read(6), u'wořld'.encode('utf-8'))
++
++            # Forward seek within buffer using WHENCE_START - no new download
++            seek = fin.seek(13, whence=smart_open.constants.WHENCE_START)
++            self.assertEqual(seek, 13)
++            self.assertEqual(fin.read(3), b'how')
++
++            mock_download.assert_not_called()
++
+     def test_detect_eof(self):
+         content = u"hello wořld\nhow are you?".encode('utf8')
+         blob_name = "test_detect_eof_%s" % BLOB_NAME
+diff --git a/tests/test_http.py b/tests/test_http.py
+index a58449f0..763a43a0 100644
+--- a/tests/test_http.py
++++ b/tests/test_http.py
+@@ -84,6 +84,27 @@ def test_seek_from_current(self):
+         self.assertEqual(reader.tell(), 40)
+         self.assertEqual(BYTES[30:40], read_bytes)
+ 
++    @responses.activate
++    def test_seek_forward_within_buffer(self):
++        """Does forward seeking within buffered data avoid additional GET requests?"""
++        responses.add_callback(responses.GET, URL, callback=request_callback)
++        reader = smart_open.http.SeekableBufferedInputBase(URL, buffer_size=32)
++
++        self.assertEqual(reader.read(5), BYTES[:5])
++        initial_calls = len(responses.calls)
++
++        # Forward seek within buffer using WHENCE_CURRENT - no new GET request
++        reader.seek(1, whence=smart_open.constants.WHENCE_CURRENT)
++        self.assertEqual(reader.tell(), 6)
++        self.assertEqual(reader.read(5), BYTES[6:11])
++
++        # Forward seek within buffer using WHENCE_START - no new GET request
++        reader.seek(13, whence=smart_open.constants.WHENCE_START)
++        self.assertEqual(reader.tell(), 13)
++        self.assertEqual(reader.read(3), BYTES[13:16])
++
++        self.assertEqual(len(responses.calls), initial_calls)
++
+     @responses.activate
+     def test_seek_from_end(self):
+         responses.add_callback(responses.GET, URL, callback=request_callback)
